@@ -304,7 +304,7 @@ describe("PollingLoop — pollReviewProjects", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(discoveryConnector.getOpenReviewAssignments).toHaveBeenCalledWith(["octocat/hello-world"]);
-    expect(trigger.triggerReview).toHaveBeenCalledWith("int-gh-1", "octocat/hello-world#42");
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-gh-1", "octocat/hello-world#42", { triggerCause: "backfill" });
   });
 
   it("does not backfill open changes for automatic review projects", async () => {
@@ -525,7 +525,7 @@ describe("PollingLoop — pollReviewProjects", () => {
     await loop.pollReviewProjects();
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(trigger.triggerReview).toHaveBeenCalledWith("int-1", "octocat/repo#1");
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-1", "octocat/repo#1", { triggerCause: "backfill" });
   });
 
   it("rechecks watched polling review tasks when VE remains assigned", async () => {

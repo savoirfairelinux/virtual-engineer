@@ -73,6 +73,15 @@ describe("GitLabMergeRequestConnector", () => {
       expect(url).toBe(`${BASE_URL}/api/v4/projects/${PROJECT_ID}/merge_requests/42`);
     });
 
+    it("uses the project from a qualified change id", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(gitlabMr));
+
+      await makeConnector().getChange(makeExternalChangeId("group/project#42"));
+
+      const [url] = fetchMock.mock.calls[0] as [string];
+      expect(url).toBe(`${BASE_URL}/api/v4/projects/group%2Fproject/merge_requests/42`);
+    });
+
     it("throws GitLabMrNotFoundError on 404", async () => {
       fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
       const err = await makeConnector().getChange(MR_ID).catch((e: unknown) => e);

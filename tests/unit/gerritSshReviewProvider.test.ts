@@ -236,6 +236,16 @@ describe("GerritSshReviewProvider", () => {
     });
   });
 
+  describe("self-review guard", () => {
+    it("rejects a change owned by the configured SSH user without an account id", async () => {
+      const provider = makeProvider({ sshUser: "alice", reviewerAccountId: undefined });
+      mockQuery.mockResolvedValueOnce(sshNdjson({ ...SAMPLE_CHANGE, owner: { username: "alice" } }));
+
+      await expect(provider.isReviewer(CHANGE_ID)).resolves.toBe(false);
+      expect(mockQuery).toHaveBeenCalledOnce();
+    });
+  });
+
   describe("reviewer assignment", () => {
     it("confirms VE is assigned from Gerrit's reviewer list", async () => {
       mockQuery

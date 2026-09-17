@@ -300,7 +300,7 @@ describe("ReviewOrchestrator.startReviewTask", () => {
       repos: ["p"],
       assignmentMode: "automatic" as const,
     }));
-    mocks.provider.ensureReviewerAssignment = vi.fn(async () => undefined);
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
     mocks.provider.isReviewer = vi.fn(async () => false);
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
@@ -309,6 +309,35 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(tasks).toHaveLength(1);
     expect(mocks.provider.ensureReviewerAssignment).toHaveBeenCalledWith(CHANGE_ID);
     expect(mocks.provider.isReviewer).not.toHaveBeenCalled();
+  });
+
+  it("skips automatic review when the provider cannot ensure assignment", async () => {
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "automatic" as const,
+    }));
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => false);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("allows manual review when the provider has no assignment probe", async () => {
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "manual" as const,
+    }));
+    delete mocks.provider.isReviewer;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+
+    expect(tasks).toHaveLength(1);
   });
 
   it("trusts a reviewer-assigned event for a manual project", async () => {
@@ -356,8 +385,8 @@ describe("ReviewOrchestrator.startReviewTask", () => {
       repos: ["p"],
       assignmentMode: "automatic" as const,
     }));
-    mocks.provider.isReviewer = vi.fn(async () => true);
-    mocks.provider.ensureReviewerAssignment = vi.fn(async () => undefined);
+    mocks.provider.isReviewer = vi.fn(async () => false);
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, triggerCause: "backfill" });
@@ -377,10 +406,8 @@ describe("ReviewOrchestrator.startReviewTask", () => {
       repos: ["p"],
       assignmentMode: projectId === manual.id ? "manual" as const : "automatic" as const,
     }));
-    mocks.provider.ensureReviewerAssignment = vi.fn(async () => undefined);
-    mocks.provider.isReviewer = vi.fn()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
+    mocks.provider.isReviewer = vi.fn(async () => false);
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });

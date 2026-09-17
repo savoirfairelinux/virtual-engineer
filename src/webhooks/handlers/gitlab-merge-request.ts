@@ -42,29 +42,37 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
   const action = mr.action ?? eventToAction(ctx.event);
   const changeId = String(mr.iid);
   const reviewChangeId = qualifyReviewChangeId(ctx.payload, changeId);
+  const reviewerChanged = hasReviewerChange(ctx.payload);
 
   if (action === "merge" || action === "merged") {
-    await ctx.orchestrator.markChangeMerged(ctx.integrationId, changeId);
+    await ctx.orchestrator.markChangeMerged(ctx.integrationId, reviewChangeId);
     return { status: 202, body: { queued: true, action: "merged", changeId } };
   }
 
   if (action === "close" || action === "closed") {
-    await ctx.orchestrator.markChangeAbandoned(ctx.integrationId, changeId);
+    await ctx.orchestrator.markChangeAbandoned(ctx.integrationId, reviewChangeId);
     return { status: 202, body: { queued: true, action: "abandoned", changeId } };
   }
 
   // open / reopen / update → trigger a fresh review pass (when a reviewer is wired).
-  const reviewTriggerActions = new Set(["open", "opened", "reopen", "reopened", "update", "updated"]);
-  if (reviewTriggerActions.has(action ?? "") && ctx.orchestrator.triggerReviewForChange) {
+  const revisionTrigger = action === "open" || action === "opened" || action === "reopen" || action === "reopened"
+    || ((action === "update" || action === "updated") && mr.oldrev !== undefined);
+  if ((revisionTrigger || reviewerChanged) && ctx.orchestrator.triggerReviewForChange) {
     try {
-      await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, reviewChangeId);
+      if (reviewerChanged) {
+        await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, reviewChangeId, {
+          triggerCause: "reviewer-change",
+        });
+      } else {
+        await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, reviewChangeId);
+      }
     } catch (err) {
       ctx.log.warn({ err, changeId, action }, "review trigger failed; continuing with feedback check");
     }
   }
 
   // open / update / approved → re-poll feedback
-  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, changeId);
+  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, reviewChangeId);
   return { status: 202, body: { queued: true, action: action ?? "feedback", changeId } };
 };
 
@@ -82,13 +90,15 @@ const handleNote: WebhookHandler = async (ctx) => {
   if (typeof iid !== "number" && typeof iid !== "string") {
     return { status: 400, body: { error: "Note payload missing merge_request.iid" } };
   }
-  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, String(iid));
-  return { status: 202, body: { queued: true, action: "feedback", changeId: String(iid) } };
+  const reviewChangeId = qualifyReviewChangeId(ctx.payload, String(iid));
+  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, reviewChangeId);
+  return { status: 202, body: { queued: true, action: "feedback", changeId: reviewChangeId } };
 };
 
 interface GitlabMrPayload {
   iid: number | string;
   action?: string;
+  oldrev?: string | undefined;
 }
 
 /** Extract the MR IID and action from a raw GitLab MR Hook payload's `object_attributes`. */
@@ -101,7 +111,12 @@ function extractMr(payload: unknown): GitlabMrPayload | null {
   const iid = a["iid"] ?? a["id"];
   if (typeof iid !== "number" && typeof iid !== "string") return null;
   const action = typeof a["action"] === "string" ? (a["action"]) : undefined;
-  return action !== undefined ? { iid, action } : { iid };
+  const oldrev = typeof a["oldrev"] === "string" && a["oldrev"].length > 0 ? a["oldrev"] : undefined;
+  return {
+    iid,
+    ...(action !== undefined ? { action } : {}),
+    ...(oldrev !== undefined ? { oldrev } : {}),
+  };
 }
 
 /** Map a dotted event path (e.g. `merge_request.approved`) to its action suffix. */
@@ -120,4 +135,15 @@ function qualifyReviewChangeId(payload: unknown, iid: string): string {
     if (typeof path === "string" && path.length > 0) return `${path}#${iid}`;
   }
   return iid;
+}
+
+/** Detect GitLab reviewer-list changes without treating every metadata update as a revision. */
+function hasReviewerChange(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const changes = (payload as Record<string, unknown>)["changes"];
+  if (typeof changes !== "object" || changes === null) return false;
+  const reviewers = (changes as Record<string, unknown>)["reviewers"];
+  if (typeof reviewers !== "object" || reviewers === null) return false;
+  const record = reviewers as Record<string, unknown>;
+  return "current" in record || "previous" in record;
 }

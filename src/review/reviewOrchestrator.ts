@@ -225,6 +225,10 @@ export class ReviewOrchestrator {
     const tasks: Task[] = [];
     const projectReviewConfigStore = this.deps.stateStore;
     const triggerCause = input.triggerCause ?? (input.force === true ? "reviewer-assigned" : "revision");
+    const configuredProjects: Array<{
+      project: ProjectRecord;
+      reviewConfig: import("../interfaces.js").ProjectReviewConfig;
+    }> = [];
 
     for (const project of projects) {
       const reviewConfig = await projectReviewConfigStore.getProjectReviewConfig(project.id);
@@ -232,6 +236,30 @@ export class ReviewOrchestrator {
         log.warn({ projectId: project.id, changeId: input.changeId }, "skipping review project without review configuration");
         continue;
       }
+      configuredProjects.push({ project, reviewConfig });
+    }
+
+    const reviewerProbe = this.deps.reviewProvider.isReviewer?.bind(this.deps.reviewProvider);
+    const assignmentProbeAvailable = reviewerProbe !== undefined;
+    const manualAssignmentByProject = new Map<string, boolean>();
+    if (assignmentProbeAvailable && triggerCause !== "reviewer-assigned") {
+      for (const { project, reviewConfig } of configuredProjects) {
+        if ((reviewConfig.assignmentMode ?? "manual") !== "manual") continue;
+        try {
+          manualAssignmentByProject.set(
+            project.id,
+            await reviewerProbe(input.changeId),
+          );
+        } catch (err) {
+          log.warn({ projectId: project.id, changeId: input.changeId, err }, "initial reviewer assignment check failed");
+          manualAssignmentByProject.set(project.id, false);
+        }
+      }
+    }
+    let automaticAssignmentChecked = false;
+    let automaticAssignment = false;
+
+    for (const { project, reviewConfig } of configuredProjects) {
 
       const assignmentMode = reviewConfig.assignmentMode ?? "manual";
       if (assignmentMode === "automatic" && triggerCause === "backfill") {
@@ -253,36 +281,30 @@ export class ReviewOrchestrator {
         // A successful provider-native ensure operation is the assignment
         // contract. A second read is both redundant and racy on APIs with
         // eventual consistency (notably GitHub requested_reviewers).
-        try {
-          await this.deps.reviewProvider.ensureReviewerAssignment(input.changeId);
-        } catch (err) {
-          log.warn(
-            { projectId: project.id, changeId: input.changeId, triggerCause, err },
-            "automatic reviewer assignment failed — skipping review",
-          );
-          continue;
+        if (!automaticAssignmentChecked) {
+          automaticAssignmentChecked = true;
+          try {
+            automaticAssignment = await this.deps.reviewProvider.ensureReviewerAssignment(input.changeId);
+          } catch (err) {
+            log.warn(
+              { projectId: project.id, changeId: input.changeId, triggerCause, err },
+              "automatic reviewer assignment failed — skipping review",
+            );
+            automaticAssignment = false;
+          }
         }
-      } else if (triggerCause !== "reviewer-assigned") {
-        if (typeof this.deps.reviewProvider.isReviewer !== "function") {
-          log.warn(
-            { projectId: project.id, changeId: input.changeId, assignmentMode },
-            "skipping manual review project because the provider cannot verify reviewer assignment",
-          );
-          continue;
-        }
-        let assigned = false;
-        try {
-          assigned = await this.deps.reviewProvider.isReviewer(input.changeId);
-        } catch (err) {
-          log.warn(
-            { projectId: project.id, changeId: input.changeId, err },
-            "reviewer assignment check failed — skipping review",
-          );
-        }
-        if (!assigned) {
+        if (!automaticAssignment) {
           log.debug(
+            { projectId: project.id, changeId: input.changeId },
+            "provider could not ensure reviewer assignment — skipping automatic review",
+          );
+          continue;
+        }
+      } else if (triggerCause !== "reviewer-assigned" && assignmentProbeAvailable) {
+        if (manualAssignmentByProject.get(project.id) !== true) {
+          log.warn(
             { projectId: project.id, changeId: input.changeId, assignmentMode },
-            "manual review project is not assigned to VE — skipping",
+            "manual review project was not assigned to VE before this trigger — skipping",
           );
           continue;
         }

@@ -94,6 +94,35 @@ describe("GitHubReviewProvider", () => {
         }),
       );
     });
+
+    it("retries reviewer identity lookup after a transient failure", async () => {
+      const configWithoutLogin = {
+        apiBaseUrl: config.apiBaseUrl,
+        owner: config.owner,
+        repo: config.repo,
+        token: config.token,
+      };
+      const pr = {
+        number: 42,
+        state: "open",
+        title: "t",
+        html_url: "u",
+        merged: false,
+        user: { login: "alice", id: 123 },
+        base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+        head: { ref: "feature", sha: "abc" },
+      };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockRejectedValueOnce(new Error("temporary /user failure"))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ login: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse({ users: [{ login: "ve-bot" }], teams: [] }));
+
+      const provider = new GitHubReviewProvider(configWithoutLogin);
+      await expect(provider.isReviewer(cid)).rejects.toThrow("temporary /user failure");
+      await expect(provider.isReviewer(cid)).resolves.toBe(true);
+    });
   });
 
   it("getChangeDetails maps merged PR to MERGED", async () => {

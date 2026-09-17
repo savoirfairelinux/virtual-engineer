@@ -14,6 +14,7 @@ const integration: Integration = {
     mode: "github.com",
     authMode: "pat",
     token: "ghp_x",
+    virtualEngineerUserLogin: "ve-bot",
     webhookSecret: "s",
   }),
   enabled: true,
@@ -152,8 +153,20 @@ describe("githubPullRequestWebhookHandler", () => {
     expect(orch.triggerReviewForChange).toHaveBeenCalledWith(
       "gh-1",
       "octocat/hello-world#104",
-      { triggerCause: "reviewer-assigned" },
+      { force: true, triggerCause: "reviewer-assigned" },
     );
+  });
+
+  it("ignores review_requested events targeting another reviewer", async () => {
+    const { ctx, orch } = makeCtx("pull_request", {
+      action: "review_requested",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      pull_request: { number: 105 },
+      requested_reviewer: { login: "another-reviewer" },
+    });
+    await githubPullRequestWebhookHandler(ctx);
+    expect(orch.triggerReviewForChange).not.toHaveBeenCalled();
+    expect(orch.triggerFeedbackForChange).toHaveBeenCalledWith("gh-1", "octocat/hello-world#105");
   });
 
   it("review trigger error does not block feedback path", async () => {

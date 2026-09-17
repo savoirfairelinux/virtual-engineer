@@ -11,6 +11,7 @@ import type {
   Task,
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
+  ReviewTriggerCause,
 } from "../interfaces.js";
 import { makeTicketId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
@@ -37,7 +38,11 @@ export interface ProjectAwareStore {
  * newly discovered PR/MR where VE has been assigned as reviewer.
  */
 export interface ReviewAssignmentTrigger {
-  triggerReview(integrationId: string, changeId: string): Promise<void>;
+  triggerReview(
+    integrationId: string,
+    changeId: string,
+    options?: { triggerCause?: ReviewTriggerCause },
+  ): Promise<void>;
 }
 
 /**
@@ -414,7 +419,7 @@ export class PollingLoop {
         }
         this.reviewTriggerCooldowns.set(cooldownKey, now);
         Promise.resolve()
-          .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId))
+          .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId, { triggerCause: "backfill" }))
           .catch((err: unknown) =>
             log.error(
               { projectId: project.id, changeId: assignment.changeId, err },
