@@ -179,7 +179,7 @@ export interface ProjectVendorComponentInput {
 }
 
 export type ReviewAssignmentMode = "manual" | "automatic";
-export type ReviewTriggerCause = "revision" | "reviewer-assigned" | "backfill" | "manual";
+export type ReviewTriggerCause = "revision" | "reviewer-assigned" | "reviewer-change" | "backfill" | "manual";
 
 export const DEFAULT_REVIEW_ASSIGNMENT_MODE: ReviewAssignmentMode = "manual";
 
@@ -852,6 +852,8 @@ export interface ReviewChangeDetails {
   subject: string;
   description: string;
   ownerAccountId: string;
+  /** Provider-native owner username when available (used by Gerrit self-review guards). */
+  ownerUsername?: string | undefined;
   currentPatchset: number;
   status: ReviewChangeStatus;
   project: string;
@@ -1021,7 +1023,7 @@ export interface ReviewProvider {
   isReviewer?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean>;
 
   /** Ensure VE is present as a reviewer without removing existing reviewers. */
-  ensureReviewerAssignment?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void>;
+  ensureReviewerAssignment?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean>;
 
   /**
    * Returns true when the VE reviewer account has already posted a review

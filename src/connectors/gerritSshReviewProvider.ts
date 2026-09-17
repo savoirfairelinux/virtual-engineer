@@ -155,6 +155,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       subject: entry.subject,
       description: commitBody,
       ownerAccountId: this.getOwnerAccountId(entry.owner),
+      ...(entry.owner.username !== undefined ? { ownerUsername: entry.owner.username } : {}),
       currentPatchset: patchset,
       status: entry.status === "NEW" ? "OPEN" : entry.status,
       project: entry.project,
@@ -180,7 +181,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
 
     if (
       details.ownerAccountId === this.config.reviewerAccountId ||
-      details.ownerAccountId === this.config.sshUser
+      details.ownerAccountId === this.config.sshUser ||
+      details.ownerUsername === this.config.sshUser
     ) return false;
 
     // Re-query with --all-reviewers to get the reviewer list over SSH.
@@ -208,14 +210,16 @@ export class GerritSshReviewProvider implements ReviewProvider {
   }
 
   /** Add VE to the Gerrit reviewer list while preserving all existing reviewers. */
-  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
     const details = await this.getChangeDetails(changeId, signal);
-    if (details.status !== "OPEN") return;
+    if (details.status !== "OPEN") return false;
     if (
       details.ownerAccountId === this.config.reviewerAccountId ||
-      details.ownerAccountId === this.config.sshUser
-    ) return;
+      details.ownerAccountId === this.config.sshUser ||
+      details.ownerUsername === this.config.sshUser
+    ) return false;
     await this.sshClient.addReviewers(String(changeId), [this.config.sshUser], signal);
+    return true;
   }
 
   /**

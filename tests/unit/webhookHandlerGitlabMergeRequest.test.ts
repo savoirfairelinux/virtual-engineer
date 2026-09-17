@@ -68,13 +68,38 @@ describe("gitlabMergeRequestWebhookHandler", () => {
 
   it("qualifies the review trigger with the GitLab project path", async () => {
     const { ctx, orch } = makeCtx("merge_request", {
-      object_attributes: { iid: 15, action: "update" },
+      object_attributes: { iid: 15, action: "update", oldrev: "old" },
       project: { path_with_namespace: "group/project" },
     });
     const r = await gitlabMergeRequestWebhookHandler(ctx);
     expect(r.status).toBe(202);
     expect(orch.triggerReviewForChange).toHaveBeenCalledWith("mr-1", "group/project#15");
-    expect(orch.triggerFeedbackForChange).toHaveBeenCalledWith("mr-1", "15");
+    expect(orch.triggerFeedbackForChange).toHaveBeenCalledWith("mr-1", "group/project#15");
+  });
+
+  it("triggers review only for a GitLab revision update", async () => {
+    const { ctx, orch } = makeCtx("merge_request", {
+      object_attributes: { iid: 16, action: "update", oldrev: "abc123" },
+      project: { path_with_namespace: "group/project" },
+    });
+    await gitlabMergeRequestWebhookHandler(ctx);
+
+    expect(orch.triggerReviewForChange).toHaveBeenCalledWith("mr-1", "group/project#16");
+  });
+
+  it("routes reviewer-list changes through verified assignment handling", async () => {
+    const { ctx, orch } = makeCtx("merge_request", {
+      object_attributes: { iid: 17, action: "update" },
+      project: { path_with_namespace: "group/project" },
+      changes: { reviewers: { previous: [], current: [{ username: "ve-bot" }] } },
+    });
+    await gitlabMergeRequestWebhookHandler(ctx);
+
+    expect(orch.triggerReviewForChange).toHaveBeenCalledWith(
+      "mr-1",
+      "group/project#17",
+      { triggerCause: "reviewer-change" },
+    );
   });
 
   it("routes action 'approved' to triggerFeedbackForChange", async () => {

@@ -178,8 +178,12 @@ async function main(): Promise<void> {
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
   const pollingReviewTrigger: import("./orchestrator/pollingLoop.js").ReviewAssignmentTrigger = {
-    async triggerReview(integrationId: string, changeId: string): Promise<void> {
-      await reviewTriggerHolder.current?.triggerReviewForChange(integrationId, changeId);
+    async triggerReview(
+      integrationId: string,
+      changeId: string,
+      options?: { triggerCause?: import("./interfaces.js").ReviewTriggerCause },
+    ): Promise<void> {
+      await reviewTriggerHolder.current?.triggerReviewForChange(integrationId, changeId, options);
     },
   };
 

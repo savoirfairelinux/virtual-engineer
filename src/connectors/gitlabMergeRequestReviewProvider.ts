@@ -203,25 +203,26 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   }
 
   /** Add VE to the MR reviewer set without removing existing reviewers. */
-  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
     const { project, iid } = this.parseChange(changeId);
     const mr = MrSchema.parse(await this.http.fetchJson(
       this.mrUrl(project, iid),
       signal !== undefined ? { signal } : undefined,
     ));
     const currentUser = await this.resolveCurrentUser(signal);
-    if (currentUser === null || mr.state !== "opened" || mr.author?.id === currentUser.id) return;
+    if (currentUser === null || mr.state !== "opened" || mr.author?.id === currentUser.id) return false;
 
     const reviewerIds = [...new Set([
       ...mr.reviewers.map((reviewer) => reviewer.id),
       currentUser.id,
     ])];
-    if (mr.reviewers.some((reviewer) => reviewer.id === currentUser.id)) return;
+    if (mr.reviewers.some((reviewer) => reviewer.id === currentUser.id)) return true;
     await this.http.fetchJsonVoid(this.mrUrl(project, iid), {
       method: "PUT",
       body: JSON.stringify({ reviewer_ids: reviewerIds }),
       ...(signal !== undefined ? { signal } : {}),
     });
+    return true;
   }
 
   /**
@@ -532,7 +533,8 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   /** Resolve and cache VE's own GitLab identity. */
   private async resolveCurrentUser(signal?: AbortSignal): Promise<z.infer<typeof CurrentUserSchema> | null> {
     if (this.currentUser !== null) return this.currentUser;
-    this.currentUserPromise ??= (async (): Promise<z.infer<typeof CurrentUserSchema> | null> => {
+    if (this.currentUserPromise !== undefined) return this.currentUserPromise;
+    const lookup = (async (): Promise<z.infer<typeof CurrentUserSchema> | null> => {
       try {
         const me = CurrentUserSchema.parse(
           await this.http.fetchJson(
@@ -548,6 +550,10 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
         return null;
       }
     })();
+    this.currentUserPromise = lookup.catch((err: unknown) => {
+      this.currentUserPromise = undefined;
+      throw err;
+    });
     return this.currentUserPromise;
   }
 

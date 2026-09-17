@@ -196,14 +196,14 @@ export class GitHubReviewProvider implements ReviewProvider {
   }
 
   /** Request VE as a reviewer while preserving existing users and teams. */
-  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber), signal !== undefined ? { signal } : undefined));
     const login = await this.resolveReviewerLogin(signal);
-    if (pr.merged || pr.state === "closed" || pr.user?.login === login) return;
+    if (pr.merged || pr.state === "closed" || pr.user?.login === login) return false;
 
     const requested = await this.getRequestedReviewers(owner, repo, prNumber, signal);
-    if (requested.users.some((reviewer) => reviewer.login === login)) return;
+    if (requested.users.some((reviewer) => reviewer.login === login)) return true;
 
     await this.fetchJsonVoid(
       `${this.prUrl(owner, repo, prNumber)}/requested_reviewers`,
@@ -213,6 +213,7 @@ export class GitHubReviewProvider implements ReviewProvider {
         ...(signal !== undefined ? { signal } : {}),
       },
     );
+    return true;
   }
 
   /**
@@ -649,7 +650,8 @@ export class GitHubReviewProvider implements ReviewProvider {
 
   private async resolveReviewerLogin(signal?: AbortSignal): Promise<string> {
     if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
-    this.reviewerLoginPromise ??= this.fetchJson<{ login: string }>(
+    if (this.reviewerLoginPromise !== undefined) return this.reviewerLoginPromise;
+    const lookup = this.fetchJson<{ login: string }>(
       `${this.config.apiBaseUrl}/user`,
       signal !== undefined ? { signal } : undefined,
     ).then((user) => {
@@ -657,6 +659,10 @@ export class GitHubReviewProvider implements ReviewProvider {
         throw new Error("GitHub /user response missing expected 'login' field");
       }
       return user.login;
+    });
+    this.reviewerLoginPromise = lookup.catch((err: unknown) => {
+      this.reviewerLoginPromise = undefined;
+      throw err;
     });
     return this.reviewerLoginPromise;
   }

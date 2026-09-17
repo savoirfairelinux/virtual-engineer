@@ -81,9 +81,14 @@ const handlePullRequest: WebhookHandler = async (ctx) => {
   if (action !== undefined && reviewTriggerActions.has(action) && ctx.orchestrator.triggerReviewForChange) {
     try {
       if (action === "review_requested") {
-        await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId, {
-          triggerCause: "reviewer-assigned",
-        });
+        if (isVirtualEngineerReviewerRequest(ctx, payload)) {
+          await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId, {
+            force: true,
+            triggerCause: "reviewer-assigned",
+          });
+        } else {
+          ctx.log.info({ changeId }, "GitHub reviewer request is not addressed to VE; skipping review trigger");
+        }
       } else {
         await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId);
       }
@@ -95,6 +100,20 @@ const handlePullRequest: WebhookHandler = async (ctx) => {
   await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, changeId);
   return { status: 202, body: { queued: true, action: action ?? "feedback", changeId } };
 };
+
+function isVirtualEngineerReviewerRequest(ctx: WebhookContext, payload: Record<string, unknown>): boolean {
+  const requestedReviewer = asObject(payload["requested_reviewer"]);
+  const requestedLogin = requestedReviewer?.["login"];
+  if (typeof requestedLogin !== "string") return false;
+  try {
+    const config = JSON.parse(ctx.integration.configJson) as unknown;
+    if (typeof config !== "object" || config === null || Array.isArray(config)) return false;
+    const login = (config as Record<string, unknown>)["virtualEngineerUserLogin"];
+    return typeof login === "string" && login.length > 0 && login === requestedLogin;
+  } catch {
+    return false;
+  }
+}
 
 const handleReviewActivity: WebhookHandler = async (ctx) => {
   const payload = asObject(ctx.payload);

@@ -104,8 +104,8 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
 
   /** Fetch basic MR ref info (number, patchset placeholder, URL) for a given change ID. */
   async getChange(changeId: ExternalChangeId): Promise<ReviewChangeRef> {
-    const mrNumber = this.parseMrNumber(String(changeId));
-    const mr = GitLabMrSchema.parse(await this.http.fetchJson(this.mrUrl(mrNumber)));
+    const { project, iid } = this.parseReviewChange(changeId);
+    const mr = GitLabMrSchema.parse(await this.http.fetchJson(this.mrUrlForProject(project, iid)));
 
     return {
       changeId,
@@ -117,8 +117,8 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
 
   /** Return the current open/merged/abandoned status of the GitLab MR. */
   async getChangeStatus(changeId: ExternalChangeId): Promise<ReviewChangeStatus> {
-    const mrNumber = this.parseMrNumber(String(changeId));
-    const mr = GitLabMrSchema.parse(await this.http.fetchJson(this.mrUrl(mrNumber)));
+    const { project, iid } = this.parseReviewChange(changeId);
+    const mr = GitLabMrSchema.parse(await this.http.fetchJson(this.mrUrlForProject(project, iid)));
 
     switch (mr.state) {
       case "merged":
@@ -176,8 +176,8 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
     // GitLab doesn't have patchsets — sincePatchset is ignored
     _sincePatchset?: number
   ): Promise<ReviewComment[]> {
-    const mrNumber = this.parseMrNumber(String(changeId));
-    const url = `${this.config.baseUrl}/api/v4/projects/${this.config.projectId}/merge_requests/${mrNumber}/discussions`;
+    const { project, iid } = this.parseReviewChange(changeId);
+    const url = `${this.mrUrlForProject(project, iid)}/discussions`;
     const discussions = GitLabDiscussionsResponseSchema.parse(await this.http.fetchJson(url));
 
     const comments: ReviewComment[] = [];
@@ -209,9 +209,9 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
 
   /** Post a top-level note on the GitLab MR. */
   async addChangeComment(changeId: ExternalChangeId, message: string): Promise<void> {
-    const mrNumber = this.parseMrNumber(String(changeId));
+    const { project, iid } = this.parseReviewChange(changeId);
     await this.http.fetchJsonVoid(
-      `${this.config.baseUrl}/api/v4/projects/${this.config.projectId}/merge_requests/${mrNumber}/notes`,
+      `${this.mrUrlForProject(project, iid)}/notes`,
       {
         method: "POST",
         body: JSON.stringify({ body: message }),
@@ -224,14 +224,14 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
   async resolveComments(changeId: ExternalChangeId, comments: ReviewComment[]): Promise<void> {
     if (comments.length === 0) return;
 
-    const mrNumber = this.parseMrNumber(String(changeId));
+    const { project, iid } = this.parseReviewChange(changeId);
 
     for (const comment of comments) {
       const discussionId = comment.id;
 
       // Mark the discussion as resolved
       await this.http.fetchJsonVoid(
-        `${this.config.baseUrl}/api/v4/projects/${this.config.projectId}/merge_requests/${mrNumber}/discussions/${discussionId}/resolve`,
+        `${this.mrUrlForProject(project, iid)}/discussions/${discussionId}/resolve`,
         {
           method: "PUT",
           body: JSON.stringify({ resolved: true }),
@@ -311,11 +311,6 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  /** Build the GitLab REST API URL for a specific MR by number. */
-  private mrUrl(mrNumber: number): string {
-    return `${this.config.baseUrl}/api/v4/projects/${this.config.projectId}/merge_requests/${mrNumber}`;
-  }
-
   private mrUrlForProject(project: string | number, mrNumber: number): string {
     return `${this.mergeRequestsUrlForProject(project)}/${mrNumber}`;
   }
@@ -339,9 +334,14 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
   }
 
   private async resolveCurrentUser(): Promise<z.infer<typeof CurrentUserSchema>> {
-    this.currentUserPromise ??= this.http.fetchJson(
+    if (this.currentUserPromise !== undefined) return this.currentUserPromise;
+    const lookup = this.http.fetchJson(
       `${this.config.baseUrl}/api/v4/user`,
     ).then((body) => CurrentUserSchema.parse(body));
+    this.currentUserPromise = lookup.catch((err: unknown) => {
+      this.currentUserPromise = undefined;
+      throw err;
+    });
     return this.currentUserPromise;
   }
 

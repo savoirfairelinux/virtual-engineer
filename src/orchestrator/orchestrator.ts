@@ -338,7 +338,7 @@ export class Orchestrator {
    * the polling loop remains the source-of-truth fallback.
    */
   async triggerFeedbackForChange(integrationId: string, externalChangeId: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
-    const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
+    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
@@ -357,7 +357,7 @@ export class Orchestrator {
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
   async markChangeMerged(integrationId: string, externalChangeId: string): Promise<void> {
-    const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
+    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
@@ -382,7 +382,7 @@ export class Orchestrator {
 
   /** Webhook handler: mark the associated task as abandoned when a change is externally abandoned. */
   async markChangeAbandoned(integrationId: string, externalChangeId: string): Promise<void> {
-    const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
+    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
@@ -393,6 +393,15 @@ export class Orchestrator {
       log.info({ taskId: current.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
       await this.handleAbandoned(current, "change was abandoned externally (webhook)");
     });
+  }
+
+  /** Resolve qualified review ids first, then legacy bare ids used by coding tasks. */
+  private async findTaskForExternalChange(integrationId: string, externalChangeId: string): Promise<Task | null> {
+    const exact = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
+    if (exact !== null) return exact;
+    const separator = externalChangeId.indexOf("#");
+    if (separator <= 0 || separator === externalChangeId.length - 1) return null;
+    return this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId.slice(separator + 1));
   }
 
   /** Resume an existing task's workflow, typically after a manual retry. */
