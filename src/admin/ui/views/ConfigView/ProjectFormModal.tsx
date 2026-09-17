@@ -3,7 +3,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions,
 import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { api } from "../../api.ts";
-import type { ApiAgent, ApiIntegration } from "../../types.ts";
+import type { ApiAgent, ApiIntegration, ReviewAssignmentMode } from "../../types.ts";
 import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 import { RepositoryKeyField, RepositoryKeysField, TargetBranchField, TicketProjectKeyField } from "./ProjectFormFields.tsx";
 import {
@@ -59,6 +59,7 @@ interface ProjectFormProject {
   reviewConfig?: {
     integration: { id: string; name: string; type: string } | null;
     repos: string[];
+    assignmentMode?: ReviewAssignmentMode;
   } | null;
   pushTargets?: Array<{
     integrationId: string;
@@ -91,6 +92,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   // Review-specific
   const [reviewIntegrationId, setReviewIntegrationId] = useState("");
   const [reviewRepoKeys, setReviewRepoKeys] = useState<string[]>([]);
+  const [reviewAssignmentMode, setReviewAssignmentMode] = useState<ReviewAssignmentMode>("manual");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -160,8 +162,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     } else {
       setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
       setReviewRepoKeys(project.reviewConfig?.repos ?? []);
+      setReviewAssignmentMode(project.reviewConfig?.assignmentMode ?? "manual");
     }
   }, [project]);
+
+  useEffect(() => {
+    const integration = integrations.find((item) => item.id === reviewIntegrationId);
+    const modes = integration?.reviewAssignmentModes ?? ["manual"];
+    if (!modes.includes(reviewAssignmentMode)) setReviewAssignmentMode("manual");
+  }, [integrations, reviewAssignmentMode, reviewIntegrationId]);
 
   useEffect(() => {
     return () => saveAbortRef.current?.abort();
@@ -173,7 +182,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   const ticketingIntegrations = integrations.filter((i) => i.domainCapabilities.includes("issue_tracking"));
   const vcsIntegrations = integrations.filter((i) => i.domainCapabilities.includes("source_control"));
-  const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review"));
+  const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review") && i.enabled);
+  const selectedReviewIntegration = integrations.find((integration) => integration.id === reviewIntegrationId);
+  const reviewAssignmentModes = selectedReviewIntegration?.reviewAssignmentModes ?? ["manual"];
 
   const updatePushTarget = (idx: number, key: EditablePushTargetField, val: string) => {
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
@@ -418,7 +429,11 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillSources,
-          reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
+          reviewConfig: {
+            integrationId: reviewIntegrationId,
+            repoKeys: reviewRepoKeys,
+            assignmentMode: reviewAssignmentMode,
+          },
         };
         if (isEditMode && project) {
           await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
@@ -791,6 +806,17 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                 {reviewIntegrations.map((i) => (
                   <option key={i.id} value={i.id}>{i.name}</option>
                 ))}
+              </FieldSelect>
+            </Field>
+            <Field label="Reviewer assignment" hint="Manual waits for VE to be added as a reviewer. Automatic adds VE on each new revision.">
+              <FieldSelect
+                value={reviewAssignmentMode}
+                onChange={(event) => setReviewAssignmentMode(event.target.value as ReviewAssignmentMode)}
+              >
+                <option value="manual">Manual assignment</option>
+                {reviewAssignmentModes.includes("automatic") && (
+                  <option value="automatic">Automatic assignment</option>
+                )}
               </FieldSelect>
             </Field>
             <RepositoryKeysField

@@ -10,6 +10,8 @@ import type {
   ReviewChangeStatus,
   ReviewComment,
   ExternalChangeId,
+  ReviewAssignmentDiscovery,
+  ReviewDiscoveryConnector,
 } from "../interfaces.js";
 import { ReviewApiError, ReviewNotFoundError } from "../interfaces.js";
 import { GitLabHttpClient } from "./gitlabHttpClient.js";
@@ -25,6 +27,13 @@ const GitLabMrSchema = z.object({
   web_url: z.string(),
   title: z.string(),
   source_branch: z.string(),
+  reviewers: z.array(z.object({ id: z.number(), username: z.string() })).default([]),
+});
+const GitLabReviewAssignmentSchema = z.object({
+  iid: z.number(),
+  state: z.string(),
+  title: z.string(),
+  reviewers: z.array(z.object({ id: z.number(), username: z.string() })).default([]),
 });
 
 const GitLabNoteSchema = z.object({
@@ -83,8 +92,11 @@ export interface GitLabMergeRequestConnectorConfig {
  * changeId convention: the GitLab MR IID (within-project integer) stored as
  * a string, e.g. "42".
  */
-export class GitLabMergeRequestConnector implements ReviewConnector {
+const CurrentUserSchema = z.object({ id: z.number(), username: z.string() });
+
+export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDiscoveryConnector {
   private readonly http: GitLabHttpClient;
+  private currentUserPromise: Promise<z.infer<typeof CurrentUserSchema>> | undefined;
 
   constructor(private readonly config: GitLabMergeRequestConnectorConfig) {
     this.http = new GitLabHttpClient(config.token, createGitLabMrError);
@@ -117,6 +129,45 @@ export class GitLabMergeRequestConnector implements ReviewConnector {
       default:
         return "OPEN";
     }
+  }
+
+  /** Discover open MRs assigned to VE across the repositories selected by a review project. */
+  async getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]> {
+    const currentUser = await this.resolveCurrentUser();
+    const assignments: ReviewAssignmentDiscovery[] = [];
+
+    for (const repoKey of repos) {
+      let page = 1;
+      for (let guard = 0; guard < 50; guard++) {
+        const url = new URL(this.mergeRequestsUrlForProject(repoKey));
+        url.searchParams.set("state", "opened");
+        url.searchParams.set("reviewer_id", String(currentUser.id));
+        url.searchParams.set("per_page", "100");
+        url.searchParams.set("page", String(page));
+        const { body, nextPage } = await this.http.fetchPaginated(url.toString());
+        const mergeRequests = z.array(GitLabReviewAssignmentSchema).parse(body);
+        for (const mergeRequest of mergeRequests) {
+          assignments.push({
+            changeId: `${repoKey}#${mergeRequest.iid}`,
+            project: repoKey,
+            subject: mergeRequest.title,
+          });
+        }
+        if (nextPage === null) break;
+        page = nextPage;
+      }
+    }
+
+    return assignments;
+  }
+
+  /** Return true while VE remains assigned to one repository-qualified MR. */
+  async hasReviewAssignment(changeId: ExternalChangeId): Promise<boolean> {
+    const { project, iid } = this.parseReviewChange(changeId);
+    const currentUser = await this.resolveCurrentUser();
+    const mergeRequest = GitLabMrSchema.parse(await this.http.fetchJson(this.mrUrlForProject(project, iid)));
+    if (mergeRequest.state !== "opened") return false;
+    return mergeRequest.reviewers.some((reviewer) => reviewer.id === currentUser.id);
   }
 
   /** Fetch all unresolved discussion threads on the GitLab MR. */
@@ -263,6 +314,35 @@ export class GitLabMergeRequestConnector implements ReviewConnector {
   /** Build the GitLab REST API URL for a specific MR by number. */
   private mrUrl(mrNumber: number): string {
     return `${this.config.baseUrl}/api/v4/projects/${this.config.projectId}/merge_requests/${mrNumber}`;
+  }
+
+  private mrUrlForProject(project: string | number, mrNumber: number): string {
+    return `${this.mergeRequestsUrlForProject(project)}/${mrNumber}`;
+  }
+
+  private mergeRequestsUrlForProject(project: string | number): string {
+    return `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(project))}/merge_requests`;
+  }
+
+  private parseReviewChange(changeId: ExternalChangeId): { project: string | number; iid: number } {
+    const raw = String(changeId);
+    const separator = raw.indexOf("#");
+    if (separator > 0) {
+      const project = raw.slice(0, separator);
+      const iid = Number(raw.slice(separator + 1));
+      if (!project || !Number.isSafeInteger(iid) || iid <= 0) {
+        throw new Error(`Invalid GitLab review changeId: "${raw}"`);
+      }
+      return { project, iid };
+    }
+    return { project: this.config.projectId, iid: this.parseMrNumber(raw) };
+  }
+
+  private async resolveCurrentUser(): Promise<z.infer<typeof CurrentUserSchema>> {
+    this.currentUserPromise ??= this.http.fetchJson(
+      `${this.config.baseUrl}/api/v4/user`,
+    ).then((body) => CurrentUserSchema.parse(body));
+    return this.currentUserPromise;
   }
 
   /** Parse and validate a GitLab MR IID string into a positive integer. */

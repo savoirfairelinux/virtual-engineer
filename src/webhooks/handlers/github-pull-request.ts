@@ -77,10 +77,16 @@ const handlePullRequest: WebhookHandler = async (ctx) => {
     return { status: 202, body: { queued: true, action: "abandoned", changeId } };
   }
 
-  const reviewTriggerActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
+  const reviewTriggerActions = new Set(["opened", "reopened", "synchronize", "ready_for_review", "review_requested"]);
   if (action !== undefined && reviewTriggerActions.has(action) && ctx.orchestrator.triggerReviewForChange) {
     try {
-      await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId);
+      if (action === "review_requested") {
+        await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId, {
+          triggerCause: "reviewer-assigned",
+        });
+      } else {
+        await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId);
+      }
     } catch (err) {
       ctx.log.warn({ err, changeId, action }, "review trigger failed; continuing with feedback check");
     }

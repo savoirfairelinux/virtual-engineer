@@ -178,11 +178,22 @@ export interface ProjectVendorComponentInput {
   origin: VendorComponentOrigin;
 }
 
-/** Review-project configuration: integration + covered repos. */
+export type ReviewAssignmentMode = "manual" | "automatic";
+export type ReviewTriggerCause = "revision" | "reviewer-assigned" | "backfill" | "manual";
+
+export const DEFAULT_REVIEW_ASSIGNMENT_MODE: ReviewAssignmentMode = "manual";
+
+export function isReviewAssignmentMode(value: unknown): value is ReviewAssignmentMode {
+  return value === "manual" || value === "automatic";
+}
+
+/** Review-project configuration: integration, covered repos, and assignment policy. */
 export interface ProjectReviewConfig {
   integrationId: string;
   /** Inclusion list — all repos selected at project-creation time. */
   repos: string[];
+  /** Missing legacy values are normalized to `manual` by the state store. */
+  assignmentMode?: ReviewAssignmentMode | undefined;
 }
 
 // ─── Admin RBAC / audit types ─────────────────────────────────────────────────
@@ -1007,7 +1018,10 @@ export interface ReviewProvider {
    * Returns true if VE is an active reviewer on an OPEN change (self-review guard included).
    * Optional — omitting falls back to unconditional review creation.
    */
-  isReviewer?(changeId: ExternalChangeId): Promise<boolean>;
+  isReviewer?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean>;
+
+  /** Ensure VE is present as a reviewer without removing existing reviewers. */
+  ensureReviewerAssignment?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void>;
 
   /**
    * Returns true when the VE reviewer account has already posted a review

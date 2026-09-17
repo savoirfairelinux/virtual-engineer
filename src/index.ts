@@ -439,13 +439,17 @@ async function main(): Promise<void> {
       webhooks: {
         projectStore: stateStore,
         orchestrator: Object.assign(orchestrator, {
-          triggerReviewForChange: async (integrationId: string, changeId: string) => {
+          triggerReviewForChange: async (
+            integrationId: string,
+            changeId: string,
+            options?: { force?: boolean; triggerCause?: import("./interfaces.js").ReviewTriggerCause },
+          ) => {
             const trigger = reviewTriggerHolder.current;
             if (!trigger) {
               log.debug({ integrationId, changeId }, "webhook review trigger: no review-capable integration configured");
               return;
             }
-            await trigger.triggerReviewForChange(integrationId, changeId);
+            await trigger.triggerReviewForChange(integrationId, changeId, options);
           },
         }),
       },

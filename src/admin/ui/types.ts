@@ -9,6 +9,7 @@ export type TaskState =
 
 export type TaskType = "code-gen" | "code-review";
 export type TaskWorkflowBucket = "active" | "watching" | "done" | "failed";
+export type ReviewAssignmentMode = "manual" | "automatic";
 
 export interface ApiTask {
   taskId: string;
@@ -133,6 +134,7 @@ export interface ApiIntegration {
   active?: boolean;
   capabilities: string[];
   domainCapabilities: DomainCapability[];
+  reviewAssignmentModes?: ReviewAssignmentMode[];
   icon?: ProviderIcon | null;
   config?: Record<string, string>;
   discoverySupported?: boolean;
@@ -204,6 +206,7 @@ export interface ApiPlugin {
   name: string;
   capabilities: string[];
   domainCapabilities: DomainCapability[];
+  reviewAssignmentModes?: ReviewAssignmentMode[];
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
   agentConfigFields: PluginField[];

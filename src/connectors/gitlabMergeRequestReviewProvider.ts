@@ -51,6 +51,7 @@ const MrSchema = z.object({
   project_id: z.number(),
   sha: z.string().nullable().optional(),
   author: z.object({ id: z.number(), username: z.string() }).nullable().optional(),
+  reviewers: z.array(z.object({ id: z.number(), username: z.string() })).default([]),
   references: z.object({ full: z.string().optional() }).partial().optional(),
   diff_refs: DiffRefsSchema,
 });
@@ -123,7 +124,8 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   public readonly kind = "gitlab";
 
   private readonly http: GitLabHttpClient;
-  private currentUsername: string | null = null;
+  private currentUser: z.infer<typeof CurrentUserSchema> | null = null;
+  private currentUserPromise: Promise<z.infer<typeof CurrentUserSchema> | null> | undefined;
 
   constructor(private readonly config: GitLabMrReviewProviderConfig) {
     this.http = new GitLabHttpClient(config.token, createGitLabReviewError);
@@ -187,6 +189,39 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       targetBranch: mr.target_branch,
       url: mr.web_url,
     };
+  }
+
+  async isReviewer(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
+    const { project, iid } = this.parseChange(changeId);
+    const mr = MrSchema.parse(await this.http.fetchJson(
+      this.mrUrl(project, iid),
+      signal !== undefined ? { signal } : undefined,
+    ));
+    const currentUser = await this.resolveCurrentUser(signal);
+    if (currentUser === null || mr.state !== "opened" || mr.author?.id === currentUser.id) return false;
+    return mr.reviewers.some((reviewer) => reviewer.id === currentUser.id || reviewer.username === currentUser.username);
+  }
+
+  /** Add VE to the MR reviewer set without removing existing reviewers. */
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+    const { project, iid } = this.parseChange(changeId);
+    const mr = MrSchema.parse(await this.http.fetchJson(
+      this.mrUrl(project, iid),
+      signal !== undefined ? { signal } : undefined,
+    ));
+    const currentUser = await this.resolveCurrentUser(signal);
+    if (currentUser === null || mr.state !== "opened" || mr.author?.id === currentUser.id) return;
+
+    const reviewerIds = [...new Set([
+      ...mr.reviewers.map((reviewer) => reviewer.id),
+      currentUser.id,
+    ])];
+    if (mr.reviewers.some((reviewer) => reviewer.id === currentUser.id)) return;
+    await this.http.fetchJsonVoid(this.mrUrl(project, iid), {
+      method: "PUT",
+      body: JSON.stringify({ reviewer_ids: reviewerIds }),
+      ...(signal !== undefined ? { signal } : {}),
+    });
   }
 
   /**
@@ -494,23 +529,31 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     log.info({ project, iid, threadId }, "posted GitLab MR discussion reply");
   }
 
-  /** Resolve and cache VE's own GitLab username (used to tag `isOwn` comments). */
+  /** Resolve and cache VE's own GitLab identity. */
+  private async resolveCurrentUser(signal?: AbortSignal): Promise<z.infer<typeof CurrentUserSchema> | null> {
+    if (this.currentUser !== null) return this.currentUser;
+    this.currentUserPromise ??= (async (): Promise<z.infer<typeof CurrentUserSchema> | null> => {
+      try {
+        const me = CurrentUserSchema.parse(
+          await this.http.fetchJson(
+            `${this.config.baseUrl}/api/v4/user`,
+            signal !== undefined ? { signal } : undefined,
+          )
+        );
+        this.currentUser = me;
+        return me;
+      } catch (err) {
+        if (signal?.aborted === true) throw signal.reason ?? err;
+        log.warn({ err }, "failed to resolve GitLab current user; identity checks disabled");
+        return null;
+      }
+    })();
+    return this.currentUserPromise;
+  }
+
+  /** Resolve VE's own GitLab username (used to tag `isOwn` comments). */
   private async resolveCurrentUsername(signal?: AbortSignal): Promise<string | null> {
-    if (this.currentUsername !== null) return this.currentUsername;
-    try {
-      const me = CurrentUserSchema.parse(
-        await this.http.fetchJson(
-          `${this.config.baseUrl}/api/v4/user`,
-          signal !== undefined ? { signal } : undefined,
-        )
-      );
-      this.currentUsername = me.username;
-      return this.currentUsername;
-    } catch (err) {
-      if (signal?.aborted === true) throw signal.reason ?? err;
-      log.warn({ err }, "failed to resolve GitLab current user; isOwn tagging disabled");
-      return null;
-    }
+    return (await this.resolveCurrentUser(signal))?.username ?? null;
   }
 
   /** Resolve the project path-with-namespace for clone URL construction. */

@@ -5,6 +5,7 @@ import type { Integration, IntegrationReferenceDetails, IntegrationStore, OAuthA
 import { getCredentialFieldKeys, type PluginManager } from "../plugins/pluginManager.js";
 import {
   getAllProviderDescriptors,
+  getCodeReviewAssignmentModes,
   getPluginCapabilities,
   getProviderDescriptor,
   getProviderDomainCapabilities,
@@ -66,6 +67,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         icon: d.icon ?? null,
         capabilities: getPluginCapabilities(d),
         domainCapabilities: getProviderDomainCapabilities(d),
+        reviewAssignmentModes: getCodeReviewAssignmentModes(d),
         requiredFields: d.requiredFields,
         agentConfigFields: d.capabilities.agent_execution?.configFields ?? [],
         reviewStrategies: d.capabilities.agent_execution?.reviewStrategies ?? [],
@@ -834,6 +836,7 @@ function serializeIntegration(
     icon: descriptor?.icon ?? null,
     capabilities: descriptor ? getPluginCapabilities(descriptor) : [],
     domainCapabilities: descriptor ? getProviderDomainCapabilities(descriptor) : [],
+    reviewAssignmentModes: descriptor ? getCodeReviewAssignmentModes(descriptor) : [],
     name: integration.name,
     enabled: integration.enabled,
     active,

@@ -14,6 +14,7 @@ import {
   type ProjectPushTargetRecord,
   type ProjectRecord,
   type ProjectReviewConfig,
+  type ReviewAssignmentMode,
   type ProjectTicketSourceRecord,
   type ProjectVendorComponentInput,
   type ProjectVendorComponentRecord,
@@ -22,7 +23,11 @@ import {
   type Task,
 } from "../interfaces.js";
 import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
-import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import {
+  getCodeReviewAssignmentModes,
+  getProviderDescriptor,
+  getProviderDomainCapabilities,
+} from "../plugins/registry.js";
 import { ReviewStrategyConfigError, resolveReviewStrategy } from "../agents/reviewStrategy.js";
 
 const log = getLogger("admin-projects");
@@ -102,7 +107,11 @@ export interface ProjectsRouteStore {
         sshKeyPath?: string | null | undefined;
         reviewerEmails?: string[] | undefined;
       }> | undefined;
-      reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
+      reviewConfig?: {
+        integrationId: string;
+        repoKeys: string[];
+        assignmentMode?: ReviewAssignmentMode | undefined;
+      } | undefined;
     }
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
@@ -135,7 +144,8 @@ export interface ProjectsRouteStore {
   setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
-    repoKeys: string[]
+    repoKeys: string[],
+    assignmentMode?: ReviewAssignmentMode,
   ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
@@ -222,6 +232,7 @@ export const ticketSourceSchema = z.object({
 export const reviewConfigSchema = z.object({
   integrationId: z.string().min(1, "Review integration is required"),
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
+  assignmentMode: z.enum(["manual", "automatic"]).default("manual"),
 });
 
 export function optionalNonEmptyString(message: string): z.ZodOptional<z.ZodString> {
@@ -463,6 +474,41 @@ export async function loadIntegrationsLookup(store: IntegrationStore | undefined
   return { byId };
 }
 
+/** Validate the provider capability contract selected by a review project. */
+export async function validateProjectReviewConfig(
+  config: { integrationId: string; assignmentMode: ReviewAssignmentMode },
+  integrationStore: IntegrationStore | undefined,
+): Promise<string | null> {
+  if (!integrationStore) return "Integration store not available";
+
+  const integration = await integrationStore.getIntegration(config.integrationId).catch(() => null);
+  if (!integration) return `Review integration '${config.integrationId}' not found`;
+  if (!integration.enabled) return `Review integration '${config.integrationId}' is disabled`;
+
+  const descriptor = getProviderDescriptor(integration.provider);
+  if (descriptor === undefined) {
+    return `Integration '${config.integrationId}' does not support code review execution`;
+  }
+  const capability = descriptor.capabilities.code_review;
+  if (!capability?.createReviewer) {
+    return `Integration '${config.integrationId}' does not support code review execution`;
+  }
+
+  const modes = getCodeReviewAssignmentModes(descriptor);
+  if (!modes.includes(config.assignmentMode)) {
+    return `Review integration '${config.integrationId}' does not support assignment mode '${config.assignmentMode}'`;
+  }
+
+  if (
+    config.assignmentMode === "automatic" &&
+    !capability.intake?.some((mechanism) => mechanism === "webhook" || mechanism === "stream")
+  ) {
+    return `Review integration '${config.integrationId}' does not expose a push/revision intake required for automatic assignment`;
+  }
+
+  return null;
+}
+
 /** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
 const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
 const REVIEWER_EMAIL_VCS_TYPES = new Set(["gerrit", "gitlab"]);
@@ -528,7 +574,11 @@ export interface ProjectSummary {
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
-  reviewConfig: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; repos: string[] } | null;
+  reviewConfig: {
+    integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
+    repos: string[];
+    assignmentMode: ReviewAssignmentMode;
+  } | null;
   pushTargetCount: number;
 }
 
@@ -581,6 +631,7 @@ export async function buildProjectSummary(
       reviewConfig = {
         integration: describeIntegration(integrations.byId.get(rc.integrationId)),
         repos: rc.repos,
+        assignmentMode: rc.assignmentMode ?? "manual",
       };
     }
   }
@@ -640,6 +691,7 @@ export async function buildProjectDetail(
       reviewConfig = {
         integration: describeIntegration(integrations.byId.get(rc.integrationId)),
         repos: rc.repos,
+        assignmentMode: rc.assignmentMode ?? "manual",
       };
     }
   }

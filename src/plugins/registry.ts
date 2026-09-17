@@ -6,7 +6,21 @@
  * `registerBuiltinPlugins()` and queried by the admin UI and `PluginManager`.
  */
 import { z } from "zod";
-import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner, AgentAdapter } from "../interfaces.js";
+import type {
+  AgentAdapter,
+  DiscoveredResources,
+  DomainCapability,
+  Integration,
+  IntegrationBindingContext,
+  OAuthAppStore,
+  PluginInstance,
+  ProviderId,
+  ReviewAssignmentMode,
+  ReviewChangeDetails,
+  ReviewProvider,
+  WorkspaceHandle,
+  WorkspaceRunner,
+} from "../interfaces.js";
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -131,6 +145,8 @@ export interface IssueTrackingCapability {
 
 /** `code_review` capability: read diffs, post review comments, watch changes. */
 export interface CodeReviewCapability {
+  /** Review assignment policies supported by the provider. */
+  assignmentModes?: readonly ReviewAssignmentMode[] | undefined;
   /** Factory for the runtime review connector (a `ReviewConnector`). */
   createConnector?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
   /** Optional live event-stream factory (e.g. Gerrit `stream-events`). */
@@ -373,6 +389,14 @@ export function getCapabilityIntake(
     return [...(descriptor.capabilities.code_review?.intake ?? [])];
   }
   return [];
+}
+
+/** Return the explicit review assignment policies for a provider descriptor. */
+export function getCodeReviewAssignmentModes(descriptor: ProviderDescriptor): ReviewAssignmentMode[] {
+  const capability = descriptor.capabilities.code_review;
+  if (capability === undefined) return [];
+  // Providers that predate assignmentModes remain manual-only for compatibility.
+  return [...(capability.assignmentModes ?? ["manual"])] as ReviewAssignmentMode[];
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */

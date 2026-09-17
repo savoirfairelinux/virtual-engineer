@@ -18,6 +18,7 @@ import {
   validatePushTargetReviewerEmails,
   validateSkillSourcesForSave,
   validateProjectAgent,
+  validateProjectReviewConfig,
   skillSourcesForCreate,
   normalizeSkillSources,
   toVendorComponentInputs,
@@ -77,6 +78,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const agentError = await validateProjectAgent(agent, data.type, integrationStore, data.agentId);
     if (agentError) { writeJson(res, 400, { error: agentError }); return; }
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
+    if (data.type === "review") {
+      const reviewConfigError = await validateProjectReviewConfig(data.reviewConfig, integrationStore);
+      if (reviewConfigError) { writeJson(res, 400, { error: reviewConfigError }); return; }
+    }
     if (data.agentOverrideJson !== undefined) {
       const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, agent);
       if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
@@ -138,7 +143,12 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           await store.replaceProjectVendorComponents(project.id, toVendorComponentInputs(data.vendorComponents));
         }
       } else {
-        await store.setProjectReviewConfig(project.id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
+        await store.setProjectReviewConfig(
+          project.id,
+          data.reviewConfig.integrationId,
+          data.reviewConfig.repoKeys,
+          data.reviewConfig.assignmentMode,
+        );
       }
     } catch (err: unknown) {
       try { await store.deleteProject(project.id); } catch { /* ignore */ }
@@ -159,7 +169,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: project.agentId,
         ...(data.type === "coding"
           ? { ticketProjectKey: data.ticketSource.ticketProjectKey, repoKeys: data.pushTargets.map((t) => t.repoKey) }
-          : { repoKeys: data.reviewConfig.repoKeys }),
+          : {
+              repoKeys: data.reviewConfig.repoKeys,
+              assignmentMode: data.reviewConfig.assignmentMode,
+            }),
       },
     });
     log.info(
@@ -256,6 +269,11 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.reviewConfig !== undefined && existing.type !== "review") {
       writeJson(res, 400, { error: "reviewConfig only valid for review projects" }); return;
     }
+    if (data.reviewConfig !== undefined) {
+      if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
+      const reviewConfigError = await validateProjectReviewConfig(data.reviewConfig, deps.integrationStore);
+      if (reviewConfigError) { writeJson(res, 400, { error: reviewConfigError }); return; }
+    }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
     if (data.name !== undefined) updates.name = data.name;
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
@@ -302,7 +320,17 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(refreshed, store, integrations);
-    recordAudit(deps.auditStore, req, { action: "project.update", targetType: "project", targetId: id, details: { name: refreshed.name } });
+    recordAudit(deps.auditStore, req, {
+      action: "project.update",
+      targetType: "project",
+      targetId: id,
+      details: {
+        name: refreshed.name,
+        ...(data.reviewConfig !== undefined
+          ? { reviewAssignmentMode: data.reviewConfig.assignmentMode }
+          : {}),
+      },
+    });
     if (data.ticketSource !== undefined) {
       recordAudit(deps.auditStore, req, { action: "project.ticket_source_set", targetType: "project", targetId: id, details: { integrationId: data.ticketSource.integrationId, ticketProjectKey: data.ticketSource.ticketProjectKey } });
     }

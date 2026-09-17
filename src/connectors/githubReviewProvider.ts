@@ -52,6 +52,10 @@ const GitHubReviewListSchema = z.array(
     commit_id: z.string().nullable().optional(),
   })
 );
+const GitHubRequestedReviewersSchema = z.object({
+  users: z.array(z.object({ login: z.string() })).default([]),
+  teams: z.array(z.object({ slug: z.string() })).default([]),
+});
 const SUBMITTED_REVIEW_STATES = new Set([
   "APPROVED",
   "CHANGES_REQUESTED",
@@ -96,12 +100,15 @@ export interface GitHubReviewProviderConfig {
   /** Optional default repo, used when changeId has no `repo#` prefix (legacy single-repo integration). */
   repo?: string;
   token: string;
+  /** Optional login used for reviewer assignment; otherwise resolved from `/user`. */
+  virtualEngineerUserLogin?: string | undefined;
 }
 
 export class GitHubReviewProvider implements ReviewProvider {
   public readonly kind = "github";
 
   private currentLogin: string | null = null;
+  private reviewerLoginPromise: Promise<string> | undefined;
 
   constructor(private readonly config: GitHubReviewProviderConfig) {}
 
@@ -177,6 +184,35 @@ export class GitHubReviewProvider implements ReviewProvider {
       targetBranch: pr.base.ref,
       url: pr.html_url,
     };
+  }
+
+  async isReviewer(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
+    const { owner, repo, prNumber } = this.parseChangeId(changeId);
+    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber), signal !== undefined ? { signal } : undefined));
+    const login = await this.resolveReviewerLogin(signal);
+    if (pr.merged || pr.state === "closed" || pr.user?.login === login) return false;
+    const requested = await this.getRequestedReviewers(owner, repo, prNumber, signal);
+    return requested.users.some((reviewer) => reviewer.login === login);
+  }
+
+  /** Request VE as a reviewer while preserving existing users and teams. */
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+    const { owner, repo, prNumber } = this.parseChangeId(changeId);
+    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber), signal !== undefined ? { signal } : undefined));
+    const login = await this.resolveReviewerLogin(signal);
+    if (pr.merged || pr.state === "closed" || pr.user?.login === login) return;
+
+    const requested = await this.getRequestedReviewers(owner, repo, prNumber, signal);
+    if (requested.users.some((reviewer) => reviewer.login === login)) return;
+
+    await this.fetchJsonVoid(
+      `${this.prUrl(owner, repo, prNumber)}/requested_reviewers`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reviewers: [login], team_reviewers: [] }),
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
   }
 
   /**
@@ -473,6 +509,24 @@ export class GitHubReviewProvider implements ReviewProvider {
     return response.json() as Promise<T>;
   }
 
+  private async fetchJsonVoid(url: string, init?: RequestInit): Promise<void> {
+    const response = await globalThis.fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${this.config.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`GitHub API ${response.status} ${sanitizeErrorDetail(url, 1000)}: ${sanitizeErrorDetail(body)}`);
+    }
+    await response.text();
+  }
+
   async getDiscussionThreads(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const me = await this.resolveCurrentLogin(signal);
@@ -591,6 +645,32 @@ export class GitHubReviewProvider implements ReviewProvider {
       log.warn({ err }, "failed to resolve GitHub viewer login; isOwn tagging disabled");
       return null;
     }
+  }
+
+  private async resolveReviewerLogin(signal?: AbortSignal): Promise<string> {
+    if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
+    this.reviewerLoginPromise ??= this.fetchJson<{ login: string }>(
+      `${this.config.apiBaseUrl}/user`,
+      signal !== undefined ? { signal } : undefined,
+    ).then((user) => {
+      if (typeof user.login !== "string" || user.login.length === 0) {
+        throw new Error("GitHub /user response missing expected 'login' field");
+      }
+      return user.login;
+    });
+    return this.reviewerLoginPromise;
+  }
+
+  private async getRequestedReviewers(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof GitHubRequestedReviewersSchema>> {
+    return GitHubRequestedReviewersSchema.parse(await this.fetchJson(
+      `${this.prUrl(owner, repo, prNumber)}/requested_reviewers`,
+      signal !== undefined ? { signal } : undefined,
+    ));
   }
 
   /** Derive the GraphQL endpoint from the REST API base URL. */

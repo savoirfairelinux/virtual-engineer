@@ -8,11 +8,13 @@ import {
   type ExternalChangeId,
   type InlineReviewComment,
   type ProjectPushTargetRecord,
+  type ProjectReviewConfig,
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiscussionThread,
   type ReviewProvider,
+  type ReviewTriggerCause,
   type StateStore,
   type Task,
   type TaskId,
@@ -81,7 +83,9 @@ export interface ReviewOrchestratorDeps {
     | "markReviewCommentsPosted"
     | "getHandledThreadReplyHashes"
     | "markThreadReplyPosted"
-  >;
+  > & {
+    getProjectReviewConfig(projectId: ProjectRecord["id"]): Promise<ProjectReviewConfig | null>;
+  };
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
   integrationId: string;
@@ -145,6 +149,8 @@ export interface StartReviewInput {
    * already-reviewed patchset.
    */
   force?: boolean;
+  /** Identifies whether the trigger came from a revision or a reviewer assignment. */
+  triggerCause?: ReviewTriggerCause | undefined;
 }
 
 /**
@@ -217,8 +223,71 @@ export class ReviewOrchestrator {
 
     const sourceLabel = this.deps.sourceLabel ?? this.deps.reviewProvider.kind;
     const tasks: Task[] = [];
+    const projectReviewConfigStore = this.deps.stateStore;
+    const triggerCause = input.triggerCause ?? (input.force === true ? "reviewer-assigned" : "revision");
 
     for (const project of projects) {
+      const reviewConfig = await projectReviewConfigStore.getProjectReviewConfig(project.id);
+      if (reviewConfig === null) {
+        log.warn({ projectId: project.id, changeId: input.changeId }, "skipping review project without review configuration");
+        continue;
+      }
+
+      const assignmentMode = reviewConfig.assignmentMode ?? "manual";
+      if (assignmentMode === "automatic" && triggerCause === "backfill") {
+        log.debug(
+          { projectId: project.id, changeId: input.changeId },
+          "skipping automatic review project during assignment backfill",
+        );
+        continue;
+      }
+
+      if (assignmentMode === "automatic") {
+        if (typeof this.deps.reviewProvider.ensureReviewerAssignment !== "function") {
+          log.warn(
+            { projectId: project.id, changeId: input.changeId },
+            "skipping automatic review project because the provider cannot assign reviewers",
+          );
+          continue;
+        }
+        // A successful provider-native ensure operation is the assignment
+        // contract. A second read is both redundant and racy on APIs with
+        // eventual consistency (notably GitHub requested_reviewers).
+        try {
+          await this.deps.reviewProvider.ensureReviewerAssignment(input.changeId);
+        } catch (err) {
+          log.warn(
+            { projectId: project.id, changeId: input.changeId, triggerCause, err },
+            "automatic reviewer assignment failed — skipping review",
+          );
+          continue;
+        }
+      } else if (triggerCause !== "reviewer-assigned") {
+        if (typeof this.deps.reviewProvider.isReviewer !== "function") {
+          log.warn(
+            { projectId: project.id, changeId: input.changeId, assignmentMode },
+            "skipping manual review project because the provider cannot verify reviewer assignment",
+          );
+          continue;
+        }
+        let assigned = false;
+        try {
+          assigned = await this.deps.reviewProvider.isReviewer(input.changeId);
+        } catch (err) {
+          log.warn(
+            { projectId: project.id, changeId: input.changeId, err },
+            "reviewer assignment check failed — skipping review",
+          );
+        }
+        if (!assigned) {
+          log.debug(
+            { projectId: project.id, changeId: input.changeId, assignmentMode },
+            "manual review project is not assigned to VE — skipping",
+          );
+          continue;
+        }
+      }
+
       const projectLease = await this.deps.lifecycleCoordinator?.acquireProjectStart(project.id);
       if (projectLease === null) continue;
       try {

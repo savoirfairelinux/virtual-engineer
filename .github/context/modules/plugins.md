@@ -37,7 +37,7 @@ A descriptor (`ProviderDescriptor`) provides:
 - `provider` (the `ProviderId`) and `name`
 - a `capabilities` map keyed by **domain capability** (`DOMAIN_CAPABILITIES` = `issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
-  - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, intake? }`; prompt selection belongs to the configured agent, not the review integration descriptor
+  - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, intake?, assignmentModes? }`; `assignmentModes` explicitly advertises `manual` and/or additive `automatic` reviewer assignment; prompt selection belongs to the configured agent, not the review integration descriptor
   - `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?)`; `runtime.gitRunner` is the shared host-side async Git executor owned by `VcsConnectorFactory`
   - `capabilities.agent_execution.{ buildAdapter(context), configFields? }` (optional). Agent adapters are **descriptor-driven** and receive an `AgentAdapterContext`. `configFields` defines provider-owned controls persisted under `modelConfig.providerOptions`; the generic admin form renders text, number, boolean-select, and ordinary select values without provider branches. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, Goose, Codex, Gemini CLI, OpenCode, and Cursor expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
@@ -48,7 +48,7 @@ A descriptor (`ProviderDescriptor`) provides:
 - optional `testConnection(config)` lightweight connectivity check
 - `getSummaryDetails(config)` for the admin provider summary panel
 
-Technical (non-domain) capabilities are **derived**, not declared: `getProviderTechnicalCapabilities(descriptor)` returns `oauth` (when `descriptor.oauth`), `discovery` (when `discoverResources`), `stream-events` (when `capabilities.code_review.streamEvents`), and `reviewer` (when `capabilities.code_review.createReviewer`). `getProviderDomainCapabilities(descriptor)` returns the keys of `capabilities`. `getPluginCapabilities(descriptor)` combines both for the admin UI.
+Technical (non-domain) capabilities are **derived**, not declared: `getProviderTechnicalCapabilities(descriptor)` returns `oauth` (when `descriptor.oauth`), `discovery` (when `discoverResources`), `stream-events` (when `capabilities.code_review.streamEvents`), and `reviewer` (when `capabilities.code_review.createReviewer`). `getProviderDomainCapabilities(descriptor)` returns the keys of `capabilities`. `getPluginCapabilities(descriptor)` combines both for the admin UI. Admin integration metadata also exposes `reviewAssignmentModes`; legacy project bindings without `assignmentMode` resolve to `manual`. Automatic mode requires additive assignment support plus webhook or stream intake.
 
 The `context` argument on capability factories carries VE project-owned binding data such as `ticketProjectKey` or `repoKey` when runtime code needs a project-scoped connector instead of the integration-global active instance. The separate optional `runtime` argument on source-control factories carries host execution dependencies such as the shared `GitRunner`; it does not contain provider configuration.
 
@@ -95,9 +95,9 @@ Per-provider intake:
 | Provider | issue_tracking | code_review |
 |---|---|---|
 | redmine | polling + webhook | — |
-| gitlab | polling + webhook | polling + webhook (+ reviewer) |
-| github | polling + webhook | polling + webhook (+ reviewer) |
-| gerrit | — | stream |
+| gitlab | polling + webhook | polling + webhook (+ reviewer, additive assignment) |
+| github | polling + webhook | polling + webhook (+ reviewer, additive assignment) |
+| gerrit | — | stream (+ reviewer, additive assignment) |
 | copilot / claude / aider / goose / codex / gemini / opencode / cursor | — (agent_execution only) | — |
 
 All provider configuration lives in `integrations` database rows managed via the admin UI. Copilot integrations currently persist an OAuth session token on the integration row; per-agent model choice still lives on the `agents` table. The unified GitLab descriptor exposes a shared `authMode = oauth | pat` surface: PAT keeps using the visible `token` password field, while OAuth writes the same hidden `token` field only after the device flow completes. GitLab OAuth uses Device Authorization Grant (RFC 8628): the dashboard renders the user code and verification URI returned by `POST /api/admin/plugins/:type/oauth/device-code`, polls `POST /api/admin/plugins/:type/oauth/token` until the user authorises the app, and writes the resulting access token to the `token` field. Two GitLab modes are supported: **gitlab.com** uses the pre-configured VE OAuth app client ID (`GITLAB_COM_VE_CLIENT_ID` constant in `gitlabOAuth.ts`; empty string disables this mode until populated); **self-hosted** requires both `baseUrl` and `oauthClientId` to be supplied in the form. User-facing GitLab integration forms therefore no longer expose OAuth app credentials, GitLab project IDs, or GitLab workflow label fields; those bindings now come from the VE project configuration (`ticketProjectKey`, push-target `repoKey`, code_review `repos`). Legacy GitLab rows created before `authMode` existed are surfaced back to the dashboard as `pat` so edit forms remain backward-compatible. Descriptor-driven OAuth flows are mounted under `/api/admin/plugins/:type/oauth/*`, with `device-code`/`token` reserved for device flows and `start`/`complete` reserved for redirect flows, so the dashboard and admin server no longer special-case Copilot routes.

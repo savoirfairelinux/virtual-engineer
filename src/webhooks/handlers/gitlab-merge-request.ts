@@ -41,6 +41,7 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
 
   const action = mr.action ?? eventToAction(ctx.event);
   const changeId = String(mr.iid);
+  const reviewChangeId = qualifyReviewChangeId(ctx.payload, changeId);
 
   if (action === "merge" || action === "merged") {
     await ctx.orchestrator.markChangeMerged(ctx.integrationId, changeId);
@@ -56,7 +57,7 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
   const reviewTriggerActions = new Set(["open", "opened", "reopen", "reopened", "update", "updated"]);
   if (reviewTriggerActions.has(action ?? "") && ctx.orchestrator.triggerReviewForChange) {
     try {
-      await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId);
+      await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, reviewChangeId);
     } catch (err) {
       ctx.log.warn({ err, changeId, action }, "review trigger failed; continuing with feedback check");
     }
@@ -107,4 +108,16 @@ function extractMr(payload: unknown): GitlabMrPayload | null {
 function eventToAction(event: string): string | undefined {
   const suffix = event.split(".")[1];
   return suffix;
+}
+
+/** Qualify reviewer triggers so an MR IID cannot select the wrong project. */
+function qualifyReviewChangeId(payload: unknown, iid: string): string {
+  if (typeof payload !== "object" || payload === null) return iid;
+  const root = payload as Record<string, unknown>;
+  const project = root["project"];
+  if (typeof project === "object" && project !== null) {
+    const path = (project as Record<string, unknown>)["path_with_namespace"];
+    if (typeof path === "string" && path.length > 0) return `${path}#${iid}`;
+  }
+  return iid;
 }

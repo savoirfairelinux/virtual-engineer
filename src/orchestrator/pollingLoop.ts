@@ -366,6 +366,14 @@ export class PollingLoop {
         continue;
       }
 
+      if ((reviewConfig.assignmentMode ?? "manual") === "automatic") {
+        log.debug(
+          { projectId: project.id, integrationId: reviewConfig.integrationId },
+          "skipping automatic review project assignment backfill",
+        );
+        continue;
+      }
+
       // Stream-events integrations (e.g. Gerrit) receive review assignments
       // via a persistent SSH connection — they never need to be polled.
       if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) {
@@ -512,6 +520,9 @@ export class PollingLoop {
     const reviewConfig = await this.projectStore.getProjectReviewConfig(task.projectId);
     if (!reviewConfig) return;
 
+    // Stream-backed providers (currently Gerrit) use their live revision
+    // stream as the automatic-mode source; do not pretend status polling is a
+    // revision-recovery channel when that stream is degraded.
     if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) return;
     const intake = this.pluginManager.getIntegrationCapabilityIntake?.(
       reviewConfig.integrationId,
@@ -521,16 +532,33 @@ export class PollingLoop {
 
     const changeId = task.externalChangeId;
     if (changeId === null) return;
-    const repoKey = repositoryFromChangeId(String(changeId), reviewConfig.repos);
-    if (repoKey === undefined) return;
-
-    const connector = await this.getReviewDiscoveryConnector(reviewConfig.integrationId, repoKey);
-    if (!connector || typeof connector.hasReviewAssignment !== "function") return;
 
     const cooldownKey = `${reviewConfig.integrationId}:${changeId}`;
     const lastTriggered = this.reviewTriggerCooldowns.get(cooldownKey);
     if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) return;
     this.reviewTriggerCooldowns.set(cooldownKey, now);
+
+    if ((reviewConfig.assignmentMode ?? "manual") === "automatic") {
+      try {
+        await this.reviewTrigger.triggerReview(reviewConfig.integrationId, String(changeId));
+      } catch (err) {
+        this.reviewTriggerCooldowns.delete(cooldownKey);
+        throw err;
+      }
+      return;
+    }
+
+    const repoKey = repositoryFromChangeId(String(changeId), reviewConfig.repos);
+    if (repoKey === undefined) {
+      this.reviewTriggerCooldowns.delete(cooldownKey);
+      return;
+    }
+
+    const connector = await this.getReviewDiscoveryConnector(reviewConfig.integrationId, repoKey);
+    if (!connector || typeof connector.hasReviewAssignment !== "function") {
+      this.reviewTriggerCooldowns.delete(cooldownKey);
+      return;
+    }
 
     let assigned: boolean;
     try {

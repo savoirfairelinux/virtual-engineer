@@ -45,6 +45,7 @@ const GIT_TIMEOUT_MS = 120_000;
 // ─── SSH query schemas ────────────────────────────────────────────────────────
 
 const SshAccountSchema = z.object({
+  _account_id: z.number().optional(),
   name: z.string().optional(),
   email: z.string().optional(),
   username: z.string().optional(),
@@ -153,7 +154,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       changeNumber: entry.number,
       subject: entry.subject,
       description: commitBody,
-      ownerAccountId: String(this.getAccountId(entry.owner)),
+      ownerAccountId: this.getOwnerAccountId(entry.owner),
       currentPatchset: patchset,
       status: entry.status === "NEW" ? "OPEN" : entry.status,
       project: entry.project,
@@ -168,43 +169,53 @@ export class GerritSshReviewProvider implements ReviewProvider {
    * change details (which includes `allReviewers`) via `gerrit query` and check
    * the `--all-reviewers` field. Self-review guard is applied.
    */
-  async isReviewer(changeId: ExternalChangeId): Promise<boolean> {
+  async isReviewer(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean> {
     let details: ReviewChangeDetails;
     try {
-      details = await this.getChangeDetails(changeId);
+      details = await this.getChangeDetails(changeId, signal);
     } catch {
       return false;
     }
     if (details.status !== "OPEN") return false;
 
-    // When no reviewerAccountId is configured, skip the self-review guard and
-    // reviewer-list check — any OPEN change is eligible for review.
-    if (!this.config.reviewerAccountId) return true;
-
-    const ownAccountId = Number(this.config.reviewerAccountId);
-    if (details.ownerAccountId === this.config.reviewerAccountId) return false;
+    if (
+      details.ownerAccountId === this.config.reviewerAccountId ||
+      details.ownerAccountId === this.config.sshUser
+    ) return false;
 
     // Re-query with --all-reviewers to get the reviewer list over SSH.
     try {
       const raw = await this.sshClient.query([
         "query", "--format", "JSON", "--all-reviewers",
         `change:${changeId}`,
-      ]);
+      ], signal);
       const rows = parseSshNdjson(raw);
       if (rows.length === 0) return false;
       const entry = SshChangeSchema.safeParse(rows[0]);
       if (!entry.success) return false;
       const reviewers = entry.data.allReviewers ?? [];
-      // SSH output doesn't include _account_id — fall back to username match.
-      const matchById = reviewers.some((r) => this.getAccountId(r) === ownAccountId);
-      if (matchById) return true;
-      return reviewers.some((r) => r.username === this.config.sshUser);
+      const ownAccountId = this.config.reviewerAccountId === undefined
+        ? null
+        : Number(this.config.reviewerAccountId);
+      return reviewers.some((reviewer) => {
+        if (ownAccountId !== null && this.getAccountId(reviewer) === ownAccountId) return true;
+        return reviewer.username === this.config.sshUser || reviewer.email === this.config.sshUser;
+      });
     } catch {
-      // If SSH query fails, allow the review path to proceed — better to
-      // attempt a review than silently drop a webhook event.
-      log.warn({ changeId }, "SSH isReviewer query failed — allowing review to proceed");
-      return true;
+      log.warn({ changeId }, "SSH isReviewer query failed — skipping review");
+      return false;
     }
+  }
+
+  /** Add VE to the Gerrit reviewer list while preserving all existing reviewers. */
+  async ensureReviewerAssignment(changeId: ExternalChangeId, signal?: AbortSignal): Promise<void> {
+    const details = await this.getChangeDetails(changeId, signal);
+    if (details.status !== "OPEN") return;
+    if (
+      details.ownerAccountId === this.config.reviewerAccountId ||
+      details.ownerAccountId === this.config.sshUser
+    ) return;
+    await this.sshClient.addReviewers(String(changeId), [this.config.sshUser], signal);
   }
 
   /**
@@ -517,11 +528,14 @@ export class GerritSshReviewProvider implements ReviewProvider {
 
   /** Extract a numeric account ID from an SSH account object; returns -1 when unavailable. */
   private getAccountId(account: z.infer<typeof SshAccountSchema>): number {
-    // SSH output doesn't have _account_id — we can't rely on it.
-    // Return -1 to indicate unknown. Self-review guard will compare
-    // against the configured reviewer which uses a different path.
-    void account;
-    return -1;
+    return account._account_id ?? -1;
+  }
+
+  /** Prefer Gerrit's numeric account id, falling back to its SSH username. */
+  private getOwnerAccountId(account: z.infer<typeof SshAccountSchema>): string {
+    const accountId = this.getAccountId(account);
+    if (accountId >= 0) return String(accountId);
+    return account.username ?? account.email ?? "";
   }
 }
 

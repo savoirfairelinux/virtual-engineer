@@ -26,8 +26,10 @@ import type {
   AgentAdapter,
   Integration,
   ProviderId,
+  ProjectReviewConfig,
   ProjectRecord,
   ReviewStrategy,
+  ReviewTriggerCause,
   Task,
   StateStore,
   PromptStore,
@@ -39,6 +41,10 @@ import type {
 function buildIntegrationSourceLabel(integration: Integration): string {
   return buildTicketSourceLabel(integration.provider, integration.id);
 }
+
+type ReviewRuntimeStateStore = StateStore & PromptStore & {
+  getProjectReviewConfig(projectId: ProjectRecord["id"]): Promise<ProjectReviewConfig | null>;
+};
 
 /** Parse the integration ID out of a `<provider>:<integrationId>` source label string. */
 function getIntegrationIdFromSourceLabel(sourceLabel: string | null | undefined): string | null {
@@ -423,7 +429,7 @@ export interface ReviewBundle {
 export function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
-  stateStore: StateStore & PromptStore,
+  stateStore: ReviewRuntimeStateStore,
   workspaceRunner?: WorkspaceRunner,
   concurrencyTracker?: ConcurrencyTracker,
   target?: string | Task,
@@ -511,11 +517,9 @@ export function buildReviewBundle(
  * when a Gerrit stream-events connection receives a relevant event.
  *
  * Flow:
- *  1. Ask the review provider whether VE is an active reviewer on the change
- *     (using `isReviewer()` when available; falls back to always-true).
- *  2. Call `ReviewOrchestrator.startReviewTask()` — idempotent, returns null if
+ *  1. Call `ReviewOrchestrator.startReviewTask()` — idempotent, returns empty if
  *     a task already exists for this patchset.
- *  3. Fire-and-forget `runReview()` on the new task.
+ *  2. Fire-and-forget `runReview()` on the new task.
  *
  * Returns null when no active review integration exposes `createReviewer`.
  */
@@ -523,7 +527,7 @@ export function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
   workspaceRunner: WorkspaceRunner,
-  stateStore: StateStore & PromptStore,
+  stateStore: ReviewRuntimeStateStore,
   concurrencyTracker?: ConcurrencyTracker,
   lifecycleCoordinator?: TaskLifecycleCoordinator,
 ): import("../connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
@@ -532,7 +536,11 @@ export function buildReviewTrigger(
   const log = getLogger("review-trigger");
 
   return {
-    async triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void> {
+    async triggerReviewForChange(
+      integrationId: string,
+      changeId: string,
+      options?: { force?: boolean; triggerCause?: ReviewTriggerCause },
+    ): Promise<void> {
       const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, concurrencyTracker, integrationId, lifecycleCoordinator);
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
@@ -542,16 +550,9 @@ export function buildReviewTrigger(
       const gerritChangeId = makeExternalChangeId(changeId);
       const force = options?.force === true;
 
-      // 1. Self-review + assignment guard.
-      if (typeof bundle.provider.isReviewer === "function") {
-        const assigned = await bundle.provider.isReviewer(gerritChangeId);
-        if (!assigned) {
-          log.debug({ integrationId, changeId }, "review trigger: VE is not a reviewer — skipping review task creation");
-          return;
-        }
-      }
+      const triggerCause = options?.triggerCause ?? (force ? "reviewer-assigned" : "revision");
 
-      // 2. Create review tasks — one per matching VE project (idempotent).
+      // 1. Create review tasks — one per matching VE project (idempotent).
       //    `force` propagates the manual-trigger intent so an already-reviewed
       //    patchset is re-reviewed instead of skipped.
       let reviewTasks: import("../interfaces.js").Task[];
@@ -559,6 +560,7 @@ export function buildReviewTrigger(
         reviewTasks = await bundle.orchestrator.startReviewTask({
           changeId: gerritChangeId,
           ...(force ? { force: true } : {}),
+          triggerCause,
         });
       } catch (err) {
         log.error({ err, integrationId, changeId }, "review trigger: failed to create review task");
@@ -569,7 +571,7 @@ export function buildReviewTrigger(
         return;
       }
 
-      // 3. Run each review immediately (fire-and-forget with error logging).
+      // 2. Run each review immediately (fire-and-forget with error logging).
       for (const task of reviewTasks) {
         log.info({ integrationId, taskId: task.taskId, changeId, force }, "review trigger: task created, starting review");
         bundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined).catch((err: unknown) => {

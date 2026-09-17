@@ -245,6 +245,7 @@ export const gerritDescriptor: ProviderDescriptor = {
   },
   capabilities: {
     code_review: {
+      assignmentModes: ["manual", "automatic"],
       intake: ["stream"],
       streamEvents: {
         createManager: (deps) => new GerritStreamEventsManager(deps),
