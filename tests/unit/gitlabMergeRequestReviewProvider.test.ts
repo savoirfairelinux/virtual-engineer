@@ -34,6 +34,7 @@ const MR_BODY = {
   source_branch: "feature-x",
   project_id: 100,
   author: { id: 7, username: "alice" },
+  reviewers: [],
   references: { full: "group/proj!42" },
   diff_refs: { base_sha: "base", head_sha: "head", start_sha: "start" },
 };
@@ -70,6 +71,33 @@ describe("GitLabMergeRequestReviewProvider", () => {
       "https://gitlab.example.com/api/v4/projects/100/merge_requests/42",
       expect.objectContaining({ headers: expect.anything() })
     );
+  });
+
+  describe("reviewer assignment", () => {
+    it("confirms VE is an assigned reviewer", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ ...MR_BODY, reviewers: [{ id: 9, username: "ve-bot" }] }))
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }));
+
+      await expect(new GitLabMergeRequestReviewProvider(config).isReviewer(cid)).resolves.toBe(true);
+    });
+
+    it("adds VE while preserving existing reviewer ids", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ ...MR_BODY, reviewers: [{ id: 11, username: "alice-reviewer" }] }))
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse({}));
+
+      await new GitLabMergeRequestReviewProvider(config).ensureReviewerAssignment(cid);
+
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "https://gitlab.example.com/api/v4/projects/100/merge_requests/42",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ reviewer_ids: [11, 9] }),
+        }),
+      );
+    });
   });
 
   it("maps merged and closed MRs to MERGED / ABANDONED", async () => {

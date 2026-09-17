@@ -1100,7 +1100,7 @@ FetchContent_Declare(googletest
         type: "review",
         name: "ReviewProj",
         agentId: agent.id,
-        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"], assignmentMode: "automatic" },
       },
     });
     expect(r.status).toBe(201);
@@ -1108,6 +1108,25 @@ FetchContent_Declare(googletest
     expect(project["type"]).toBe("review");
     const rc = project["reviewConfig"] as Record<string, unknown>;
     expect((rc["repos"] as string[])).toContain("platform/api");
+    expect(rc["assignmentMode"]).toBe("automatic");
+  });
+
+  it("POST / rejects a review integration without code review capability", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "redmine-review", "redmine");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "InvalidReviewProvider",
+        agentId: agent.id,
+        reviewConfig: { integrationId: "redmine-review", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/code review/i);
   });
 
   it("POST / returns 409 when ticket source is already claimed by another project", async () => {

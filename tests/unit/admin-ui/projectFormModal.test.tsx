@@ -914,4 +914,47 @@ describe("ProjectFormModal repository integration resolution", () => {
 
     expect(screen.queryByText("Original repository scan failed")).toBeNull();
   });
+
+  it("hydrates the automatic reviewer assignment mode for review projects", () => {
+    const reviewAgent: ApiAgent = {
+      ...codingAgent,
+      id: "review-agent-1",
+      name: "Review agent",
+      type: "review",
+    };
+    const reviewIntegration: ApiIntegration = {
+      id: "github-1",
+      provider: "github",
+      name: "GitHub",
+      enabled: true,
+      capabilities: [],
+      domainCapabilities: ["code_review"],
+      reviewAssignmentModes: ["manual", "automatic"],
+      discoveredResources: {
+        repositories: [{ key: "octocat/repo", name: "Repo" }],
+      },
+    };
+
+    render(
+      <ProjectFormModal
+        agents={[reviewAgent]}
+        integrations={[reviewIntegration]}
+        project={{
+          id: "review-project-1",
+          name: "Review project",
+          type: "review",
+          agentId: reviewAgent.id,
+          reviewConfig: {
+            integration: { id: reviewIntegration.id, name: reviewIntegration.name, type: reviewIntegration.provider },
+            repos: ["octocat/repo"],
+            assignmentMode: "automatic",
+          },
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Reviewer assignment")).toHaveProperty("value", "automatic");
+  });
 });

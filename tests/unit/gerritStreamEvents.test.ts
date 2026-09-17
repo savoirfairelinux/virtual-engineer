@@ -402,7 +402,10 @@ describe("GerritStreamEventsManager", () => {
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
     // Re-adding VE as a reviewer is a manual relaunch → force a fresh review.
-    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange", { force: true });
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange", {
+      force: true,
+      triggerCause: "reviewer-assigned",
+    });
   });
 
   it("reviewer-added: does NOT trigger review when a different user is added", async () => {
@@ -442,7 +445,7 @@ describe("GerritStreamEventsManager", () => {
 
   // ── patchset-created ────────────────────────────────────────────────────────
 
-  it("patchset-created: triggers review for REWORK patchset when VE is a reviewer", async () => {
+  it("patchset-created: emits a review trigger for a non-trivial revision", async () => {
     const sshQuery = makeSshReviewerQueryFn([VE_SSH_USER, "alice"]);
     const child = new FakeChildProcess();
     const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
@@ -460,11 +463,11 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    expect(countReviewerChecks(sshQuery)).toBe(1);
+    expect(countReviewerChecks(sshQuery)).toBe(0);
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
     // Automatic patchset-created trigger: no force (must not re-review a patchset
     // already reviewed; a genuinely new patchset is re-reviewed on its own merit).
-    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch", { triggerCause: "revision" });
   });
 
   it("patchset-created: does NOT trigger review for TRIVIAL_REBASE (SSH not called)", async () => {
@@ -509,7 +512,7 @@ describe("GerritStreamEventsManager", () => {
     }
   );
 
-  it("patchset-created: does NOT trigger review when VE is not in the reviewer list", async () => {
+  it("patchset-created: emits a trigger even when VE is not yet assigned", async () => {
     const sshQuery = makeSshReviewerQueryFn(["alice", "bob"]); // VE not present
     const child = new FakeChildProcess();
     const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
@@ -527,11 +530,11 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    expect(countReviewerChecks(sshQuery)).toBe(1);
-    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    expect(countReviewerChecks(sshQuery)).toBe(0);
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch", { triggerCause: "revision" });
   });
 
-  it("patchset-created: does NOT trigger review and does NOT crash when SSH query fails", async () => {
+  it("patchset-created: still emits a trigger without a stream-level reviewer query", async () => {
     const failingSshQuery = vi.fn(async () => { throw new Error("SSH connection refused"); });
     const child = new FakeChildProcess();
     const { manager, orchestrator, reviewTrigger } = createManager(
@@ -552,13 +555,13 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch", { triggerCause: "revision" });
     // Stream listener must still be alive
     expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
   });
 
   it("feedback (triggerFeedbackForChange) always fires for patchset-created and comment-added regardless of review filtering", async () => {
-    // Even when review is blocked (wrong kind, not a reviewer), feedback must still be delivered
+    // Trivial patchsets remain feedback-only; revision patchsets reach the policy layer.
     const sshQuery = makeSshReviewerQueryFn([]); // VE not a reviewer
     const child = new FakeChildProcess();
     const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
@@ -581,7 +584,7 @@ describe("GerritStreamEventsManager", () => {
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ip1");
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ip2");
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ic");
-    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ip2", { triggerCause: "revision" });
   });
 
   it("orchestrator errors during event processing are caught and logged — listener stays alive and does not cause an unhandled rejection", async () => {
@@ -688,9 +691,9 @@ describe("GerritStreamEventsManager", () => {
       expect(countBackfillQueries(sshQuery)).toBe(1);
       expect(sshQuery.mock.calls[0]?.[0]).toEqual(["query", "--format", "JSON", `status:open reviewer:${VE_SSH_USER}`]);
       expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(3);
-      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned1");
-      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned2");
-      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned3");
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned1", { triggerCause: "backfill" });
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned2", { triggerCause: "backfill" });
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned3", { triggerCause: "backfill" });
     });
 
     it("runs at most once per integration (not on subsequent stdout chunks)", async () => {
@@ -769,7 +772,7 @@ describe("GerritStreamEventsManager", () => {
       const sshQuery = makeSshReviewerQueryFn([], ["Iok1", "Ifail", "Iok2"]);
       const child = new FakeChildProcess();
       const { manager, reviewTrigger } = createManager([child], sshQuery);
-      reviewTrigger.triggerReviewForChange = vi.fn(async (_intId: string, changeId: string) => {
+      reviewTrigger.triggerReviewForChange = vi.fn(async (_intId: string, changeId: string, _options?: { triggerCause?: "backfill" }) => {
         if (changeId === "Ifail") throw new Error("downstream boom");
       });
 
@@ -779,7 +782,7 @@ describe("GerritStreamEventsManager", () => {
       await flushAsyncWork();
 
       expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(3);
-      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iok2");
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iok2", { triggerCause: "backfill" });
     });
 
     it("does not backfill when no reviewTrigger is configured", async () => {

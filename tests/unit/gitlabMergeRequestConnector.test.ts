@@ -133,6 +133,45 @@ describe("GitLabMergeRequestConnector", () => {
     });
   });
 
+  describe("review assignment discovery", () => {
+    it("discovers open MRs assigned to the current GitLab user", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse([
+          {
+            iid: 42,
+            state: "opened",
+            title: "Feature",
+            reviewers: [{ id: 9, username: "ve-bot" }],
+          },
+        ]));
+
+      const assignments = await (makeConnector() as unknown as {
+        getOpenReviewAssignments(repos: string[]): Promise<Array<{ changeId: string; project: string }>>;
+      }).getOpenReviewAssignments(["group/project"]);
+
+      expect(assignments).toEqual([
+        { changeId: "group/project#42", project: "group/project", subject: "Feature" },
+      ]);
+    });
+
+    it("checks assignment for a repository-qualified MR", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse({
+          ...gitlabMr,
+          state: "opened",
+          reviewers: [{ id: 9, username: "ve-bot" }],
+        }));
+
+      const assigned = await (makeConnector() as unknown as {
+        hasReviewAssignment(changeId: string): Promise<boolean>;
+      }).hasReviewAssignment("group/project#42");
+
+      expect(assigned).toBe(true);
+    });
+  });
+
   // ─── getUnresolvedComments ─────────────────────────────────────────────────
 
   describe("getUnresolvedComments", () => {

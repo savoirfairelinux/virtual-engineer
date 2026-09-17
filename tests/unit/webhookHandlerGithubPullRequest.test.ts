@@ -141,6 +141,21 @@ describe("githubPullRequestWebhookHandler", () => {
     expect(orch.triggerReviewForChange).toHaveBeenCalledWith("gh-1", "octocat/hello-world#102");
   });
 
+  it("pull_request action=review_requested → marks a reviewer-assignment trigger", async () => {
+    const { ctx, orch } = makeCtx("pull_request", {
+      action: "review_requested",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      pull_request: { number: 104 },
+      requested_reviewer: { login: "ve-bot" },
+    });
+    await githubPullRequestWebhookHandler(ctx);
+    expect(orch.triggerReviewForChange).toHaveBeenCalledWith(
+      "gh-1",
+      "octocat/hello-world#104",
+      { triggerCause: "reviewer-assigned" },
+    );
+  });
+
   it("review trigger error does not block feedback path", async () => {
     const { ctx, orch } = makeCtx("pull_request", {
       action: "opened",

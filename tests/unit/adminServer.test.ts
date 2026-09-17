@@ -1038,6 +1038,7 @@ describe("createAdminServer", () => {
             icon: { slug: "gitlab", hex: "FC6D26" },
             capabilities: ["issue_tracking", "code_review", "source_control", "oauth", "discovery", "reviewer"],
             domainCapabilities: ["issue_tracking", "code_review", "source_control"],
+            reviewAssignmentModes: ["manual", "automatic"],
             name: "GitLab Local",
             enabled: false,
             active: false,

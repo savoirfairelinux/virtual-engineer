@@ -8,6 +8,9 @@ const mockQuery = vi.fn(async (_args: string[]) => "");
 const mockReviewJson = vi.fn(async (_changeSpec: string, _input: string) => {
   return;
 });
+const mockAddReviewers = vi.fn(async (_changeId: string, _reviewers: string[]) => {
+  return;
+});
 const mockGetDiscussionComments = vi.fn(
   async (_changeId: string): Promise<import("../../src/connectors/gerritSshClient.js").GerritDiscussionComment[]> => []
 );
@@ -20,6 +23,7 @@ vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
       return {
         query: mockQuery,
         reviewJson: mockReviewJson,
+        addReviewers: mockAddReviewers,
         getDiscussionComments: mockGetDiscussionComments,
       };
     }),
@@ -138,6 +142,7 @@ describe("GerritSshReviewProvider", () => {
     gitFileCallIndex = 0;
     mockQuery.mockReset();
     mockReviewJson.mockReset();
+    mockAddReviewers.mockReset();
     mockGetDiscussionComments.mockReset();
     mockGetDiscussionComments.mockResolvedValue([]);
     vi.mocked(rm).mockReturnValue(Promise.resolve(undefined) as unknown as ReturnType<typeof rm>);
@@ -228,6 +233,32 @@ describe("GerritSshReviewProvider", () => {
     it("returns false when the SSH query fails", async () => {
       mockQuery.mockRejectedValueOnce(new Error("ssh timeout"));
       expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+  });
+
+  describe("reviewer assignment", () => {
+    it("confirms VE is assigned from Gerrit's reviewer list", async () => {
+      mockQuery
+        .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+        .mockResolvedValueOnce(sshNdjson({ ...SAMPLE_CHANGE, allReviewers: [{ username: SSH_USER }] }));
+
+      await expect(makeProvider().isReviewer(CHANGE_ID)).resolves.toBe(true);
+    });
+
+    it("rejects an unassigned change", async () => {
+      mockQuery
+        .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+        .mockResolvedValueOnce(sshNdjson({ ...SAMPLE_CHANGE, allReviewers: [{ username: "alice" }] }));
+
+      await expect(makeProvider().isReviewer(CHANGE_ID)).resolves.toBe(false);
+    });
+
+    it("adds VE without replacing existing reviewers", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+
+      await makeProvider().ensureReviewerAssignment(CHANGE_ID);
+
+      expect(mockAddReviewers).toHaveBeenCalledWith(CHANGE_ID, [SSH_USER], undefined);
     });
   });
 
