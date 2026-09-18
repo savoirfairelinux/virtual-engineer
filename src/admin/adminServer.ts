@@ -768,8 +768,9 @@ function extractBearerToken(request: IncomingMessage): string | null {
  *
  * - Returns `undefined` for a global permission (no `resourceParam`) — the gate
  *   then requires an unscoped (all-resources) grant.
- * - For `task.*` permissions, resolves the owning **project** id (tasks inherit
- *   their project's scope); returns null for orphaned/unknown tasks.
+ * - For `task.*` permissions, resolves the owning **project** id and owner.
+ *   A missing project lookup leaves ownership undefined so dynamic access
+ *   fails closed while explicit project-id grants remain effective.
  * - Otherwise returns the raw path-parameter value (project/integration/agent/prompt id).
  */
 async function resolveScopeResource(
@@ -787,14 +788,18 @@ async function resolveScopeResource(
     if (resourceType === "task") {
       const task = await dependencies.stateStore.getTask(makeTaskId(raw));
       if (!task) return null;
-      const project = task.projectId && dependencies.projectStore
+      const project = task.projectId != null && dependencies.projectStore
         ? await dependencies.projectStore.getProjectById(task.projectId)
-        : null;
+        : undefined;
       return {
         type: "task",
         id: raw,
         projectId: task.projectId ?? null,
-        ownerUserId: project?.ownerUserId ?? null,
+        ownerUserId: task.projectId == null
+          ? null
+          : project
+            ? project.ownerUserId ?? null
+            : undefined,
       };
     }
     if (resourceType === "project") {

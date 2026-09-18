@@ -30,7 +30,8 @@ export interface EffectivePermissions {
 export interface ResourceDescriptor {
   type: ResourceType;
   id: string;
-  ownerUserId: string | null;
+  /** `undefined` means ownership could not be resolved and must fail closed. */
+  ownerUserId: string | null | undefined;
   projectId?: string | null;
 }
 
