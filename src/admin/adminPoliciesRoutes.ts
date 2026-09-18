@@ -25,7 +25,7 @@ export interface PolicyRoutesStore {
   removeUserFromGroup(groupId: string, userId: string): Promise<boolean>;
   listGroupMemberIds(groupId: string): Promise<string[]>;
   // Policies
-  createPolicy(input: { name: string; description?: string; builtin?: boolean }): Promise<Policy>;
+  createPolicy(input: { id?: string; name: string; description?: string; builtin?: boolean }): Promise<Policy>;
   getPolicyById(id: string): Promise<Policy | null>;
   listPolicies(): Promise<Policy[]>;
   updatePolicy(id: string, partial: { name?: string; description?: string }): Promise<Policy | null>;
@@ -48,6 +48,12 @@ const MANAGE = { permission: PERMISSIONS.POLICY_MANAGE } as const;
 
 function isDuplicateError(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE";
+}
+
+function isSystemPolicyBindingError(err: unknown): boolean {
+  return err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "SYSTEM_POLICY_BINDING";
 }
 
 function serializeGroup(g: Group): Record<string, unknown> {
@@ -81,7 +87,7 @@ const ruleSchema = z.object({
   resourceId: z.string().min(1).nullable().optional(),
 }).refine(
   (r) => r.resourceId == null || isScopeablePermission(r.permission),
-  { message: "resourceId is only allowed on scopeable permissions (project.* / task.*)", path: ["resourceId"] }
+  { message: "resourceId is only allowed on resource-scoped permissions", path: ["resourceId"] }
 );
 const policyCreateSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(100),
@@ -317,6 +323,10 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
       writeJson(res, 201, { binding: serializeBinding(binding) });
     } catch (err) {
       if (isDuplicateError(err)) { writeJson(res, 409, { error: "Policy is already bound to this principal" }); return; }
+      if (isSystemPolicyBindingError(err)) {
+        writeJson(res, 409, { error: "System policies can only be bound to their reserved system principal" });
+        return;
+      }
       throw err;
     }
   }, MANAGE);

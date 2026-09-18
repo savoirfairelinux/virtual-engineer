@@ -445,7 +445,19 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 409, { error: "Cannot delete the last enabled admin" });
       return;
     }
-    await deps.userStore.deleteUser(id);
+    try {
+      await deps.userStore.deleteUser(id);
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        "code" in err &&
+        (err as { code?: unknown }).code === "RESOURCE_OWNERSHIP_CONFLICT"
+      ) {
+        writeJson(res, 409, { error: "User still owns resources; delete or reassign them first" });
+        return;
+      }
+      throw err;
+    }
     deps.onUsersChanged?.();
     recordAudit(deps.auditStore, req, { action: "user.delete", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });

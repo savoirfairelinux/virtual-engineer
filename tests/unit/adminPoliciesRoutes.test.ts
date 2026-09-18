@@ -127,18 +127,17 @@ describe("adminServer policy/group admin API", () => {
     expect(res.status).toBe(400);
   });
 
-  it("rejects a resourceId on a non-scopeable (global) permission", async () => {
+  it("rejects resourceId on global capabilities and accepts owned resource scopes", async () => {
     const res = await fetch(`${baseUrl}/api/admin/policies`, authJson({
       name: "BadScope",
       rules: [{ permission: "overview.read", resourceId: "proj-1" }],
     }));
     expect(res.status).toBe(400);
-    // Integrations/agents/prompts are global-only too.
     const res2 = await fetch(`${baseUrl}/api/admin/policies`, authJson({
-      name: "BadScope2",
+      name: "IntegrationScope",
       rules: [{ permission: "integration.read", resourceId: "int-1" }],
     }));
-    expect(res2.status).toBe(400);
+    expect(res2.status).toBe(201);
   });
 
   it("replaces policy rules and creates/removes bindings", async () => {
@@ -200,12 +199,20 @@ describe("adminServer policy/group admin API", () => {
     const adminBody = (await meAdmin.json()) as { capabilities?: { superuser: boolean } };
     expect(adminBody.capabilities?.superuser).toBe(true);
 
-    // Operator has the Operator bundle → project.write present, granted globally.
+    // Operators may create projects and dynamically manage only resources they own.
     const operator = await createOperator("erin");
     const meOp = await fetch(`${baseUrl}/api/admin/auth/me`, auth(operator.token));
-    const opBody = (await meOp.json()) as { capabilities?: { superuser: boolean; grants: Record<string, unknown> } };
+    const opBody = (await meOp.json()) as {
+      capabilities?: {
+        superuser: boolean;
+        grants: Record<string, unknown>;
+        resourceOwnerGrants: string[];
+      };
+    };
     expect(opBody.capabilities?.superuser).toBe(false);
-    expect(opBody.capabilities?.grants["project.write"]).toBe("*");
+    expect(opBody.capabilities?.grants["project.create"]).toBe("*");
+    expect(opBody.capabilities?.grants["project.write"]).toBeUndefined();
+    expect(opBody.capabilities?.resourceOwnerGrants).toContain("project.write");
     expect(opBody.capabilities?.grants["policy.manage"]).toBeUndefined();
   });
 });

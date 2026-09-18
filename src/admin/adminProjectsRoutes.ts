@@ -1,9 +1,11 @@
 import { getLogger } from "../logger.js";
+import type { IncomingMessage } from "node:http";
+import { z } from "zod";
 import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
-import { makeAgentId, makeProjectId, type AgentRecord, type ProjectRecord } from "../interfaces.js";
+import { makeAgentId, makeProjectId, type AgentRecord, type Permission, type ProjectRecord } from "../interfaces.js";
 import type { Router } from "./router.js";
-import { getEffectivePermissions } from "./authContext.js";
-import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
+import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
+import { canAccessResource } from "./authorization/policyEngine.js";
 import { validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
 import { registerProjectWorkspaceRoutes } from "./adminProjectWorkspaceRoutes.js";
 import { registerProjectVendorComponentsRoutes } from "./adminProjectVendorComponentsRoutes.js";
@@ -29,16 +31,123 @@ import {
   type ProjectsRouteStore,
   type ProjectSummary,
   type ProjectDetail,
+  type IntegrationLookup,
   type SkillSource,
 } from "./adminProjectsShared.js";
 
 const log = getLogger("admin-projects");
+
+const PROJECT_ACCESS_PERMISSIONS = [
+  "project.delete",
+  "project.operate",
+  "project.owner",
+  "project.read",
+  "project.write",
+  "task.delete",
+  "task.operate",
+  "task.read",
+] as const;
+
+const projectAccessSchema = z.object({
+  permissions: z.array(z.enum(PROJECT_ACCESS_PERMISSIONS)).min(1),
+});
+
+function projectAccessPolicyId(projectId: string, groupId: string): string {
+  return `project-access:${projectId}:group:${groupId}`;
+}
+
+function projectAccessPolicyPrefix(projectId: string): string {
+  return `project-access:${projectId}:group:`;
+}
+
+function overridePromptIds(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const record = parsed as Record<string, unknown>;
+    return ["systemPromptId", "instructionsPromptId", "feedbackInstructionsPromptId"]
+      .map((field) => record[field])
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function findUnreadableProjectReference(
+  req: IncomingMessage,
+  store: ProjectsRouteStore,
+  integrationStore: NonNullable<ProjectsRouteDeps["integrationStore"]>,
+  input: {
+    agent: AgentRecord | null;
+    integrationIds: readonly string[];
+    agentOverrideJson?: string | null;
+  }
+): Promise<Permission | null> {
+  if (input.agent && !requestCanAccessResource(req, "agent.read", {
+    type: "agent",
+    id: input.agent.id,
+    ownerUserId: input.agent.ownerUserId ?? null,
+  })) return "agent.read";
+
+  const integrationIds = new Set(input.integrationIds);
+  if (input.agent?.integrationId) integrationIds.add(input.agent.integrationId);
+  for (const integrationId of integrationIds) {
+    const integration = await integrationStore.getIntegration(integrationId);
+    if (integration && !requestCanAccessResource(req, "integration.read", {
+      type: "integration",
+      id: integration.id,
+      ownerUserId: integration.ownerUserId ?? null,
+    })) return "integration.read";
+  }
+
+  for (const promptId of overridePromptIds(input.agentOverrideJson)) {
+    const prompt = await store.getPrompt(promptId);
+    if (prompt && !requestCanAccessResource(req, "prompt.read", {
+      type: "prompt",
+      id: prompt.id,
+      ownerUserId: prompt.ownerUserId ?? null,
+    })) return "prompt.read";
+  }
+  return null;
+}
+
+function projectIntegrationIds(data: {
+  ticketSource?: { integrationId: string } | undefined;
+  pushTargets?: Array<{ integrationId: string }> | undefined;
+  reviewConfig?: { integrationId: string } | undefined;
+}): string[] {
+  return [
+    ...(data.ticketSource ? [data.ticketSource.integrationId] : []),
+    ...(data.pushTargets?.map((target) => target.integrationId) ?? []),
+    ...(data.reviewConfig ? [data.reviewConfig.integrationId] : []),
+  ];
+}
 
 export type { ProjectsRouteDeps, ProjectsRouteStore, SkillSource, ProjectSummary, ProjectDetail };
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
   const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
+
+  const readableIntegrationLookup = async (req: IncomingMessage): Promise<IntegrationLookup> => {
+    const integrations = await loadIntegrationsLookup(deps.integrationStore);
+    for (const [id, integration] of integrations.byId) {
+      if (!requestCanAccessResource(req, "integration.read", {
+        type: "integration",
+        id,
+        ownerUserId: integration.ownerUserId ?? null,
+      })) integrations.byId.delete(id);
+    }
+    return integrations;
+  };
+
+  const canReadAgent = (req: IncomingMessage) => (agent: AgentRecord): boolean =>
+    requestCanAccessResource(req, "agent.read", {
+      type: "agent",
+      id: agent.id,
+      ownerUserId: agent.ownerUserId ?? null,
+    });
 
   registerProjectWorkspaceRoutes(router, deps);
   registerProjectVendorComponentsRoutes(router, deps);
@@ -47,20 +156,22 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const projects = await store.listProjects();
-    const integrations = await loadIntegrationsLookup(deps.integrationStore);
+    const integrations = await readableIntegrationLookup(req);
     const agentsById = new Map<string, AgentRecord>();
     const summaries: ProjectSummary[] = [];
     for (const p of projects) {
-      summaries.push(await buildProjectSummary(p, store, integrations, agentsById));
+      summaries.push(await buildProjectSummary(p, store, integrations, agentsById, canReadAgent(req)));
     }
-    // Scope-filter: a non-superuser sees only projects they may read.
     const perms = getEffectivePermissions(req);
-    let visible = summaries;
-    if (perms) {
-      const scope = accessibleResourceIds(perms, "project.read");
-      if (scope === null) visible = [];
-      else if (scope !== ALL_RESOURCES) visible = summaries.filter((s) => scope.has(s.id));
-    }
+    const actorUserId = getAuthContext(req)?.userId ?? null;
+    const visible = perms
+      ? summaries.filter((project) => canAccessResource(
+          perms,
+          "project.read",
+          { type: "project", id: project.id, ownerUserId: project.ownerUserId ?? null },
+          actorUserId
+        ))
+      : summaries;
     writeJson(res, 200, { projects: visible });
   }, { permission: "project.read", collection: true });
 
@@ -75,6 +186,17 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const integrationStore = deps.integrationStore;
     const agent = await store.getAgentById(makeAgentId(data.agentId));
+    if (getEffectivePermissions(req)) {
+      const unreadableReference = await findUnreadableProjectReference(req, store, integrationStore, {
+        agent,
+        integrationIds: projectIntegrationIds(data),
+        ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
+      });
+      if (unreadableReference) {
+        writeJson(res, 403, { error: "forbidden", permission: unreadableReference });
+        return;
+      }
+    }
     const agentError = await validateProjectAgent(agent, data.type, integrationStore, data.agentId);
     if (agentError) { writeJson(res, 400, { error: agentError }); return; }
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
@@ -117,6 +239,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
         ...(data.reactToCiFailures !== undefined ? { reactToCiFailures: data.reactToCiFailures } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
+        ownerUserId: getAuthContext(req)?.userId ?? null,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -157,8 +280,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       log.warn({ err, projectId: project.id }, "attach project children failed");
       writeJson(res, status, { error: status === 409 ? "Conflict" : "Failed to create project", message: msg }); return;
     }
-    const integrations = await loadIntegrationsLookup(deps.integrationStore);
-    const detail = await buildProjectDetail(project, store, integrations);
+    const integrations = await readableIntegrationLookup(req);
+    const detail = await buildProjectDetail(project, store, integrations, canReadAgent(req));
     recordAudit(deps.auditStore, req, {
       action: "project.create",
       targetType: "project",
@@ -189,7 +312,93 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (project.enabled) {
       await relaunchFailedTasksForProject(store, project.id, deps.taskControl);
     }
-  }, { permission: "project.write" });
+  }, { permission: "project.create" });
+
+  router.add("GET", "/api/admin/projects/:id/access", async (_req, res, params) => {
+    if (!requireStore(deps.projectAccessStore, res, "Project access store not available")) return;
+    const projectId = params["id"] ?? "";
+    const prefix = projectAccessPolicyPrefix(projectId);
+    const policies = (await deps.projectAccessStore.listPolicies())
+      .filter((policy) => policy.id.startsWith(prefix));
+    const grants = await Promise.all(policies.map(async (policy) => {
+      const groupId = policy.id.slice(prefix.length);
+      const [group, rules] = await Promise.all([
+        deps.projectAccessStore?.getGroupById(groupId),
+        deps.projectAccessStore?.listPolicyRules(policy.id),
+      ]);
+      return {
+        groupId,
+        groupName: group?.name ?? groupId,
+        permissions: (rules ?? []).map((rule) => rule.permission).sort(),
+      };
+    }));
+    const availableGroups = (await deps.projectAccessStore.listGroups()).map((group) => ({
+      id: group.id,
+      name: group.name,
+    }));
+    writeJson(res, 200, { grants, availableGroups });
+  }, { permission: "project.owner", resourceParam: "id" });
+
+  router.add("PUT", "/api/admin/projects/:id/access/groups/:groupId", async (req, res, params) => {
+    if (!requireStore(deps.projectAccessStore, res, "Project access store not available")) return;
+    const projectId = params["id"] ?? "";
+    const groupId = params["groupId"] ?? "";
+    const group = await deps.projectAccessStore.getGroupById(groupId);
+    if (!group) { writeJson(res, 404, { error: "Group not found" }); return; }
+    const parsed = projectAccessSchema.safeParse(await readBody(req));
+    if (!parsed.success) {
+      writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project access payload"));
+      return;
+    }
+    const policyId = projectAccessPolicyId(projectId, groupId);
+    let policy = await deps.projectAccessStore.getPolicyById(policyId);
+    if (!policy) {
+      policy = await deps.projectAccessStore.createPolicy({
+        id: policyId,
+        name: `Project access ${projectId} ${groupId}`,
+        description: `Group access delegated for project ${projectId}`,
+      });
+    }
+    try {
+      await deps.projectAccessStore.createBinding({
+        policyId: policy.id,
+        principalType: "group",
+        principalId: groupId,
+      });
+    } catch (err) {
+      if (!(err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE")) {
+        throw err;
+      }
+    }
+    const permissions = [...new Set(parsed.data.permissions)].sort();
+    await deps.projectAccessStore.setPolicyRules(
+      policy.id,
+      permissions.map((permission) => ({ permission, resourceId: projectId }))
+    );
+    recordAudit(deps.auditStore, req, {
+      action: "project.access_set",
+      targetType: "project",
+      targetId: projectId,
+      details: { groupId, permissions },
+    });
+    writeJson(res, 200, { groupId, groupName: group.name, permissions });
+  }, { permission: "project.owner", resourceParam: "id" });
+
+  router.add("DELETE", "/api/admin/projects/:id/access/groups/:groupId", async (req, res, params) => {
+    if (!requireStore(deps.projectAccessStore, res, "Project access store not available")) return;
+    const projectId = params["id"] ?? "";
+    const groupId = params["groupId"] ?? "";
+    const removed = await deps.projectAccessStore.deletePolicy(projectAccessPolicyId(projectId, groupId));
+    if (!removed) { writeJson(res, 404, { error: "Project access grant not found" }); return; }
+    recordAudit(deps.auditStore, req, {
+      action: "project.access_remove",
+      targetType: "project",
+      targetId: projectId,
+      details: { groupId },
+    });
+    res.statusCode = 204;
+    res.end();
+  }, { permission: "project.owner", resourceParam: "id" });
 
   // Enable or disable a project by id.
   router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
@@ -219,14 +428,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     deps.onProjectChange?.();
   }, { permission: "project.operate", resourceParam: "id" });
 
-  router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
+  router.add("GET", "/api/admin/projects/:id", async (req, res, params) => {
     if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
-    const integrations = await loadIntegrationsLookup(deps.integrationStore);
-    const detail = await buildProjectDetail(existing, store, integrations);
+    const integrations = await readableIntegrationLookup(req);
+    const detail = await buildProjectDetail(existing, store, integrations, canReadAgent(req));
     writeJson(res, 200, { project: detail });
   }, { permission: "project.read", resourceParam: "id" });
 
@@ -243,15 +452,36 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const data = parsed.data;
     let prospectiveAgent: AgentRecord | null = null;
     if (data.agentId !== undefined) {
-      if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
-      const integrationStore = deps.integrationStore;
-      const agent = await store.getAgentById(makeAgentId(data.agentId));
-      const agentError = await validateProjectAgent(agent, existing.type, integrationStore, data.agentId);
-      if (agentError) { writeJson(res, 400, { error: agentError }); return; }
-      prospectiveAgent = agent;
+      prospectiveAgent = await store.getAgentById(makeAgentId(data.agentId));
     }
     if (data.agentOverrideJson !== undefined) {
       prospectiveAgent ??= await store.getAgentById(existing.agentId);
+    }
+    if (deps.integrationStore) {
+      const unreadableReference = await findUnreadableProjectReference(req, store, deps.integrationStore, {
+        agent: data.agentId !== undefined ? prospectiveAgent : null,
+        integrationIds: projectIntegrationIds(data),
+        ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
+      });
+      if (unreadableReference) {
+        writeJson(res, 403, { error: "forbidden", permission: unreadableReference });
+        return;
+      }
+    } else if (getEffectivePermissions(req)) {
+      writeJson(res, 501, { error: "Integration store not available" });
+      return;
+    }
+    if (data.agentId !== undefined) {
+      if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
+      const agentError = await validateProjectAgent(
+        prospectiveAgent,
+        existing.type,
+        deps.integrationStore,
+        data.agentId
+      );
+      if (agentError) { writeJson(res, 400, { error: agentError }); return; }
+    }
+    if (data.agentOverrideJson !== undefined) {
       if (!prospectiveAgent) { writeJson(res, 400, { error: `Agent not found: ${existing.agentId}` }); return; }
       const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, prospectiveAgent);
       if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
@@ -318,8 +548,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     const refreshed = await store.getProjectById(id);
     if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
-    const integrations = await loadIntegrationsLookup(deps.integrationStore);
-    const detail = await buildProjectDetail(refreshed, store, integrations);
+    const integrations = await readableIntegrationLookup(req);
+    const detail = await buildProjectDetail(refreshed, store, integrations, canReadAgent(req));
     recordAudit(deps.auditStore, req, {
       action: "project.update",
       targetType: "project",

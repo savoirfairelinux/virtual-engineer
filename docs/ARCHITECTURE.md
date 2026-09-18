@@ -937,39 +937,48 @@ Authorization is **pure PBAC** — every admin route declares a `permission` in 
 
 #### Permission catalog (`src/admin/authorization/permissions.ts`)
 
-Permissions follow the `"<resourceType>.<action>"` pattern. Scopeable types (`project`, `task`) accept a concrete `resourceId` in a rule; `null` grants the action on every resource of that type. All other permissions (`integration.*`, `agent.*`, `prompt.*`, `oauth.*`, `system.*`, `user.manage`, `audit.read`, `policy.manage`) are global and must be granted with a null `resourceId`. Task rules are scoped by the task's owning **project id**.
+Permissions follow the `"<resourceType>.<action>"` pattern. Projects, integrations, agents, prompts, and OAuth apps accept a concrete `resourceId`; tasks use their owning **project id**. A null rule grants every resource of that type. System capabilities remain global. Creation uses separate `*.create` permissions so creation never implies visibility of existing resources.
 
 | Category | Permissions |
 |----------|------------|
-| Projects | `project.read`, `project.write`, `project.delete`, `project.operate` |
+| Projects | `project.create`, `project.read`, `project.write`, `project.delete`, `project.operate`, `project.owner` |
 | Tasks | `task.read`, `task.operate`, `task.delete` |
-| Integrations | `integration.read`, `integration.write`, `integration.delete`, `integration.operate` |
-| Agents | `agent.read`, `agent.write`, `agent.delete`, `agent.operate` |
-| Prompts | `prompt.read`, `prompt.write`, `prompt.delete` |
+| Integrations | `integration.create`, `integration.read`, `integration.write`, `integration.delete`, `integration.operate` |
+| Agents | `agent.create`, `agent.read`, `agent.write`, `agent.delete`, `agent.operate` |
+| Prompts | `prompt.create`, `prompt.read`, `prompt.write`, `prompt.delete` |
+| OAuth apps | `oauth.create`, `oauth.read`, `oauth.write`, `oauth.delete` |
 | Global | `oauth.manage`, `overview.read`, `concurrency.read`, `system.read`, `system.write`, `user.manage`, `audit.read`, `policy.manage` |
 
 #### Model
 
 ```
   groups            ← named sets of users (group_members FK cascade)
-  policies          ← named grant collections; builtin=1 for Operator/Viewer seeds
+  owned resources   ← owner_user_id nullable; NULL = legacy-visible
+  policies          ← named grant collections; builtin=1 for role/system seeds
   policy_rules      ← (policy_id, permission, resource_id nullable)
-  policy_bindings   ← (policy_id, principal_type user|group, principal_id)
+  policy_bindings   ← (policy_id, principal_type user|group|system, principal_id)
                         UNIQUE(policy_id, principal_type, principal_id)
 ```
 
-A user's **effective permissions** = union of rules from every policy bound directly to that user plus every policy bound to any group they belong to. Resolution is performed by `policyEngine.buildEffectivePermissions(role, rules)`.
+A user's effective permissions are the union of direct/group rules and three Gerrit-inspired system principals: `Registered Users` (all authenticated users, legacy NULL-owner reads), `Resource Owner` (the creator of a concrete resource), and `Project Owners` (users/groups holding `project.owner` on the project). `admin` remains the superuser. Cross-owner agent/project references are rejected before persistence.
 
 #### Built-in policies (seeded at startup)
 
 | Policy | Access level |
 |--------|-------------|
-| `Operator` | Full read/write on projects, tasks, integrations, agents, prompts; no user/audit/policy administration |
-| `Viewer` | Read-only: overview, task list, project list, runtime status |
+| `Operator` | Create owned resources and use operational global capabilities; no wildcard access to other owners |
+| `Viewer` | Read-only global status capabilities |
+| `Registered Users` | Read NULL-owner legacy resources |
+| `Resource Owner` | Manage resources whose `owner_user_id` matches the caller |
+| `Project Owners` | Manage projects/tasks where the caller holds `project.owner` |
 
 Legacy `operator`/`viewer` users with no existing policy bindings or group memberships are automatically bound to their matching built-in policy at startup (one-time migration, idempotent).
 
-#### API (`policy.manage` permission)
+Project owners delegate bounded project/task rights to groups through `GET /projects/:id/access`, `PUT /projects/:id/access/groups/:groupId`, and the corresponding `DELETE`. The project detail UI exposes these routes as **Access**.
+
+#### Policy and delegation API
+
+Policy/group administration requires `policy.manage`; the three project access routes require `project.owner` on the concrete project.
 
 | Route | Purpose |
 |-------|---------|
@@ -989,6 +998,9 @@ Legacy `operator`/`viewer` users with no existing policy bindings or group membe
 | `PUT /api/admin/policies/:id/rules` | Replace policy rules atomically |
 | `POST /api/admin/policies/:id/bindings` | Bind policy to user or group |
 | `DELETE /api/admin/policies/:id/bindings/:type/:principalId` | Remove binding |
+| `GET /api/admin/projects/:id/access` | List delegated group access (`project.owner`) |
+| `PUT /api/admin/projects/:id/access/groups/:groupId` | Replace group project/task permissions (`project.owner`) |
+| `DELETE /api/admin/projects/:id/access/groups/:groupId` | Remove delegated group access (`project.owner`) |
 
 ---
 

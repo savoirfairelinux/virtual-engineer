@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
+import { oauthAppResourceId } from "../domain/accessControl.js";
 import type { Integration, IntegrationReferenceDetails, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
 import { getCredentialFieldKeys, type PluginManager } from "../plugins/pluginManager.js";
 import {
@@ -16,10 +18,24 @@ import { encryptToken, isVersionedEncryptedToken } from "../utils/encryption.js"
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
+import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
+import { can, canAccessResource } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
 
 const log = getLogger("admin-integrations");
+
+function filterVisibleIntegrations(req: IncomingMessage, integrations: Integration[]): Integration[] {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return integrations;
+  const actorUserId = getAuthContext(req)?.userId ?? null;
+  return integrations.filter((integration) => canAccessResource(
+    perms,
+    "integration.read",
+    { type: "integration", id: integration.id, ownerUserId: integration.ownerUserId ?? null },
+    actorUserId
+  ));
+}
 
 const workspaceScanSchema = z.object({
   repoKey: z.string().trim().min(1).max(512),
@@ -78,7 +94,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       })),
     });
     return Promise.resolve();
-  }, { permission: "integration.read" });
+  }, { authenticated: true });
 
   // ─── OAuth Apps ────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/oauth-apps", async (req, res, _params) => {
@@ -86,8 +102,22 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const providerParam = requestUrl.searchParams.get("provider") ?? undefined;
     const apps = await deps.oAuthAppStore.listOAuthApps(providerParam);
-    writeJson(res, 200, { apps: apps.map((app) => serializeOAuthApp(app)) });
-  }, { permission: "oauth.manage" });
+    const perms = getEffectivePermissions(req);
+    const actorUserId = getAuthContext(req)?.userId ?? null;
+    const visible = perms
+      ? apps.filter((app) => canAccessResource(
+          perms,
+          "oauth.read",
+          {
+            type: "oauth",
+            id: oauthAppResourceId(app.provider, app.baseUrl),
+            ownerUserId: app.ownerUserId ?? null,
+          },
+          actorUserId
+        ))
+      : apps;
+    writeJson(res, 200, { apps: visible.map((app) => serializeOAuthApp(app)) });
+  }, { permission: "oauth.read", collection: true });
 
   router.add("POST", "/api/admin/oauth-apps", async (req, res, _params) => {
     if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
@@ -96,10 +126,35 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
     const clientId = typeof body?.["clientId"] === "string" ? body["clientId"] : "";
     if (!baseUrl || !clientId) { writeJson(res, 400, { error: "Missing required fields: baseUrl, clientId" }); return; }
-    const app = await deps.oAuthAppStore.upsertOAuthApp({ provider, baseUrl: normalizeGitLabBaseUrl(baseUrl), clientId });
+    const normalizedBaseUrl = normalizeGitLabBaseUrl(baseUrl);
+    const existing = await deps.oAuthAppStore.getOAuthApp(provider, normalizedBaseUrl);
+    const perms = getEffectivePermissions(req);
+    const actorUserId = getAuthContext(req)?.userId ?? null;
+    const authorized = perms && (existing
+      ? canAccessResource(
+          perms,
+          "oauth.write",
+          {
+            type: "oauth",
+            id: oauthAppResourceId(provider, normalizedBaseUrl),
+            ownerUserId: existing.ownerUserId ?? null,
+          },
+          actorUserId
+        )
+      : can(perms, "oauth.create"));
+    if (!authorized) {
+      writeJson(res, 403, { error: "forbidden", permission: existing ? "oauth.write" : "oauth.create" });
+      return;
+    }
+    const app = await deps.oAuthAppStore.upsertOAuthApp({
+      provider,
+      baseUrl: normalizedBaseUrl,
+      clientId,
+      ownerUserId: existing?.ownerUserId ?? actorUserId,
+    });
     recordAudit(deps.auditStore, req, { action: "oauth_app.create", targetType: "oauth_app", targetId: `${app.provider}:${app.baseUrl}`, details: { provider: app.provider, baseUrl: app.baseUrl } });
     writeJson(res, 201, { app: serializeOAuthApp(app) });
-  }, { permission: "oauth.manage" });
+  }, { authenticated: true });
 
   router.add("DELETE", "/api/admin/oauth-apps", async (req, res, _params) => {
     if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
@@ -108,10 +163,26 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
     if (!baseUrl) { writeJson(res, 400, { error: "baseUrl is required" }); return; }
     const normalizedBase = normalizeGitLabBaseUrl(baseUrl);
+    const existing = await deps.oAuthAppStore.getOAuthApp(provider, normalizedBase);
+    if (!existing) { writeJson(res, 404, { error: "OAuth app not found" }); return; }
+    const perms = getEffectivePermissions(req);
+    if (!perms || !canAccessResource(
+      perms,
+      "oauth.delete",
+      {
+        type: "oauth",
+        id: oauthAppResourceId(provider, normalizedBase),
+        ownerUserId: existing.ownerUserId ?? null,
+      },
+      getAuthContext(req)?.userId ?? null
+    )) {
+      writeJson(res, 403, { error: "forbidden", permission: "oauth.delete" });
+      return;
+    }
     await deps.oAuthAppStore.deleteOAuthApp(provider, normalizedBase);
     recordAudit(deps.auditStore, req, { action: "oauth_app.delete", targetType: "oauth_app", targetId: `${provider}:${normalizedBase}`, details: { provider, baseUrl: normalizedBase } });
     writeJson(res, 200, { ok: true });
-  }, { permission: "oauth.manage" });
+  }, { authenticated: true });
 
   // Resolve a provider + base URL to its OAuth app registry entry.
   router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
@@ -126,28 +197,43 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 404, { error: `No OAuth app is configured for ${provider}:${normalizedBaseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.` });
       return;
     }
+    const perms = getEffectivePermissions(req);
+    if (!perms || !canAccessResource(
+      perms,
+      "oauth.read",
+      {
+        type: "oauth",
+        id: oauthAppResourceId(provider, normalizedBaseUrl),
+        ownerUserId: app.ownerUserId ?? null,
+      },
+      getAuthContext(req)?.userId ?? null
+    )) {
+      writeJson(res, 403, { error: "forbidden", permission: "oauth.read" });
+      return;
+    }
     writeJson(res, 200, { app: serializeOAuthApp(app) });
-  }, { permission: "oauth.manage" });
+  }, { permission: "oauth.read", collection: true });
 
   // ─── Integrations CRUD (exact paths before :id pattern) ──────────────────
-  router.add("GET", "/api/admin/integrations", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/integrations", async (req, res, _params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const list = await deps.integrationStore.getIntegrations();
-    writeJson(res, 200, { integrations: list.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)) });
-  }, { permission: "integration.read" });
+    const visible = filterVisibleIntegrations(req, list);
+    writeJson(res, 200, { integrations: visible.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)) });
+  }, { permission: "integration.read", collection: true });
 
-  router.add("GET", "/api/admin/integrations/by-category", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/integrations/by-category", async (req, res, _params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const supports = (integration: Integration, capability: string): boolean => {
       const descriptor = getProviderDescriptor(integration.provider);
       return descriptor ? (getProviderDomainCapabilities(descriptor) as string[]).includes(capability) : false;
     };
-    const list = await deps.integrationStore.getIntegrations();
+    const list = filterVisibleIntegrations(req, await deps.integrationStore.getIntegrations());
     writeJson(res, 200, {
       codeSources: list.filter((i) => supports(i, "code_review") || supports(i, "source_control")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
       ticketSources: list.filter((i) => supports(i, "issue_tracking")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
     });
-  }, { permission: "integration.read" });
+  }, { permission: "integration.read", collection: true });
 
   router.add("POST", "/api/admin/integrations", async (req, res, _params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
@@ -168,11 +254,16 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       return;
     }
     const id = body["id"] as string || randomUUID();
+    if (await deps.integrationStore.getIntegration(id)) {
+      writeJson(res, 409, { error: `Integration already exists: ${id}` });
+      return;
+    }
     try {
       const integration = await deps.integrationStore.upsertIntegration({
         id, provider, name: body["name"] as string,
         configJson: JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret)),
         enabled: true,
+        ownerUserId: getAuthContext(req)?.userId ?? null,
       });
       if (deps.pluginManager) {
         try {
@@ -188,7 +279,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "create integration failed");
       writeJson(res, 500, { error: msg });
     }
-  }, { permission: "integration.write" });
+  }, { permission: "integration.create" });
 
   // test (exact path before :id)
   router.add("POST", "/api/admin/integrations/test", async (req, res, _params) => {
@@ -202,6 +293,14 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
         const existing = await deps.integrationStore.getIntegration(integrationId);
         if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
+        if (!requestCanAccessResource(req, "integration.write", {
+          type: "integration",
+          id: existing.id,
+          ownerUserId: existing.ownerUserId ?? null,
+        })) {
+          writeJson(res, 403, { error: "forbidden", permission: "integration.write" });
+          return;
+        }
         if (requestedProvider !== undefined && requestedProvider !== existing.provider) {
           writeJson(res, 400, { error: "Changing integration provider is not supported" }); return;
         }
@@ -216,6 +315,11 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         return;
       }
       if (!requestedProvider) { writeJson(res, 400, { error: "Provider is required" }); return; }
+      const perms = getEffectivePermissions(req);
+      if (perms && !can(perms, "integration.create")) {
+        writeJson(res, 403, { error: "forbidden", permission: "integration.create" });
+        return;
+      }
       const result = await deps.pluginManager.testConnectionConfig(requestedProvider, config);
       logConnectionTestResult({ provider: requestedProvider }, result);
       writeJson(res, 200, result);
@@ -224,7 +328,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ integrationId, requestedProvider, errorMessage }, "config test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-  }, { permission: "integration.write" });
+  }, { authenticated: true });
 
   // ─── Single integration by ID ─────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id", async (_req, res, params) => {
@@ -233,7 +337,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     writeJson(res, 200, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
-  }, { permission: "integration.read" });
+  }, { permission: "integration.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/integrations/:id", async (req, res, params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
@@ -578,7 +682,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const status = msg.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
       writeJson(res, status, { error: `SSH key generation failed: ${msg}` });
     }
-  }, { permission: "integration.write" });
+  }, { permission: "integration.create" });
 
   router.add("POST", "/api/admin/integrations/:id/ssh-key/generate", async (_req, res, params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
@@ -657,7 +761,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ error: msg }, "ssh-add -L failed");
       writeJson(res, 200, { keys: [], agentAvailable: false });
     }
-  }, { permission: "integration.read" });
+  }, { permission: "integration.create" });
 }
 
 // ─── Integration config helpers ─────────────────────────────────────────────
@@ -839,6 +943,7 @@ function serializeIntegration(
     reviewAssignmentModes: descriptor ? getCodeReviewAssignmentModes(descriptor) : [],
     name: integration.name,
     enabled: integration.enabled,
+    ownerUserId: integration.ownerUserId,
     active,
     config: maskIntegrationConfig(integration),
     createdAt: toIsoTimestamp(integration.createdAt),
@@ -858,6 +963,7 @@ function serializeOAuthApp(app: OAuthApp): Record<string, unknown> {
     provider: app.provider,
     baseUrl: app.baseUrl,
     clientId: app.clientId,
+    ownerUserId: app.ownerUserId,
     createdAt: toIsoTimestamp(app.createdAt),
     updatedAt: toIsoTimestamp(app.updatedAt),
   };

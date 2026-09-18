@@ -17,13 +17,19 @@ interface DrawerActionsProps {
   onToggle?: (() => void) | undefined;
   onDelete?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
+  onAccess?: (() => void) | undefined;
 }
 
-function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit }: DrawerActionsProps) {
+function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onAccess }: DrawerActionsProps) {
   return (
     <>
       <button className="btn" onClick={onClose}>Close</button>
       <span className="spacer" />
+            {onAccess && (
+              <button className="btn" onClick={onAccess}>
+                <Icon name="user" size={13} /> Access
+              </button>
+            )}
       {onDelete && (
         <button className="btn danger sm" onClick={onDelete}>
           <Icon name="trash" size={13} /> Delete
@@ -255,9 +261,10 @@ interface ProjectDrawerProps {
   onEdit?: () => void;
   onToggle?: () => void;
   onDelete?: () => void;
+  onAccess?: () => void;
 }
 
-export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete }: ProjectDrawerProps) {
+export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete, onAccess }: ProjectDrawerProps) {
   const agentName = agents.find((a) => a.id === item.agentId)?.name ?? item.agentId ?? "—";
 
   const banner = item.enabled
@@ -293,6 +300,7 @@ export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelet
           onEdit={onEdit}
           onToggle={onToggle}
           onDelete={onDelete}
+          onAccess={onAccess}
         />
       }
     >

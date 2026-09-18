@@ -1,11 +1,11 @@
 import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
-import type { AgentCycle, StateTransition, Task } from "../interfaces.js";
+import type { AgentCycle, ProjectId, ProjectRecord, StateTransition, Task } from "../interfaces.js";
 import type { IncomingMessage } from "node:http";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
-import { getEffectivePermissions } from "./authContext.js";
-import { ALL_RESOURCES, accessibleResourceIds } from "./authorization/policyEngine.js";
+import { getAuthContext, getEffectivePermissions } from "./authContext.js";
+import { ALL_RESOURCES, accessibleResourceIds, can, canAccessResource } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-tasks");
@@ -26,6 +26,41 @@ export function filterTasksByReadScope(req: IncomingMessage, tasks: Task[]): Tas
   return tasks.filter((t) => t.projectId != null && scope.has(t.projectId));
 }
 
+export async function filterTasksByReadAccess(
+  req: IncomingMessage,
+  tasks: Task[],
+  projectStore: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> }
+): Promise<Task[]> {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return tasks;
+  const projectIds = Array.from(new Set(
+    tasks.flatMap((task) => task.projectId == null ? [] : [task.projectId])
+  ));
+  const projects = await Promise.all(projectIds.map(async (projectId) => [
+    projectId,
+    await projectStore.getProjectById(projectId),
+  ] as const));
+  const projectsById = new Map(projects);
+  const actorUserId = getAuthContext(req)?.userId ?? null;
+
+  return tasks.filter((task) => {
+    if (task.projectId == null) return can(perms, "task.read");
+    const project = projectsById.get(task.projectId);
+    if (!project) return can(perms, "task.read", task.projectId);
+    return canAccessResource(
+      perms,
+      "task.read",
+      {
+        type: "task",
+        id: task.taskId,
+        projectId: task.projectId,
+        ownerUserId: project.ownerUserId ?? null,
+      },
+      actorUserId
+    );
+  });
+}
+
 /** Subset of state-store methods required by the task routes. */
 export interface TaskRouteStore {
   getAllTasks(): Promise<Task[]>;
@@ -44,6 +79,7 @@ export interface TaskRouteStore {
 
 export interface TaskRouteDeps {
   stateStore: TaskRouteStore;
+  projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> } | undefined;
   auditStore?: AuditCapableStore | undefined;
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
@@ -56,7 +92,11 @@ export interface TaskRouteDeps {
 export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
   router.add("GET", "/api/admin/tasks", async (req, res, _params) => {
     const tasks = await deps.stateStore.getAllTasks();
-    const deduplicated = filterTasksByReadScope(req, deduplicateByTicket(tasks))
+    const candidates = deduplicateByTicket(tasks);
+    const visible = deps.projectStore
+      ? await filterTasksByReadAccess(req, candidates, deps.projectStore)
+      : filterTasksByReadScope(req, candidates);
+    const deduplicated = visible
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
     const allChanges = await deps.stateStore.getChangesForTasks(deduplicated.map((t) => t.taskId));
     const cprReviewUrlByTaskId = new Map<string, string>();

@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, ProjectId, Task } from "../interfaces.js";
+import { oauthAppResourceId, parseOAuthAppResourceId } from "../domain/accessControl.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, EffectivePolicyRule, ProjectId, ResourceType, Task } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -33,13 +34,27 @@ import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore }
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
-import { getAuthContext, setAuthContext, getEffectivePermissions, setEffectivePermissions } from "./authContext.js";
-import { makeTaskId } from "../interfaces.js";
+import {
+  getAuthContext,
+  requestCanAccessResource,
+  setAuthContext,
+  getEffectivePermissions,
+  setEffectivePermissions,
+} from "./authContext.js";
+import { makeAgentId, makeProjectId, makeTaskId } from "../interfaces.js";
 import { Router, type RouteMeta, type RouteParams } from "./router.js";
-import { buildEffectivePermissions, can, accessibleResourceIds, type EffectivePermissions } from "./authorization/policyEngine.js";
+import {
+  buildEffectivePermissions,
+  can,
+  canAccessResource,
+  hasPotentialResourceAccess,
+  type EffectivePermissions,
+  type ResourceDescriptor,
+} from "./authorization/policyEngine.js";
+import { resourceTypeOf } from "./authorization/permissions.js";
 import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
 import type { AuthContext } from "./adminAuthService.js";
-import type { PolicyRule, UserRole } from "../interfaces.js";
+import type { UserRole } from "../interfaces.js";
 
 export { getAuthContext } from "./authContext.js";
 export type { AuthContext } from "./adminAuthService.js";
@@ -268,7 +283,7 @@ function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
 
 /** PBAC rule-resolution surface used to build a user's effective permissions. */
 interface PbacRuleStore {
-  getEffectivePolicyRulesForUser(userId: string): Promise<PolicyRule[]>;
+  getEffectivePolicyRulesForUser(userId: string): Promise<EffectivePolicyRule[]>;
 }
 
 /** Feature-detect the PBAC rule-resolution method on the injected state store. */
@@ -360,6 +375,7 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
 function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: AdminAuthRuntime): Router {
   const router = new Router();
   const policyBinder = extractPolicyBinder(dependencies.stateStore);
+  const policyRoutesStore = extractPolicyRoutesStore(dependencies.stateStore);
 
   // Status / Config / Providers
   router.add("GET", "/api/admin/status", (_req, res, _params) => {
@@ -403,10 +419,22 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     return Promise.resolve();
   }, { authenticated: true });
 
-  router.add("GET", "/api/admin/providers", (_req, res, _params) => {
+  router.add("GET", "/api/admin/providers", async (req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
+    const integrations = dependencies.integrationStore
+      ? await dependencies.integrationStore.getIntegrations()
+      : [];
+    const integrationsById = new Map(integrations.map((integration) => [integration.id, integration]));
+    const visibleProviders = providersList.filter((provider) => {
+      const integration = integrationsById.get(provider.id);
+      return !integration || requestCanAccessResource(req, "integration.read", {
+        type: "integration",
+        id: integration.id,
+        ownerUserId: integration.ownerUserId ?? null,
+      });
+    });
     writeJson(res, 200, {
-      providers: providersList.map((provider) => ({
+      providers: visibleProviders.map((provider) => ({
         id: provider.id,
         name: provider.name,
         category: provider.category,
@@ -416,10 +444,12 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         details: provider.details,
       })),
     });
-    return Promise.resolve();
-  }, { permission: "integration.read" });
+  }, { permission: "overview.read" });
 
-  registerStreamRoutes(router, { stateStore: dependencies.stateStore });
+  registerStreamRoutes(router, {
+    stateStore: dependencies.stateStore,
+    projectStore: dependencies.projectStore,
+  });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
   registerAuthRoutes(router, {
     userStore: authRuntime.userStore ?? undefined,
@@ -433,9 +463,14 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     trustProxy: dependencies.config.adminTrustProxy,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
-  registerPolicyRoutes(router, { policyStore: extractPolicyRoutesStore(dependencies.stateStore) ?? undefined, auditStore });
+  registerPolicyRoutes(router, { policyStore: policyRoutesStore ?? undefined, auditStore });
   registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });
-  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl, auditStore });
+  registerTaskRoutes(router, {
+    stateStore: dependencies.stateStore,
+    projectStore: dependencies.projectStore,
+    taskControl: dependencies.taskControl,
+    auditStore,
+  });
   registerIntegrationRoutes(router, {
     integrationStore: dependencies.integrationStore,
     pluginManager: dependencies.pluginManager,
@@ -457,6 +492,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerProjectRoutes(router, {
     projectStore: dependencies.projectStore,
+    projectAccessStore: policyRoutesStore ?? undefined,
     integrationStore: dependencies.integrationStore,
     pluginManager: dependencies.pluginManager,
     adminAuthSecret: dependencies.config.adminAuthSecret,
@@ -465,7 +501,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     taskControl: dependencies.taskControl,
     ...dependencies.projectRoutes,
   });
-  registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
+  registerConcurrencyRoutes(router, {
+    concurrency: dependencies.concurrency,
+    projectStore: dependencies.projectStore,
+    agentStore: dependencies.agentStore,
+  });
   registerSettingsRoutes(router, { settings: dependencies.settings });
   registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore, gateway: dependencies.runtimeGateway });
   registerDenialRoutes(router, { denialStore: dependencies.denialStore });
@@ -478,6 +518,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerOverviewRoutes(router, {
     stateStore: dependencies.stateStore,
+    projectStore: dependencies.projectStore,
     config: dependencies.config,
     databasePath: process.env["DATABASE_PATH"] ?? "./data/virtual-engineer.db",
     pollingIntervalMs: dependencies.config.pollingIntervalMs,
@@ -679,9 +720,14 @@ async function handleRequest(
       if (meta.authenticated) {
         // Auth-self routes: any authenticated identity may proceed.
       } else if (meta.permission) {
+        const resource = await resolveScopeResource(meta, matched.params, dependencies);
         const authorized = meta.collection
-          ? accessibleResourceIds(perms, meta.permission) !== null
-          : can(perms, meta.permission, await resolveScopeResourceId(meta, matched.params, dependencies.stateStore));
+          ? hasPotentialResourceAccess(perms, meta.permission)
+          : resource === undefined
+            ? can(perms, meta.permission)
+            : resource === null
+              ? can(perms, meta.permission, matched.params[meta.resourceParam ?? ""] ?? null)
+              : canAccessResource(perms, meta.permission, resource, context.userId);
         if (!authorized) {
           writeJson(response, 403, { error: "forbidden", permission: meta.permission });
           return;
@@ -718,7 +764,7 @@ function extractBearerToken(request: IncomingMessage): string | null {
 }
 
 /**
- * Resolve the resource id a scoped permission check applies to.
+ * Resolve the resource a scoped permission check applies to.
  *
  * - Returns `undefined` for a global permission (no `resourceParam`) — the gate
  *   then requires an unscoped (all-resources) grant.
@@ -726,23 +772,71 @@ function extractBearerToken(request: IncomingMessage): string | null {
  *   their project's scope); returns null for orphaned/unknown tasks.
  * - Otherwise returns the raw path-parameter value (project/integration/agent/prompt id).
  */
-async function resolveScopeResourceId(
+async function resolveScopeResource(
   meta: RouteMeta,
   params: RouteParams,
-  stateStore: AdminServerDependencies["stateStore"]
-): Promise<string | null | undefined> {
+  dependencies: AdminServerDependencies
+): Promise<ResourceDescriptor | null | undefined> {
   if (!meta.resourceParam) return undefined;
   const raw = params[meta.resourceParam];
   if (!raw) return null;
-  if (meta.permission?.startsWith("task.")) {
-    try {
-      const task = await stateStore.getTask(makeTaskId(raw));
-      return task?.projectId ?? null;
-    } catch {
-      return null;
+  const resourceType = meta.resourceType ?? (meta.permission ? resourceTypeOf(meta.permission) : null);
+  if (!resourceType) return null;
+
+  try {
+    if (resourceType === "task") {
+      const task = await dependencies.stateStore.getTask(makeTaskId(raw));
+      if (!task) return null;
+      const project = task.projectId && dependencies.projectStore
+        ? await dependencies.projectStore.getProjectById(task.projectId)
+        : null;
+      return {
+        type: "task",
+        id: raw,
+        projectId: task.projectId ?? null,
+        ownerUserId: project?.ownerUserId ?? null,
+      };
     }
+    if (resourceType === "project") {
+      const project = await dependencies.projectStore?.getProjectById(makeProjectId(raw));
+      return project ? resourceDescriptor("project", project.id, project.ownerUserId ?? null) : null;
+    }
+    if (resourceType === "integration") {
+      const integration = await dependencies.integrationStore?.getIntegration(raw);
+      return integration ? resourceDescriptor("integration", integration.id, integration.ownerUserId ?? null) : null;
+    }
+    if (resourceType === "agent") {
+      const agent = await dependencies.agentStore?.getAgentById(makeAgentId(raw));
+      return agent ? resourceDescriptor("agent", agent.id, agent.ownerUserId ?? null) : null;
+    }
+    if (resourceType === "prompt") {
+      const prompt = await dependencies.promptStore?.getPrompt(raw);
+      return prompt ? resourceDescriptor("prompt", prompt.id, prompt.ownerUserId ?? null) : null;
+    }
+    if (resourceType === "oauth") {
+      const identity = parseOAuthAppResourceId(raw);
+      if (!identity) return null;
+      const app = await dependencies.oAuthAppStore?.getOAuthApp(identity.provider, identity.baseUrl);
+      return app
+        ? resourceDescriptor(
+            "oauth",
+            oauthAppResourceId(app.provider, app.baseUrl),
+            app.ownerUserId ?? null
+          )
+        : null;
+    }
+  } catch {
+    return null;
   }
-  return raw;
+  return null;
+}
+
+function resourceDescriptor(
+  type: ResourceType,
+  id: string,
+  ownerUserId: string | null
+): ResourceDescriptor {
+  return { type, id, ownerUserId };
 }
 
 

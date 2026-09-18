@@ -131,6 +131,7 @@ export interface ApiIntegration {
   provider: string;
   name: string;
   enabled: boolean;
+  ownerUserId?: string | null;
   active?: boolean;
   capabilities: string[];
   domainCapabilities: DomainCapability[];
@@ -228,6 +229,7 @@ export interface ApiAgent {
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;
+  ownerUserId?: string | null;
   modelConfig?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -239,6 +241,7 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
+  ownerUserId?: string | null;
   skillSources?: Array<{ source: string; skills: string[]; installAll?: boolean; sshUser?: string; sshPort?: number; sshKeyPath?: string; sshKnownHostsPath?: string }>;
   createdAt: string;
   updatedAt: string;
@@ -249,6 +252,7 @@ export interface ApiPrompt {
   label: string;
   content: string;
   promptType: "system" | "instructions";
+  ownerUserId?: string | null;
   updatedAt: string;
   usedByCount?: number;
 }
@@ -257,6 +261,7 @@ export interface ApiOAuthApp {
   provider: string;
   baseUrl: string;
   clientId: string;
+  ownerUserId?: string | null;
 }
 
 export interface ApiStatus {
@@ -378,6 +383,9 @@ export interface SerializedCapabilities {
   superuser: boolean;
   /** permission → "*" (all) or a list of scoped resource ids. */
   grants: Record<string, "*" | string[]>;
+  resourceOwnerGrants?: string[];
+  projectOwnerGrants?: string[];
+  registeredUserGrants?: string[];
 }
 
 export interface ApiMe {
@@ -428,7 +436,7 @@ export interface ApiPolicyRule {
 export interface ApiPolicyBinding {
   id: string;
   policyId: string;
-  principalType: "user" | "group";
+  principalType: "user" | "group" | "system";
   principalId: string;
 }
 

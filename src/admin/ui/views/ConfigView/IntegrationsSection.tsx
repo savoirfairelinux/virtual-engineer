@@ -13,9 +13,7 @@ import type { ConfigSectionProps } from "./index.tsx";
 
 export function IntegrationsSection({ integrations, plugins, onRefresh, route, navigate, markClean, setDirty }: ConfigSectionProps) {
   const { can } = useCurrentUser();
-  const canWrite = can("integration.write");
-  const canDelete = can("integration.delete");
-  const canOperate = can("integration.operate");
+  const canCreate = can("integration.create");
   const [busy, setBusy] = useState<string | null>(null);
   const routeId = route.section === "integrations" && (route.mode === "detail" || route.mode === "edit")
     ? route.id
@@ -61,15 +59,18 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
       <IntegrationDrawer
         item={routeItem}
         onClose={() => navigate({ section: "integrations", mode: "list" })}
-        {...(canWrite ? { onEdit: () => navigate({ section: "integrations", mode: "edit", id: routeItem.id }) } : {})}
-        {...(canOperate ? { onToggle: () => { void toggleEnabled(routeItem.id, routeItem.enabled); } } : {})}
-        {...(canDelete ? { onDelete: () => { void deleteIntegration(routeItem).then((deleted) => { if (deleted) navigate({ section: "integrations", mode: "list" }); }); } } : {})}
+        {...(can("integration.write", routeItem.id, routeItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "integrations", mode: "edit", id: routeItem.id }) } : {})}
+        {...(can("integration.operate", routeItem.id, routeItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(routeItem.id, routeItem.enabled); } } : {})}
+        {...(can("integration.delete", routeItem.id, routeItem.ownerUserId ?? null) ? { onDelete: () => { void deleteIntegration(routeItem).then((deleted) => { if (deleted) navigate({ section: "integrations", mode: "list" }); }); } } : {})}
       />
     );
   }
 
   if (route.mode === "create" || route.mode === "edit") {
-    if (!canWrite) return <MissingEntity label="page" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
+    const canUseForm = route.mode === "create"
+      ? canCreate
+      : routeItem !== undefined && can("integration.write", routeItem.id, routeItem.ownerUserId ?? null);
+    if (!canUseForm) return <MissingEntity label="page" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
     if (route.mode === "edit" && !routeItem) return <MissingEntity label="integration" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
     return (
       <IntegrationFormModal
@@ -93,7 +94,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Integrations</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>External providers the orchestrator routes to by integration ID.</p>
           </div>
-          {canWrite && (
+          {canCreate && (
             <button className="btn primary" data-tour="integrations-add" onClick={() => navigate({ section: "integrations", mode: "create" })}>
               <Icon name="plus" size={14} /> Add integration
             </button>
@@ -130,7 +131,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
                 />
                 {it.enabled ? "enabled" : "disabled"}
               </Tag>
-              {canOperate && (
+              {can("integration.operate", it.id, it.ownerUserId ?? null) && (
                 <div onClick={(e) => e.stopPropagation()}>
                   <Toggle
                     on={it.enabled}
@@ -140,7 +141,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
                   />
                 </div>
               )}
-              {canDelete && (
+              {can("integration.delete", it.id, it.ownerUserId ?? null) && (
                 <button
                   className="iconbtn"
                   title="Delete"

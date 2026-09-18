@@ -1,6 +1,11 @@
 import type { IncomingMessage } from "node:http";
 import type { AuthContext } from "./adminAuthService.js";
-import type { EffectivePermissions } from "./authorization/policyEngine.js";
+import type { Permission } from "../interfaces.js";
+import {
+  canAccessResource,
+  type EffectivePermissions,
+  type ResourceDescriptor,
+} from "./authorization/policyEngine.js";
 
 /**
  * Per-request auth identity, attached after successful authentication in
@@ -34,4 +39,14 @@ export function setEffectivePermissions(req: IncomingMessage, perms: EffectivePe
  */
 export function getEffectivePermissions(req: IncomingMessage): EffectivePermissions | undefined {
   return effectivePermissions.get(req);
+}
+
+export function requestCanAccessResource(
+  req: IncomingMessage,
+  permission: Permission,
+  resource: ResourceDescriptor
+): boolean {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return false;
+  return canAccessResource(perms, permission, resource, getAuthContext(req)?.userId ?? null);
 }

@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
-import type { PolicyRule } from "../../src/interfaces.js";
+import type { EffectivePolicyRule, PolicyRule } from "../../src/interfaces.js";
+import { oauthAppResourceId, parseOAuthAppResourceId } from "../../src/domain/accessControl.js";
 import {
   ALL_RESOURCES,
   accessibleResourceIds,
   buildEffectivePermissions,
   can,
+  canAccessResource,
+  hasPotentialResourceAccess,
 } from "../../src/admin/authorization/policyEngine.js";
 
 let seq = 0;
@@ -18,7 +21,27 @@ function rule(permission: string, resourceId: string | null): PolicyRule {
   };
 }
 
+function systemRule(
+  permission: string,
+  principalId: "registered_users" | "resource_owner" | "project_owners"
+): EffectivePolicyRule {
+  return {
+    ...rule(permission, null),
+    principalType: "system",
+    principalId,
+  };
+}
+
 describe("policyEngine — buildEffectivePermissions", () => {
+  it("round-trips composite OAuth app resource ids", () => {
+    const resourceId = oauthAppResourceId("gitlab", "https://gitlab.example.com/path");
+    expect(parseOAuthAppResourceId(resourceId)).toEqual({
+      provider: "gitlab",
+      baseUrl: "https://gitlab.example.com/path",
+    });
+    expect(parseOAuthAppResourceId("invalid")).toBeNull();
+  });
+
   it("admin role is a superuser regardless of rules", () => {
     const perms = buildEffectivePermissions("admin", []);
     expect(perms.isSuperuser).toBe(true);
@@ -79,5 +102,63 @@ describe("policyEngine — buildEffectivePermissions", () => {
   it("superuser accessibleResourceIds is ALL_RESOURCES", () => {
     const perms = buildEffectivePermissions("admin", []);
     expect(accessibleResourceIds(perms, "integration.read")).toBe(ALL_RESOURCES);
+  });
+
+  it("grants resource-owner permissions only to the creating user", () => {
+    const perms = buildEffectivePermissions("operator", [
+      systemRule("prompt.read", "resource_owner"),
+      systemRule("prompt.write", "resource_owner"),
+    ]);
+    const prompt = { type: "prompt", id: "prompt-1", ownerUserId: "user-1" } as const;
+
+    expect(canAccessResource(perms, "prompt.read", prompt, "user-1")).toBe(true);
+    expect(canAccessResource(perms, "prompt.write", prompt, "user-2")).toBe(false);
+    expect(hasPotentialResourceAccess(perms, "prompt.read")).toBe(true);
+  });
+
+  it("lets registered users read legacy resources without exposing owned resources", () => {
+    const perms = buildEffectivePermissions("viewer", [
+      systemRule("integration.read", "registered_users"),
+    ]);
+
+    expect(canAccessResource(
+      perms,
+      "integration.read",
+      { type: "integration", id: "legacy", ownerUserId: null },
+      "user-2"
+    )).toBe(true);
+    expect(canAccessResource(
+      perms,
+      "integration.read",
+      { type: "integration", id: "private", ownerUserId: "user-1" },
+      "user-2"
+    )).toBe(false);
+  });
+
+  it("applies Project Owners permissions only inside delegated projects", () => {
+    const perms = buildEffectivePermissions("operator", [
+      rule("project.owner", "project-1"),
+      systemRule("project.write", "project_owners"),
+      systemRule("task.operate", "project_owners"),
+    ]);
+
+    expect(canAccessResource(
+      perms,
+      "project.write",
+      { type: "project", id: "project-1", ownerUserId: "another-user" },
+      "delegate"
+    )).toBe(true);
+    expect(canAccessResource(
+      perms,
+      "project.write",
+      { type: "project", id: "project-2", ownerUserId: "another-user" },
+      "delegate"
+    )).toBe(false);
+    expect(canAccessResource(
+      perms,
+      "task.operate",
+      { type: "task", id: "task-1", projectId: "project-1", ownerUserId: "another-user" },
+      "delegate"
+    )).toBe(true);
   });
 });

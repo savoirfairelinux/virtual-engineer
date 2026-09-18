@@ -98,6 +98,18 @@ describe("policyStore", () => {
     ).rejects.toMatchObject({ code: "DUPLICATE" });
   });
 
+  it("rejects non-system bindings for built-in system policies", async () => {
+    const user = await makeUser(store);
+    const resourceOwner = (await store.listPolicies()).find((policy) => policy.name === "Resource Owner");
+    expect(resourceOwner).toBeDefined();
+
+    await expect(store.createBinding({
+      policyId: resourceOwner!.id,
+      principalType: "user",
+      principalId: user.id,
+    })).rejects.toMatchObject({ code: "SYSTEM_POLICY_BINDING" });
+  });
+
   it("cascades rules and bindings when a policy is deleted", async () => {
     const p = await store.createPolicy({ name: "Doomed" });
     const u = await makeUser(store);
@@ -127,13 +139,54 @@ describe("policyStore", () => {
     await store.setPolicyRules(unbound.id, [{ permission: "user.manage", resourceId: null }]);
 
     const rules = await store.getEffectivePolicyRulesForUser(u.id);
-    const perms = rules.map((r) => r.permission).sort();
+    const perms = rules
+      .filter((rule) => rule.principalType !== "system")
+      .map((rule) => rule.permission)
+      .sort();
     expect(perms).toEqual(["integration.read", "project.read"]);
+    expect(rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        permission: "project.read",
+        principalType: "user",
+        principalId: u.id,
+      }),
+      expect.objectContaining({
+        permission: "integration.read",
+        principalType: "group",
+        principalId: g.id,
+      }),
+    ]));
   });
 
-  it("returns no effective rules for a user with no bindings", async () => {
+  it("includes system-principal rules for every registered user", async () => {
+    const user = await makeUser(store);
+    const policy = await store.createPolicy({ name: "System owner rules" });
+    await store.setPolicyRules(policy.id, [{ permission: "prompt.read", resourceId: null }]);
+    await store.createBinding({
+      policyId: policy.id,
+      principalType: "system",
+      principalId: "resource_owner",
+    });
+
+    await expect(store.getEffectivePolicyRulesForUser(user.id)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          permission: "prompt.read",
+          principalType: "system",
+          principalId: "resource_owner",
+        }),
+      ])
+    );
+  });
+
+  it("returns only system rules for a user with no explicit bindings", async () => {
     const u = await makeUser(store);
-    expect(await store.getEffectivePolicyRulesForUser(u.id)).toEqual([]);
+    const rules = await store.getEffectivePolicyRulesForUser(u.id);
+    expect(new Set(rules.map((rule) => rule.principalId))).toEqual(new Set([
+      "registered_users",
+      "resource_owner",
+      "project_owners",
+    ]));
   });
 });
 
@@ -142,18 +195,31 @@ describe("built-in policy seeding & migration", () => {
   beforeEach(async () => { store = await SqliteStateStore.create(tempDbPath()); });
   afterEach(() => { store.close(); });
 
-  it("seeds Operator and Viewer built-in policies", async () => {
+  it("seeds role and Gerrit-style system policies", async () => {
     const policies = await store.listPolicies();
     const operator = policies.find((p) => p.name === "Operator");
     const viewer = policies.find((p) => p.name === "Viewer");
+    const registered = policies.find((p) => p.name === "Registered Users");
+    const resourceOwner = policies.find((p) => p.name === "Resource Owner");
+    const projectOwners = policies.find((p) => p.name === "Project Owners");
     expect(operator?.builtin).toBe(true);
     expect(viewer?.builtin).toBe(true);
+    expect(registered?.builtin).toBe(true);
+    expect(resourceOwner?.builtin).toBe(true);
+    expect(projectOwners?.builtin).toBe(true);
 
     const opRules = await store.listPolicyRules(operator!.id);
-    expect(opRules.some((r) => r.permission === "project.write")).toBe(true);
+    expect(opRules.some((r) => r.permission === "project.create")).toBe(true);
+    expect(opRules.some((r) => r.permission === "project.write")).toBe(false);
     expect(opRules.every((r) => r.resourceId === null)).toBe(true);
-    // Operator excludes administration.
     expect(opRules.some((r) => r.permission === "user.manage")).toBe(false);
+
+    await expect(store.listBindingsForPrincipal("system", "registered_users"))
+      .resolves.toEqual([expect.objectContaining({ policyId: registered!.id })]);
+    await expect(store.listBindingsForPrincipal("system", "resource_owner"))
+      .resolves.toEqual([expect.objectContaining({ policyId: resourceOwner!.id })]);
+    await expect(store.listBindingsForPrincipal("system", "project_owners"))
+      .resolves.toEqual([expect.objectContaining({ policyId: projectOwners!.id })]);
   });
 
   it("binds a pre-existing operator user to the Operator policy on re-open", async () => {

@@ -8,7 +8,7 @@ import type { ConfigSectionProps } from "./index.tsx";
 
 export function OAuthSection({ oauthApps, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const { can } = useCurrentUser();
-  const canManage = can("oauth.manage");
+  const canCreate = can("oauth.create");
   const detailItem = route.section === "oauth" && route.mode === "detail"
     ? oauthApps.find((app) => app.provider === route.provider && app.baseUrl === route.baseUrl)
     : undefined;
@@ -37,7 +37,9 @@ export function OAuthSection({ oauthApps, onRefresh, route, navigate, markClean 
       <OAuthDrawer
         item={detailItem}
         onClose={() => navigate({ section: "oauth", mode: "list" })}
-        {...(canManage ? { onDeleted: handleDeleted } : {})}
+        {...(can("oauth.delete", `${detailItem.provider}|${detailItem.baseUrl}`, detailItem.ownerUserId ?? null)
+          ? { onDeleted: handleDeleted }
+          : {})}
       />
     );
   }
@@ -60,7 +62,7 @@ export function OAuthSection({ oauthApps, onRefresh, route, navigate, markClean 
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>OAuth apps</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Provider OAuth registrations used to mint short-lived agent tokens.</p>
           </div>
-          {canManage && <button className="btn primary" data-tour="oauth-register" onClick={() => navigate({ section: "oauth", mode: "create" })}><Icon name="plus" size={14} /> Register app</button>}
+          {canCreate && <button className="btn primary" data-tour="oauth-register" onClick={() => navigate({ section: "oauth", mode: "create" })}><Icon name="plus" size={14} /> Register app</button>}
         </div>
       </div>
 

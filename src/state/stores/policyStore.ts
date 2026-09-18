@@ -1,7 +1,19 @@
 import { randomUUID } from "crypto";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import type { Permission, Policy, PolicyBinding, PolicyRule, PrincipalType } from "../../interfaces.js";
+import {
+  isSystemPrincipalId,
+  SYSTEM_PRINCIPALS,
+  systemPrincipalForPolicyName,
+} from "../../domain/accessControl.js";
+import type {
+  EffectivePolicyRule,
+  Permission,
+  Policy,
+  PolicyBinding,
+  PolicyRule,
+  PrincipalType,
+} from "../../interfaces.js";
 import { groupMembers, policyBindings, policyRules, policies } from "../schema.js";
 import * as schema from "../schema.js";
 
@@ -46,7 +58,7 @@ export interface PolicyStoreApi {
    * bound directly to the user plus rules of policies bound to any group the
    * user belongs to. Drives {@link buildEffectivePermissions}.
    */
-  getEffectivePolicyRulesForUser(userId: string): Promise<PolicyRule[]>;
+  getEffectivePolicyRulesForUser(userId: string): Promise<EffectivePolicyRule[]>;
 }
 
 interface PolicyStoreContext {
@@ -165,6 +177,20 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
     },
 
     async createBinding(input): Promise<PolicyBinding> {
+      if (input.principalType === "system" && !isSystemPrincipalId(input.principalId)) {
+        throw new Error(`Unknown system principal: ${input.principalId}`);
+      }
+      const policy = await db.query.policies.findFirst({ where: eq(policies.id, input.policyId) });
+      const requiredSystemPrincipal = policy ? systemPrincipalForPolicyName(policy.name) : undefined;
+      if (
+        requiredSystemPrincipal !== undefined &&
+        (input.principalType !== "system" || input.principalId !== requiredSystemPrincipal)
+      ) {
+        throw Object.assign(
+          new Error(`Policy ${policy?.name ?? input.policyId} is reserved for its system principal`),
+          { code: "SYSTEM_POLICY_BINDING" }
+        );
+      }
       const row = {
         id: input.id ?? randomUUID(),
         policyId: input.policyId,
@@ -211,20 +237,34 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
       return rows.map(rowToBinding);
     },
 
-    async getEffectivePolicyRulesForUser(userId): Promise<PolicyRule[]> {
+    async getEffectivePolicyRulesForUser(userId): Promise<EffectivePolicyRule[]> {
       const memberships = await db.query.groupMembers.findMany({ where: eq(groupMembers.userId, userId) });
       const groupIds = memberships.map((m) => m.groupId);
+      const systemPrincipalIds = Object.values(SYSTEM_PRINCIPALS);
+      const userMatch = and(
+        eq(policyBindings.principalType, "user"),
+        eq(policyBindings.principalId, userId)
+      );
+      const systemMatch = and(
+        eq(policyBindings.principalType, "system"),
+        inArray(policyBindings.principalId, systemPrincipalIds)
+      );
 
       const principalMatch =
         groupIds.length > 0
           ? or(
-              and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, userId)),
-              and(eq(policyBindings.principalType, "group"), inArray(policyBindings.principalId, groupIds))
+              userMatch,
+              and(eq(policyBindings.principalType, "group"), inArray(policyBindings.principalId, groupIds)),
+              systemMatch
             )
-          : and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, userId));
+          : or(userMatch, systemMatch);
 
       const boundPolicies = await db
-        .select({ policyId: policyBindings.policyId })
+        .select({
+          policyId: policyBindings.policyId,
+          principalType: policyBindings.principalType,
+          principalId: policyBindings.principalId,
+        })
         .from(policyBindings)
         .where(principalMatch);
 
@@ -234,7 +274,27 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
       const rows = await db.query.policyRules.findMany({
         where: inArray(policyRules.policyId, policyIds),
       });
-      return rows.map(rowToRule);
+      const bindingsByPolicy = new Map<string, Array<{
+        principalType: PrincipalType;
+        principalId: string;
+      }>>();
+      for (const binding of boundPolicies) {
+        const bindings = bindingsByPolicy.get(binding.policyId) ?? [];
+        bindings.push({
+          principalType: binding.principalType,
+          principalId: binding.principalId,
+        });
+        bindingsByPolicy.set(binding.policyId, bindings);
+      }
+
+      return rows.flatMap((row) => {
+        const rule = rowToRule(row);
+        return (bindingsByPolicy.get(row.policyId) ?? []).map((binding) => ({
+          ...rule,
+          principalType: binding.principalType,
+          principalId: binding.principalId,
+        }));
+      });
     },
   };
 }

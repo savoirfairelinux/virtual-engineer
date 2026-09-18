@@ -9,6 +9,10 @@ import {
   type AgentRecord,
   type Integration,
   type IntegrationStore,
+  type Group,
+  type Policy,
+  type PolicyBinding,
+  type PolicyRule,
   type Prompt,
   type ProjectId,
   type ProjectPushTargetRecord,
@@ -22,6 +26,7 @@ import {
   type PushTargetRole,
   type Task,
 } from "../interfaces.js";
+import type { PolicyRuleInput } from "../state/stores/policyStore.js";
 import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
 import {
   getCodeReviewAssignmentModes,
@@ -84,6 +89,7 @@ export interface ProjectsRouteStore {
     postReviewLinkToTicket?: boolean;
     reactToCiFailures?: boolean;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
@@ -155,8 +161,21 @@ export interface ProjectsRouteStore {
   retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
 }
 
+export interface ProjectAccessStore {
+  getGroupById(id: string): Promise<Group | null>;
+  listGroups(): Promise<Group[]>;
+  createPolicy(input: { id?: string; name: string; description?: string; builtin?: boolean }): Promise<Policy>;
+  getPolicyById(id: string): Promise<Policy | null>;
+  listPolicies(): Promise<Policy[]>;
+  deletePolicy(id: string): Promise<boolean>;
+  setPolicyRules(policyId: string, rules: readonly PolicyRuleInput[]): Promise<PolicyRule[]>;
+  listPolicyRules(policyId: string): Promise<PolicyRule[]>;
+  createBinding(input: { policyId: string; principalType: "group"; principalId: string }): Promise<PolicyBinding>;
+}
+
 export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
+  projectAccessStore?: ProjectAccessStore | undefined;
   integrationStore?: IntegrationStore | undefined;
   pluginManager?: import("../plugins/pluginManager.js").PluginManager | undefined;
   adminAuthSecret?: string | undefined;
@@ -400,7 +419,7 @@ const removedLocalSkillsPathSchema = removedProjectField("localSkillsPath");
 const removedSkillDiscoveryEnabledSchema = removedProjectField("skillDiscoveryEnabled");
 
 export const codingProjectCreateSchema = z.object({
-  id: z.string().optional(),
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "Project id contains unsupported characters").optional(),
   type: z.literal("coding"),
   name: z.string().min(1, "Project name is required"),
   agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
@@ -420,7 +439,7 @@ export const codingProjectCreateSchema = z.object({
 });
 
 export const reviewProjectCreateSchema = z.object({
-  id: z.string().optional(),
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "Project id contains unsupported characters").optional(),
   type: z.literal("review"),
   name: z.string().min(1, "Project name is required"),
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
@@ -567,7 +586,8 @@ export interface ProjectSummary {
   id: string;
   name: string;
   type: ProjectRecord["type"];
-  agentId: string;
+  ownerUserId: string | null;
+  agentId: string | null;
   agentName: string | null;
   enabled: boolean;
   skillSources: SkillSource[];
@@ -592,7 +612,7 @@ export interface ProjectDetail extends ProjectSummary {
   pushTargets: Array<{
     id: number;
     integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
-    integrationId: string;
+    integrationId: string | null;
     repoKey: string;
     cloneUrl: string;
     targetBranch: string;
@@ -609,10 +629,12 @@ export async function buildProjectSummary(
   project: ProjectRecord,
   store: ProjectsRouteStore,
   integrations: IntegrationLookup,
-  agentsById: Map<string, AgentRecord>
+  agentsById: Map<string, AgentRecord>,
+  canReadAgent?: (agent: AgentRecord) => boolean
 ): Promise<ProjectSummary> {
   const agent = agentsById.get(project.agentId) ?? (await store.getAgentById(makeAgentId(project.agentId)));
   if (agent) agentsById.set(agent.id, agent);
+  const visibleAgent = agent && (!canReadAgent || canReadAgent(agent)) ? agent : null;
   let ticketSource: ProjectSummary["ticketSource"] = null;
   let reviewConfig: ProjectSummary["reviewConfig"] = null;
   let pushTargetCount = 0;
@@ -639,8 +661,9 @@ export async function buildProjectSummary(
     id: project.id,
     name: project.name,
     type: project.type,
-    agentId: project.agentId,
-    agentName: agent ? agent.name : null,
+    ownerUserId: project.ownerUserId ?? null,
+    agentId: visibleAgent?.id ?? null,
+    agentName: visibleAgent?.name ?? null,
     enabled: project.enabled,
     skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
@@ -655,9 +678,11 @@ export async function buildProjectSummary(
 export async function buildProjectDetail(
   project: ProjectRecord,
   store: ProjectsRouteStore,
-  integrations: IntegrationLookup
+  integrations: IntegrationLookup,
+  canReadAgent?: (agent: AgentRecord) => boolean
 ): Promise<ProjectDetail> {
   const agent = await store.getAgentById(makeAgentId(project.agentId));
+  const visibleAgent = agent && (!canReadAgent || canReadAgent(agent)) ? agent : null;
   let ticketSource: ProjectSummary["ticketSource"] = null;
   let reviewConfig: ProjectSummary["reviewConfig"] = null;
   let pushTargets: ProjectDetail["pushTargets"] = [];
@@ -675,7 +700,7 @@ export async function buildProjectDetail(
     pushTargets = pts.map((p) => ({
       id: p.id,
       integration: describeIntegration(integrations.byId.get(p.integrationId)),
-      integrationId: p.integrationId,
+      integrationId: integrations.byId.has(p.integrationId) ? p.integrationId : null,
       repoKey: p.repoKey,
       cloneUrl: p.cloneUrl,
       targetBranch: p.targetBranch,
@@ -699,8 +724,9 @@ export async function buildProjectDetail(
     id: project.id,
     name: project.name,
     type: project.type,
-    agentId: project.agentId,
-    agentName: agent ? agent.name : null,
+    ownerUserId: project.ownerUserId ?? null,
+    agentId: visibleAgent?.id ?? null,
+    agentName: visibleAgent?.name ?? null,
     enabled: project.enabled,
     skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),

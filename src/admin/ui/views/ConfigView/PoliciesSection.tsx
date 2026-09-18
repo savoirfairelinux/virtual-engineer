@@ -141,8 +141,11 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
     finally { setBusy(false); }
   }
 
-  function principalLabel(type: "user" | "group", id: string): string {
+  function principalLabel(type: "user" | "group" | "system", id: string): string {
     if (type === "user") return users.find((u) => u.id === id)?.username ?? id;
+    if (type === "system") {
+      return id.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
+    }
     return groups.find((g) => g.id === id)?.name ?? id;
   }
 
@@ -198,7 +201,7 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
             <RowCard key={b.id}>
               <Tag tone={b.principalType === "group" ? "info" : "muted"} mono={false}>{b.principalType}</Tag>
               <div style={{ flex: 1, fontSize: "13px" }}>{principalLabel(b.principalType, b.principalId)}</div>
-              {!readOnly && (
+              {!readOnly && b.principalType !== "system" && (
                 <button className="iconbtn" title="Unassign" disabled={busy}
                   onClick={() => void mutate(() => api.delete(`/api/admin/policies/${policyId}/bindings/${b.principalType}/${b.principalId}`))}>
                   <Icon name="trash" size={14} />
