@@ -21,6 +21,12 @@ function duplicateError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: "DUPLICATE" });
 }
 
+function isForeignKeyConstraintViolation(err: unknown): boolean {
+  return err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "SQLITE_CONSTRAINT_FOREIGNKEY";
+}
+
 /** Build a distinguishable error for an initial-admin setup race loser. */
 function setupAlreadyCompletedError(): Error & { code: string } {
   return Object.assign(new Error("Initial admin setup already completed"), {
@@ -194,14 +200,24 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     return result.changes > 0;
   }
 
-  async function deleteUser(id: string): Promise<boolean> {
-    await db.delete(userSessions).where(eq(userSessions.userId, id));
-    // Remove policy bindings targeting this user (principal_id has no FK).
-    await db
-      .delete(policyBindings)
-      .where(and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, id)));
-    const result = await db.delete(users).where(eq(users.id, id));
-    return result.changes > 0;
+  function deleteUser(id: string): Promise<boolean> {
+    try {
+      const deleted = db.transaction((tx) => {
+        tx.delete(userSessions).where(eq(userSessions.userId, id)).run();
+        tx.delete(policyBindings)
+          .where(and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, id)))
+          .run();
+        return tx.delete(users).where(eq(users.id, id)).run().changes > 0;
+      });
+      return Promise.resolve(deleted);
+    } catch (err) {
+      if (isForeignKeyConstraintViolation(err)) {
+        return Promise.reject(Object.assign(new Error("User still owns resources"), {
+          code: "RESOURCE_OWNERSHIP_CONFLICT",
+        }));
+      }
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   async function countUsers(): Promise<number> {

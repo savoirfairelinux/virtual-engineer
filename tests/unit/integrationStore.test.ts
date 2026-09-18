@@ -18,6 +18,29 @@ describe("SqliteStateStore — IntegrationStore", () => {
   });
 
   describe("upsertIntegration", () => {
+    it("persists the creating user as the integration owner", async () => {
+      await store.createUser({
+        id: "integration-owner",
+        username: "integration-owner",
+        passwordHash: "scrypt:16384:8:1:salt:hash",
+        role: "operator",
+      });
+
+      const integration = await store.upsertIntegration({
+        id: "owned-integration",
+        provider: "redmine",
+        name: "Owned Redmine",
+        configJson: "{}",
+        enabled: true,
+        ownerUserId: "integration-owner",
+      });
+
+      expect(integration.ownerUserId).toBe("integration-owner");
+      await expect(store.getIntegration(integration.id)).resolves.toMatchObject({
+        ownerUserId: "integration-owner",
+      });
+    });
+
     it("creates a new integration", async () => {
       const integration = await store.upsertIntegration({
         id: "int-1",
@@ -54,6 +77,29 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
       expect(updated.name).toBe("Redmine v2");
       expect(updated.enabled).toBe(true);
+    });
+  });
+
+  describe("OAuth apps", () => {
+    it("persists the creating user as the OAuth app owner", async () => {
+      await store.createUser({
+        id: "oauth-owner",
+        username: "oauth-owner",
+        passwordHash: "scrypt:16384:8:1:salt:hash",
+        role: "operator",
+      });
+
+      const app = await store.upsertOAuthApp({
+        provider: "gitlab",
+        baseUrl: "https://gitlab.example.com/",
+        clientId: "client-id",
+        ownerUserId: "oauth-owner",
+      });
+
+      expect(app.ownerUserId).toBe("oauth-owner");
+      await expect(store.getOAuthApp("gitlab", app.baseUrl)).resolves.toMatchObject({
+        ownerUserId: "oauth-owner",
+      });
     });
   });
 

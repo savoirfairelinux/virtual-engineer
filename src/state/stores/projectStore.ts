@@ -44,6 +44,7 @@ export interface ProjectStoreApi {
     postReviewLinkToTicket?: boolean;
     reactToCiFailures?: boolean;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
@@ -154,6 +155,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       postReviewLinkToTicket: row.postReviewLinkToTicket === 1,
       reactToCiFailures: row.reactToCiFailures === 1,
       enabled: row.enabled === 1,
+      ownerUserId: row.ownerUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -227,6 +229,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     postReviewLinkToTicket?: boolean;
     reactToCiFailures?: boolean;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<ProjectRecord> {
     const now = new Date();
     const id = input.id ?? randomUUID();
@@ -247,6 +250,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       postReviewLinkToTicket: input.postReviewLinkToTicket === true ? 1 : 0,
       reactToCiFailures: input.reactToCiFailures === true ? 1 : 0,
       enabled: input.enabled === false ? 0 : 1,
+      ownerUserId: input.ownerUserId ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -550,6 +554,9 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_integration_bindings WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(id);
+      const accessPolicyPrefix = `project-access:${id}:group:`;
+      raw.prepare("DELETE FROM policies WHERE substr(id, 1, ?) = ?")
+        .run(accessPolicyPrefix.length, accessPolicyPrefix);
       raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
     return Promise.resolve();

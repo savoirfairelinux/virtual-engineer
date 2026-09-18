@@ -10,7 +10,7 @@ export interface PromptStoreApi {
   getPrompts(): Promise<Prompt[]>;
   getPrompt(id: string): Promise<Prompt | null>;
   upsertPrompt(id: string, content: string): Promise<Prompt>;
-  createPrompt(label: string, content: string, promptType: PromptType): Promise<Prompt>;
+  createPrompt(label: string, content: string, promptType: PromptType, ownerUserId?: string | null): Promise<Prompt>;
   deletePrompt(id: string): Promise<void>;
   seedBuiltInPrompts(): Promise<void>;
 }
@@ -46,6 +46,7 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
       label: row.label,
       content: row.content,
       promptType: row.promptType === "system" ? "system" : "instructions",
+      ownerUserId: row.ownerUserId,
       updatedAt: row.updatedAt,
     };
   }
@@ -186,7 +187,12 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
     return result;
   }
 
-  async function createPrompt(label: string, content: string, promptType: PromptType): Promise<Prompt> {
+  async function createPrompt(
+    label: string,
+    content: string,
+    promptType: PromptType,
+    ownerUserId?: string | null
+  ): Promise<Prompt> {
     const id = normalizePromptId(label);
 
     if (!id || !/^[a-z][a-z0-9_-]{0,63}$/.test(id)) {
@@ -204,6 +210,7 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
       label,
       content,
       promptType,
+      ownerUserId: ownerUserId ?? null,
       createdAt: now,
       updatedAt: now,
     });
