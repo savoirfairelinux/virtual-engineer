@@ -4,6 +4,7 @@ import type { Router } from "./router.js";
 import { listSkillSourceSkills } from "./skillSourceDiscovery.js";
 import { resolveRepositoryBindings } from "../workspace/integrationBindingResolver.js";
 import { scanProjectWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
+import { requestCanAccessResource } from "./authContext.js";
 import {
   isSkillSourceAuthError,
   recordAudit,
@@ -44,7 +45,7 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
   };
 
   router.add("POST", "/api/admin/projects/:id/skill-sources/list", handleSkillSourceList, { permission: "project.write", resourceParam: "id" });
-  router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.write" });
+  router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.create" });
 
   router.add("POST", "/api/admin/projects/resolve-repositories", async (req, res, _params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
@@ -55,11 +56,17 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
       writeJson(res, 400, zodErrorBody(parsed.error, "Invalid repository resolution payload"));
       return;
     }
-    const integrations = await deps.integrationStore.getIntegrations();
+    const integrations = (await deps.integrationStore.getIntegrations()).filter((integration) =>
+      requestCanAccessResource(req, "integration.read", {
+        type: "integration",
+        id: integration.id,
+        ownerUserId: integration.ownerUserId ?? null,
+      })
+    );
     writeJson(res, 200, {
       repositories: resolveRepositoryBindings(parsed.data.repositories, integrations),
     });
-  }, { permission: "integration.read" });
+  }, { permission: "integration.read", collection: true });
 
   router.add("POST", "/api/admin/projects/scan-push-targets", async (req, res, _params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
@@ -72,8 +79,22 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
     }
     const integration = await deps.integrationStore.getIntegration(parsed.data.integrationId);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    if (!requestCanAccessResource(req, "integration.read", {
+      type: "integration",
+      id: integration.id,
+      ownerUserId: integration.ownerUserId ?? null,
+    })) {
+      writeJson(res, 403, { error: "forbidden", permission: "integration.read" });
+      return;
+    }
     try {
-      const integrations = await deps.integrationStore.getIntegrations();
+      const integrations = (await deps.integrationStore.getIntegrations()).filter((candidate) =>
+        requestCanAccessResource(req, "integration.read", {
+          type: "integration",
+          id: candidate.id,
+          ownerUserId: candidate.ownerUserId ?? null,
+        })
+      );
       const scan = await scanProjectWorkspace({
         rootIntegration: integration,
         integrations,
@@ -104,5 +125,5 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
       log.warn({ integrationId: parsed.data.integrationId, repoKey: parsed.data.repoKey, errorMessage }, "push-target workspace scan failed");
       writeJson(res, error instanceof WorkspaceScanError ? error.statusCode : 502, { error: errorMessage });
     }
-  }, { permission: "integration.read" });
+  }, { permission: "integration.read", collection: true });
 }

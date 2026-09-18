@@ -41,6 +41,7 @@ const project: ApiProject = {
   type: "coding",
   enabled: true,
   agentId: agent.id,
+  ownerUserId: "limited-user",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
@@ -99,10 +100,60 @@ describe("Configuration PBAC", () => {
     vi.restoreAllMocks();
   });
 
+  it("resolves dynamic owner and registered-user grants against resource ownership", () => {
+    const user: ApiMe = {
+      id: "owner-1",
+      username: "owner",
+      role: "operator",
+      capabilities: {
+        superuser: false,
+        grants: { "project.owner": ["project-1"] },
+        resourceOwnerGrants: ["agent.write"],
+        projectOwnerGrants: ["project.write"],
+        registeredUserGrants: ["prompt.read"],
+      },
+    };
+    const can = makeCan(user);
+
+    expect(can("agent.write", "agent-1", "owner-1")).toBe(true);
+    expect(can("agent.write", "agent-2", "owner-2")).toBe(false);
+    expect(can("prompt.read", "legacy-prompt", null)).toBe(true);
+    expect(can("prompt.read", "private-prompt", "owner-2")).toBe(false);
+    expect(can("project.write", "project-1", "owner-2")).toBe(true);
+    expect(makeHasPermission(user)("agent.write")).toBe(true);
+  });
+
+  it("shows project access management to the resource owner", () => {
+    window.history.replaceState({}, "", "#config/projects/project-1");
+    const user: ApiMe = {
+      id: "limited-user",
+      username: "project-owner",
+      role: "operator",
+      capabilities: {
+        superuser: false,
+        grants: {},
+        resourceOwnerGrants: ["project.read", "project.owner"],
+      },
+    };
+
+    render(
+      <CurrentUserProvider value={{
+        user,
+        isAdmin: false,
+        canOperate: true,
+        can: makeCan(user),
+      }}>
+        <ConfigView {...baseProps} />
+      </CurrentUserProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Access" })).toBeDefined();
+  });
+
   it.each<[ConfigSectionId, string]>([
     ["overview", "overview.read"],
     ["integrations", "integration.read"],
-    ["oauth", "oauth.manage"],
+    ["oauth", "oauth.read"],
     ["agents", "agent.read"],
     ["projects", "project.read"],
     ["prompts", "prompt.read"],
@@ -147,6 +198,7 @@ describe("Configuration PBAC", () => {
   it("uses separate integration write, operate, and delete permissions", () => {
     const { unmount } = renderWithGrants("#config/integrations", {
       "integration.read": "*",
+      "integration.create": "*",
       "integration.write": "*",
     });
 
@@ -166,7 +218,7 @@ describe("Configuration PBAC", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeDefined();
   });
 
-  it("rejects direct create routes without the required write permission", () => {
+  it("rejects direct create routes without the required create permission", () => {
     renderWithGrants("#config/agents/new", { "agent.read": "*" });
 
     expect(screen.getByRole("heading", { name: "Agents library" })).toBeDefined();
@@ -189,6 +241,7 @@ describe("Configuration PBAC", () => {
   it("gates agent, prompt, OAuth, and System mutations by exact permission", () => {
     const { unmount: unmountAgent } = renderWithGrants("#config/agents", {
       "agent.read": "*",
+      "agent.create": "*",
       "agent.write": "*",
     });
     expect(screen.getByRole("button", { name: "New agent" })).toBeDefined();
@@ -198,13 +251,17 @@ describe("Configuration PBAC", () => {
 
     const { unmount: unmountPrompt } = renderWithGrants("#config/prompts", {
       "prompt.read": "*",
+      "prompt.create": "*",
       "prompt.write": "*",
     });
     expect(screen.getByRole("button", { name: "New prompt" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     unmountPrompt();
 
-    const { unmount: unmountOAuth } = renderWithGrants("#config/oauth", { "oauth.manage": "*" });
+    const { unmount: unmountOAuth } = renderWithGrants("#config/oauth", {
+      "oauth.read": "*",
+      "oauth.create": "*",
+    });
     expect(screen.getByRole("button", { name: "Register app" })).toBeDefined();
     unmountOAuth();
 

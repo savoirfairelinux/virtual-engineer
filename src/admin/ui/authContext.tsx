@@ -18,7 +18,7 @@ export interface CurrentUserValue {
    * When capabilities are unavailable (legacy servers), falls back to the
    * `admin` role flag — the server enforces the real decision regardless.
    */
-  can: (permission: string, resourceId?: string) => boolean;
+  can: (permission: string, resourceId?: string, ownerUserId?: string | null) => boolean;
 }
 
 const CurrentUserContext = createContext<CurrentUserValue>({
@@ -35,18 +35,33 @@ export function useCurrentUser(): CurrentUserValue {
 }
 
 /** Build a capability checker from a serialized-permissions payload. */
-export function makeCan(user: ApiMe | null): (permission: string, resourceId?: string) => boolean {
+export function makeCan(user: ApiMe | null): (
+  permission: string,
+  resourceId?: string,
+  ownerUserId?: string | null
+) => boolean {
   const caps = user?.capabilities;
   // No capability payload (legacy server): fall back to role — admins pass, others
   // are gated by the server anyway.
   if (!caps) return () => user?.role === "admin";
   if (caps.superuser) return () => true;
-  return (permission: string, resourceId?: string): boolean => {
+  return (permission: string, resourceId?: string, ownerUserId?: string | null): boolean => {
     const scope = caps.grants[permission];
-    if (scope === undefined) return false;
     if (scope === "*") return true;
-    if (resourceId === undefined) return false;
-    return scope.includes(resourceId);
+    if (resourceId !== undefined && Array.isArray(scope) && scope.includes(resourceId)) return true;
+    if (
+      ownerUserId !== undefined &&
+      ownerUserId === user?.id &&
+      caps.resourceOwnerGrants?.includes(permission) === true
+    ) return true;
+    if (
+      ownerUserId === null &&
+      caps.registeredUserGrants?.includes(permission) === true
+    ) return true;
+    const ownerScope = caps.grants["project.owner"];
+    return resourceId !== undefined &&
+      caps.projectOwnerGrants?.includes(permission) === true &&
+      (ownerScope === "*" || (Array.isArray(ownerScope) && ownerScope.includes(resourceId)));
   };
 }
 
@@ -57,6 +72,10 @@ export function makeHasPermission(user: ApiMe | null): (permission: string) => b
   if (caps.superuser) return () => true;
   return (permission: string): boolean => {
     const scope = caps.grants[permission];
-    return scope === "*" || (Array.isArray(scope) && scope.length > 0);
+    return scope === "*" ||
+      (Array.isArray(scope) && scope.length > 0) ||
+      caps.resourceOwnerGrants?.includes(permission) === true ||
+      caps.projectOwnerGrants?.includes(permission) === true ||
+      caps.registeredUserGrants?.includes(permission) === true;
   };
 }

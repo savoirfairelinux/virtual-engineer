@@ -6,37 +6,45 @@ import type { Permission, ResourceType } from "../../interfaces.js";
  * as route metadata. Grant-only: possessing a permission authorizes the action;
  * the absence of a grant denies it (default-deny).
  *
- * Scopeable resource types (`project`, and `task` via its owning project) accept
+ * Scopeable resource types accept
  * a concrete `resourceId` in a policy rule; a null `resourceId` grants the action
  * on every resource of that type. `task.*` permissions are evaluated against the
- * id of the task's owning **project** (tasks inherit their project's scope). The
- * remaining permissions (integrations, agents, prompts and global capabilities)
- * are global and must be granted with a null `resourceId`.
+ * id of the task's owning **project** (tasks inherit their project's scope).
+ * System capabilities remain global and must use a null `resourceId`.
  */
 export const PERMISSIONS = {
   // Projects (scopeable) — and the tasks they own.
+  PROJECT_CREATE: "project.create",
   PROJECT_READ: "project.read",
   PROJECT_WRITE: "project.write",
   PROJECT_DELETE: "project.delete",
   PROJECT_OPERATE: "project.operate",
+  PROJECT_OWNER: "project.owner",
   TASK_READ: "task.read",
   TASK_OPERATE: "task.operate",
   TASK_DELETE: "task.delete",
-  // Integrations (global).
+  // Integrations (scopeable).
+  INTEGRATION_CREATE: "integration.create",
   INTEGRATION_READ: "integration.read",
   INTEGRATION_WRITE: "integration.write",
   INTEGRATION_DELETE: "integration.delete",
   INTEGRATION_OPERATE: "integration.operate",
-  // Agents (global).
+  // Agents (scopeable).
+  AGENT_CREATE: "agent.create",
   AGENT_READ: "agent.read",
   AGENT_WRITE: "agent.write",
   AGENT_DELETE: "agent.delete",
   AGENT_OPERATE: "agent.operate",
-  // Prompts (global).
+  // Prompts (scopeable).
+  PROMPT_CREATE: "prompt.create",
   PROMPT_READ: "prompt.read",
   PROMPT_WRITE: "prompt.write",
   PROMPT_DELETE: "prompt.delete",
   // Global capabilities.
+  OAUTH_CREATE: "oauth.create",
+  OAUTH_READ: "oauth.read",
+  OAUTH_WRITE: "oauth.write",
+  OAUTH_DELETE: "oauth.delete",
   OAUTH_MANAGE: "oauth.manage",
   OVERVIEW_READ: "overview.read",
   CONCURRENCY_READ: "concurrency.read",
@@ -60,14 +68,16 @@ const ALL_PERMISSIONS_SET: ReadonlySet<Permission> = new Set(ALL_PERMISSIONS);
 /**
  * Resource types whose rules may carry a concrete (non-null) `resourceId`.
  *
- * Only `project` (and `task`, scoped by its owning project's id) have an
- * ownership boundary the admin API filters on. Integrations, agents and prompts
- * are shared, library-style resources: their permissions are global (all-or-
- * nothing) — a rule targeting them must use a null `resourceId`.
+ * Projects, integrations, agents, prompts and OAuth apps are owned resources.
+ * Tasks use their owning project id as their resource scope.
  */
 export const SCOPEABLE_RESOURCE_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>([
   "project",
   "task",
+  "integration",
+  "agent",
+  "prompt",
+  "oauth",
 ]);
 
 /** True when `value` is a permission string present in the catalog. */
@@ -87,6 +97,7 @@ export function resourceTypeOf(permission: Permission): ResourceType | null {
 
 /** True when a permission's resource type may be scoped to a concrete resource id. */
 export function isScopeablePermission(permission: Permission): boolean {
+  if (permission === PERMISSIONS.OAUTH_MANAGE) return false;
   const type = resourceTypeOf(permission);
   return type !== null && SCOPEABLE_RESOURCE_TYPES.has(type);
 }

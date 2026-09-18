@@ -2,9 +2,22 @@ import { statSync } from "node:fs";
 import { getLogger } from "../logger.js";
 import { writeJson } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
-import type { Task, AgentCycle, CostSummary, ModelUsageSummary } from "../interfaces.js";
+import type {
+  Task,
+  AgentCycle,
+  CostSummary,
+  CostSummaryProject,
+  CycleCostTokens,
+  ModelUsageEntry,
+  ModelUsageProject,
+  ModelUsageSummary,
+  ProjectId,
+  ProjectRecord,
+} from "../interfaces.js";
 import { makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
+import { filterTasksByReadAccess } from "./adminTaskRoutes.js";
+import { getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
 
 const log = getLogger("admin-overview");
 
@@ -17,6 +30,10 @@ export interface OverviewRouteStore {
 
 export interface OverviewRouteDeps {
   stateStore: OverviewRouteStore;
+  projectStore?: {
+    getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
+    listProjects(): Promise<ProjectRecord[]>;
+  } | undefined;
   config: AdminRuntimeConfig;
   databasePath: string;
   pollingIntervalMs: number;
@@ -38,6 +55,77 @@ function formatUptime(seconds: number): string {
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const NUM_TICKS = 14;
+
+function sumTokens(items: readonly { tokens: CycleCostTokens }[]): CycleCostTokens {
+  return items.reduce<CycleCostTokens>((total, item) => ({
+    input: total.input + item.tokens.input,
+    output: total.output + item.tokens.output,
+    cached: total.cached + item.tokens.cached,
+    cacheWrite: total.cacheWrite + item.tokens.cacheWrite,
+  }), { input: 0, output: 0, cached: 0, cacheWrite: 0 });
+}
+
+async function readableProjectIds(
+  req: import("node:http").IncomingMessage,
+  projectStore: NonNullable<OverviewRouteDeps["projectStore"]>
+): Promise<Set<string>> {
+  const projects = await projectStore.listProjects();
+  return new Set(projects
+    .filter((project) => requestCanAccessResource(req, "project.read", {
+      type: "project",
+      id: project.id,
+      ownerUserId: project.ownerUserId ?? null,
+    }))
+    .map((project) => project.id));
+}
+
+function filterCostSummary(summary: CostSummary, projectIds: ReadonlySet<string>): CostSummary {
+  const perProject = summary.perProject.filter(
+    (entry): entry is CostSummaryProject => entry.projectId !== null && projectIds.has(entry.projectId)
+  );
+  return {
+    totalUsd: perProject.reduce((total, entry) => total + entry.usd, 0),
+    totalAiCredits: perProject.reduce((total, entry) => total + entry.aiCredits, 0),
+    totalPremiumRequests: perProject.reduce((total, entry) => total + entry.premiumRequests, 0),
+    totalRuns: perProject.reduce((total, entry) => total + entry.runCount, 0),
+    totalTokens: sumTokens(perProject),
+    totalRunsWithTokens: perProject.reduce((total, entry) => total + entry.runCountWithTokens, 0),
+    perProject,
+    sinceEpochSeconds: summary.sinceEpochSeconds,
+  };
+}
+
+function filterModelUsageSummary(
+  summary: ModelUsageSummary,
+  projectIds: ReadonlySet<string>
+): ModelUsageSummary {
+  const perProject = summary.perProject.filter(
+    (entry): entry is ModelUsageProject => entry.projectId !== null && projectIds.has(entry.projectId)
+  );
+  const aggregated = new Map<string, ModelUsageEntry>();
+  for (const project of perProject) {
+    for (const model of project.models) {
+      const key = `${model.modelId ?? ""}\u0000${model.workflowBucket}`;
+      const existing = aggregated.get(key);
+      aggregated.set(key, existing ? {
+        ...existing,
+        runCount: existing.runCount + model.runCount,
+        usd: existing.usd + model.usd,
+        tokens: sumTokens([existing, model]),
+        runCountWithTokens: existing.runCountWithTokens + model.runCountWithTokens,
+      } : { ...model });
+    }
+  }
+  const byModel = [...aggregated.values()].sort((left, right) => right.runCount - left.runCount);
+  return {
+    byModel,
+    perProject,
+    totalRuns: byModel.reduce((total, entry) => total + entry.runCount, 0),
+    totalUsd: byModel.reduce((total, entry) => total + entry.usd, 0),
+    totalTokens: sumTokens(byModel),
+    sinceEpochSeconds: summary.sinceEpochSeconds,
+  };
+}
 
 /** Compute throughput: count of tasks updated in each of the last N polling-interval windows. */
 function computeThroughput(tasks: Task[], pollingIntervalMs: number): number[] {
@@ -86,9 +174,12 @@ async function computeReviewVotes(
 }
 
 export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps): void {
-  router.add("GET", "/api/admin/overview", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/overview", async (req, res, _params) => {
     try {
-      const [tasks] = await Promise.all([deps.stateStore.getAllTasks()]);
+      const allTasks = await deps.stateStore.getAllTasks();
+      const tasks = deps.projectStore
+        ? await filterTasksByReadAccess(req, allTasks, deps.projectStore)
+        : allTasks;
       const now = Date.now();
       const sevenDaysAgo = now - SEVEN_DAYS_MS;
 
@@ -141,7 +232,10 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
         }
       }
       const summary = await deps.stateStore.getCostSummary(since ? { since } : undefined);
-      writeJson(res, 200, summary);
+      const visible = deps.projectStore && getEffectivePermissions(req)?.isSuperuser !== true
+        ? filterCostSummary(summary, await readableProjectIds(req, deps.projectStore))
+        : summary;
+      writeJson(res, 200, visible);
     } catch (err) {
       log.error({ err }, "cost-summary route failed");
       writeJson(res, 500, { error: "Failed to compute cost summary" });
@@ -162,7 +256,10 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
         }
       }
       const summary = await deps.stateStore.getModelUsageSummary(since ? { since } : undefined);
-      writeJson(res, 200, summary);
+      const visible = deps.projectStore && getEffectivePermissions(req)?.isSuperuser !== true
+        ? filterModelUsageSummary(summary, await readableProjectIds(req, deps.projectStore))
+        : summary;
+      writeJson(res, 200, visible);
     } catch (err) {
       log.error({ err }, "model-usage route failed");
       writeJson(res, 500, { error: "Failed to compute model usage" });

@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
+import { FieldSelect, Modal } from "../../components/Modal.tsx";
 import type { ApiProject } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
@@ -37,6 +38,7 @@ interface ApiProjectDetail extends ApiProject {
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+  const [accessProject, setAccessProject] = useState<ApiProject | null>(null);
   const { can } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
@@ -102,14 +104,20 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
 
   if (route.mode === "detail") {
     if (!detailItem) return <ProjectMissing onBack={() => navigate({ section: "projects", mode: "list" })} />;
+    if (accessProject) {
+      return <ProjectAccessEditor project={accessProject} onClose={() => setAccessProject(null)} />;
+    }
     return (
       <ProjectDrawer
         item={detailItem}
         agents={agents}
         onClose={() => navigate({ section: "projects", mode: "list" })}
-        {...(can("project.write", detailItem.id) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
-        {...(can("project.operate", detailItem.id) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
-        {...(can("project.delete", detailItem.id) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
+        {...(can("project.owner", detailItem.id, detailItem.ownerUserId ?? null)
+          ? { onAccess: () => setAccessProject(detailItem) }
+          : {})}
+        {...(can("project.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
+        {...(can("project.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+        {...(can("project.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
       />
     );
   }
@@ -117,6 +125,9 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
   if (route.mode === "create" || route.mode === "edit") {
     if (route.mode === "edit" && !editingProject) {
       return <div className="placeholder config-page-loading">{busy ? "Loading project…" : "Project unavailable."}</div>;
+    }
+    if (route.mode === "edit" && editingProject && !can("project.write", editingProject.id, editingProject.ownerUserId ?? null)) {
+      return <ProjectMissing onBack={() => navigate({ section: "projects", mode: "list" })} />;
     }
     return (
       <ProjectFormModal
@@ -140,7 +151,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Projects</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Execution units binding an agent to ticket sources and push / review targets.</p>
           </div>
-          {can("project.write") && (
+          {can("project.create") && (
             <button className="btn primary" data-tour="projects-new-button" onClick={() => navigate({ section: "projects", mode: "create" })}>
               <Icon name="plus" size={14} /> New project
             </button>
@@ -174,7 +185,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
               </div>
             </div>
             <div onClick={(e) => e.stopPropagation()}>
-              {can("project.operate", p.id) && (
+              {can("project.operate", p.id, p.ownerUserId ?? null) && (
                 <Toggle
                   on={p.enabled}
                   label={`Project ${p.name} enabled`}
@@ -183,7 +194,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
                 />
               )}
             </div>
-            {can("project.write", p.id) && (
+            {can("project.write", p.id, p.ownerUserId ?? null) && (
               <button
                 className="iconbtn"
                 title="Edit"
@@ -193,7 +204,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
                 <Icon name="edit" size={14} />
               </button>
             )}
-            {can("project.delete", p.id) && (
+            {can("project.delete", p.id, p.ownerUserId ?? null) && (
               <button
                 className="iconbtn"
                 title="Delete"
@@ -208,6 +219,107 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
       </div>
 
     </>
+  );
+}
+
+const PROJECT_ACCESS_OPTIONS = [
+  ["project.read", "Read project"],
+  ["project.write", "Edit project"],
+  ["project.operate", "Enable and disable"],
+  ["project.delete", "Delete project"],
+  ["project.owner", "Manage access"],
+  ["task.read", "Read tasks"],
+  ["task.operate", "Operate tasks"],
+  ["task.delete", "Delete tasks"],
+] as const;
+
+interface ProjectAccessResponse {
+  grants: Array<{ groupId: string; groupName: string; permissions: string[] }>;
+  availableGroups: Array<{ id: string; name: string }>;
+}
+
+function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClose: () => void }) {
+  const [data, setData] = useState<ProjectAccessResponse>({ grants: [], availableGroups: [] });
+  const [groupId, setGroupId] = useState("");
+  const [permissions, setPermissions] = useState<string[]>(["project.read", "task.read"]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`)
+      .then((response) => {
+        if (cancelled) return;
+        setData(response);
+        setGroupId((current) => current || response.availableGroups[0]?.id || "");
+      });
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  const save = async (): Promise<void> => {
+    if (!groupId || permissions.length === 0) return;
+    setBusy(true);
+    try {
+      await api.put(`/api/admin/projects/${project.id}/access/groups/${groupId}`, { permissions });
+      const response = await api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`);
+      setData(response);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string): Promise<void> => {
+    setBusy(true);
+    try {
+      await api.delete(`/api/admin/projects/${project.id}/access/groups/${id}`);
+      const response = await api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`);
+      setData(response);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Access · ${project.name}`}
+      sub="Delegate project and task permissions to a group."
+      onClose={onClose}
+      footer={<button className="btn" onClick={onClose}>Done</button>}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        {data.grants.map((grant) => (
+          <div key={grant.groupId} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600 }}>{grant.groupName}</div>
+              <div style={{ color: "var(--text-faint)", fontSize: "12px" }}>{grant.permissions.join(", ")}</div>
+            </div>
+            <button className="iconbtn" title="Remove access" disabled={busy} onClick={() => void remove(grant.groupId)}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        ))}
+        <FieldSelect value={groupId} onChange={(event) => setGroupId(event.target.value)}>
+          <option value="">Select a group</option>
+          {data.availableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+        </FieldSelect>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
+          {PROJECT_ACCESS_OPTIONS.map(([permission, label]) => (
+            <label key={permission} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
+              <input
+                type="checkbox"
+                checked={permissions.includes(permission)}
+                onChange={(event) => setPermissions((current) => event.target.checked
+                  ? [...current, permission]
+                  : current.filter((item) => item !== permission))}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        <button className="btn primary" disabled={busy || !groupId || permissions.length === 0} onClick={() => void save()}>
+          Save access
+        </button>
+      </div>
+    </Modal>
   );
 }
 

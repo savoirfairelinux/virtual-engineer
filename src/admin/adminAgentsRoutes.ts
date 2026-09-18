@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { IncomingMessage } from "node:http";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
@@ -33,6 +34,9 @@ import {
   normalizeModelConfigToolAuthorization,
   ToolAuthorizationConfigError,
 } from "../agents/toolAuthorizationValidation.js";
+import { getAuthContext, getEffectivePermissions } from "./authContext.js";
+import { requestCanAccessResource } from "./authContext.js";
+import { canAccessResource } from "./authorization/policyEngine.js";
 
 const log = getLogger("admin-agents");
 
@@ -49,6 +53,7 @@ export interface AgentsRouteStore {
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<AgentRecord>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
@@ -213,6 +218,7 @@ export interface AgentSummary {
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;
+  ownerUserId: string | null;
   projectCount: number;
   createdAt: string;
   updatedAt: string;
@@ -223,7 +229,11 @@ export interface AgentDetail extends AgentSummary {
 }
 
 /** Convert an AgentRecord to its summary API shape. */
-function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary {
+function toAgentSummary(
+  agent: AgentRecord,
+  projectCount: number,
+  integrationId: string | null = agent.integrationId
+): AgentSummary {
   const config = parseConfig(agent.modelConfigJson);
   const model = typeof config["model"] === "string" ? (config["model"]) : null;
   return {
@@ -234,10 +244,11 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
     maxConcurrent: agent.maxConcurrent,
     model,
     reviewStrategy: resolveReviewStrategy(config),
-    integrationId: agent.integrationId,
+    integrationId,
     systemPromptId: agent.systemPromptId,
     instructionsPromptId: agent.instructionsPromptId,
     feedbackInstructionsPromptId: agent.feedbackInstructionsPromptId,
+    ownerUserId: agent.ownerUserId ?? null,
     projectCount,
     createdAt: agent.createdAt.toISOString(),
     updatedAt: agent.updatedAt.toISOString(),
@@ -245,10 +256,14 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
 }
 
 /** Convert an AgentRecord to its full detail API shape with masked model config. */
-function toAgentDetail(agent: AgentRecord, projectCount: number): AgentDetail {
+function toAgentDetail(
+  agent: AgentRecord,
+  projectCount: number,
+  integrationId: string | null = agent.integrationId
+): AgentDetail {
   const config = parseConfig(agent.modelConfigJson);
   return {
-    ...toAgentSummary(agent, projectCount),
+    ...toAgentSummary(agent, projectCount, integrationId),
     modelConfig: maskAgentSecrets(config),
   };
 }
@@ -337,9 +352,35 @@ async function resolveAgentProvider(
 
 
 /** Count the number of projects that reference the given agent id. */
-async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<number> {
+async function countProjectsForAgent(
+  req: IncomingMessage,
+  store: AgentsRouteStore,
+  agentId: AgentId
+): Promise<number> {
   const all = await store.listProjects();
-  return all.filter((p) => p.agentId === agentId).length;
+  const references = all.filter((project) => project.agentId === agentId);
+  if (!getEffectivePermissions(req)) return references.length;
+  return references.filter((project) => requestCanAccessResource(req, "project.read", {
+    type: "project",
+    id: project.id,
+    ownerUserId: project.ownerUserId ?? null,
+  })).length;
+}
+
+async function readableAgentIntegrationId(
+  req: IncomingMessage,
+  deps: AgentsRouteDeps,
+  agent: AgentRecord
+): Promise<string | null> {
+  if (!agent.integrationId) return null;
+  if (!getEffectivePermissions(req)) return agent.integrationId;
+  const integration = await deps.integrationStore?.getIntegration(agent.integrationId);
+  if (!integration) return null;
+  return requestCanAccessResource(req, "integration.read", {
+    type: "integration",
+    id: integration.id,
+    ownerUserId: integration.ownerUserId ?? null,
+  }) ? integration.id : null;
 }
 
 async function validateRequiredPrompts(
@@ -372,6 +413,43 @@ async function validateRequiredPrompts(
   return null;
 }
 
+async function findUnreadableAgentReference(
+  req: import("node:http").IncomingMessage,
+  deps: AgentsRouteDeps,
+  input: {
+    integrationId: string | null;
+    systemPromptId: string;
+    instructionsPromptId: string;
+    feedbackInstructionsPromptId: string | null;
+  }
+): Promise<"integration.read" | "prompt.read" | null> {
+  if (input.integrationId && deps.integrationStore) {
+    const integration = await deps.integrationStore.getIntegration(input.integrationId);
+    if (integration && !requestCanAccessResource(req, "integration.read", {
+      type: "integration",
+      id: integration.id,
+      ownerUserId: integration.ownerUserId ?? null,
+    })) return "integration.read";
+  }
+
+  if (!deps.promptStore) return null;
+  const promptStore = deps.promptStore;
+  const promptIds = [
+    input.systemPromptId,
+    input.instructionsPromptId,
+    ...(input.feedbackInstructionsPromptId ? [input.feedbackInstructionsPromptId] : []),
+  ];
+  const prompts = await Promise.all(promptIds.map((id) => promptStore.getPrompt(id)));
+  for (const prompt of prompts) {
+    if (prompt && !requestCanAccessResource(req, "prompt.read", {
+      type: "prompt",
+      id: prompt.id,
+      ownerUserId: prompt.ownerUserId ?? null,
+    })) return "prompt.read";
+  }
+  return null;
+}
+
 /** Register agent and plugin OAuth routes on the given router. */
 export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void {
   const providerAuthService = deps.providerAuthService ?? defaultProviderAuthService;
@@ -393,6 +471,18 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
     const body = (await readBody(req)) ?? {};
     const descriptor = getProviderDescriptor(pluginType);
+    const integrationId = body["integrationId"];
+    if (typeof integrationId === "string" && integrationId && deps.integrationStore) {
+      const integration = await deps.integrationStore.getIntegration(integrationId);
+      if (integration && !requestCanAccessResource(req, "integration.write", {
+        type: "integration",
+        id: integration.id,
+        ownerUserId: integration.ownerUserId ?? null,
+      })) {
+        writeJson(res, 403, { error: "forbidden", permission: "integration.write" });
+        return;
+      }
+    }
     let oauthConfig: Record<string, unknown>;
     try {
       oauthConfig = await resolvePluginOAuthConfig(pluginType, body, deps.integrationStore);
@@ -498,15 +588,40 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "oauth.manage" });
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
-  router.add("GET", "/api/admin/agents", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/agents", async (req, res, _params) => {
     if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const agents = await store.listAgents();
     const projects = await store.listProjects();
+    const perms = getEffectivePermissions(req);
+    const actorUserId = getAuthContext(req)?.userId ?? null;
+    const visibleAgents = perms
+      ? agents.filter((agent) => canAccessResource(
+          perms,
+          "agent.read",
+          { type: "agent", id: agent.id, ownerUserId: agent.ownerUserId ?? null },
+          actorUserId
+        ))
+      : agents;
+    const visibleProjects = perms
+      ? projects.filter((project) => canAccessResource(
+          perms,
+          "project.read",
+          { type: "project", id: project.id, ownerUserId: project.ownerUserId ?? null },
+          actorUserId
+        ))
+      : projects;
     const counts = new Map<string, number>();
-    for (const p of projects) { counts.set(p.agentId, (counts.get(p.agentId) ?? 0) + 1); }
-    writeJson(res, 200, { agents: agents.map((a) => toAgentSummary(a, counts.get(a.id) ?? 0)) });
-  }, { permission: "agent.read" });
+    for (const project of visibleProjects) {
+      counts.set(project.agentId, (counts.get(project.agentId) ?? 0) + 1);
+    }
+    const serialized = await Promise.all(visibleAgents.map(async (agent) => toAgentSummary(
+      agent,
+      counts.get(agent.id) ?? 0,
+      await readableAgentIntegrationId(req, deps, agent)
+    )));
+    writeJson(res, 200, { agents: serialized });
+  }, { permission: "agent.read", collection: true });
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
     if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
@@ -517,6 +632,16 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
     try {
+      const unreadableReference = await findUnreadableAgentReference(req, deps, {
+        integrationId: parsed.data.integrationId ?? null,
+        systemPromptId: parsed.data.systemPromptId,
+        instructionsPromptId: parsed.data.instructionsPromptId,
+        feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId ?? null,
+      });
+      if (unreadableReference) {
+        writeJson(res, 403, { error: "forbidden", permission: unreadableReference });
+        return;
+      }
       const strategyConfig = await normalizeAgentStrategy(deps, {
         type: parsed.data.type,
         modelConfig: parsed.data.modelConfig,
@@ -546,6 +671,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
           : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
+        ownerUserId: getAuthContext(req)?.userId ?? null,
       });
       recordAudit(deps.auditStore, req, {
         action: "agent.create",
@@ -572,10 +698,10 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err }, "create agent failed");
       writeJson(res, 500, { error: msg });
     }
-  }, { permission: "agent.write" });
+  }, { permission: "agent.create" });
 
   // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
-  router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
+  router.add("GET", "/api/admin/agents/:id/available-models", async (req, res, params) => {
     if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const id = makeAgentId(params["id"] ?? "");
     const agent = await deps.agentStore.getAgentById(id);
@@ -594,6 +720,14 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (agent.integrationId && deps.integrationStore) {
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
+        if (!requestCanAccessResource(req, "integration.read", {
+          type: "integration",
+          id: integration.id,
+          ownerUserId: integration.ownerUserId ?? null,
+        })) {
+          writeJson(res, 403, { error: "forbidden", permission: "integration.read" });
+          return;
+        }
         const pluginManager = deps.pluginManager;
         if (!requireStore(pluginManager, res, "Plugin manager not available")) return;
         let integrationConfig: Record<string, unknown> = {};
@@ -650,14 +784,15 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     }
   }, { permission: "agent.read", resourceParam: "id" });
 
-  router.add("GET", "/api/admin/agents/:id", async (_req, res, params) => {
+  router.add("GET", "/api/admin/agents/:id", async (req, res, params) => {
     if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
-    const count = await countProjectsForAgent(store, id);
-    writeJson(res, 200, { agent: toAgentDetail(existing, count) });
+    const count = await countProjectsForAgent(req, store, id);
+    const integrationId = await readableAgentIntegrationId(req, deps, existing);
+    writeJson(res, 200, { agent: toAgentDetail(existing, count, integrationId) });
   }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
@@ -689,6 +824,16 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       ? existing.integrationId
       : parsed.data.integrationId;
     try {
+      const unreadableReference = await findUnreadableAgentReference(req, deps, {
+        integrationId: prospectiveIntegrationId,
+        systemPromptId,
+        instructionsPromptId,
+        feedbackInstructionsPromptId,
+      });
+      if (unreadableReference) {
+        writeJson(res, 403, { error: "forbidden", permission: unreadableReference });
+        return;
+      }
       const strategyConfig = await normalizeAgentStrategy(deps, {
         type: prospectiveType,
         modelConfig: prospectiveConfig,
@@ -717,14 +862,15 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
       if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
       const updated = await store.updateAgent(id, updates);
-      const count = await countProjectsForAgent(store, id);
+      const count = await countProjectsForAgent(req, store, id);
+      const integrationId = await readableAgentIntegrationId(req, deps, updated);
       recordAudit(deps.auditStore, req, {
         action: "agent.update",
         targetType: "agent",
         targetId: id,
         details: { name: updated.name, type: updated.type, reviewStrategy: strategyConfig.reviewStrategy },
       });
-      writeJson(res, 200, { agent: toAgentDetail(updated, count) });
+      writeJson(res, 200, { agent: toAgentDetail(updated, count, integrationId) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof ReviewStrategyConfigError || err instanceof ToolAuthorizationConfigError) {
@@ -742,7 +888,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
-    const count = await countProjectsForAgent(store, id);
+    const count = await countProjectsForAgent(req, store, id);
     if (count > 0) {
       writeJson(res, 409, {
         error: "Conflict",

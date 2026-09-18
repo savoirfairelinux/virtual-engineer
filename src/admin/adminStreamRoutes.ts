@@ -1,10 +1,11 @@
 import { makeTaskId } from "../interfaces.js";
-import type { AgentCycle, AgentLogEvent, Task } from "../interfaces.js";
+import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
-import { deduplicateByTicket, filterTasksByReadScope } from "./adminTaskRoutes.js";
+import { deduplicateByTicket, filterTasksByReadAccess, filterTasksByReadScope } from "./adminTaskRoutes.js";
 import { getEffectivePermissions } from "./authContext.js";
+import { requestCanAccessResource } from "./authContext.js";
 import { can } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 
@@ -17,6 +18,21 @@ export interface StreamRouteStore {
 
 export interface StreamRouteDeps {
   stateStore: StreamRouteStore;
+  projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> } | undefined;
+}
+
+async function canReadTask(req: import("node:http").IncomingMessage, task: Task, deps: StreamRouteDeps): Promise<boolean> {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return false;
+  if (task.projectId == null) return can(perms, "task.read");
+  const project = await deps.projectStore?.getProjectById(task.projectId);
+  if (!project) return can(perms, "task.read", task.projectId);
+  return requestCanAccessResource(req, "task.read", {
+    type: "task",
+    id: task.taskId,
+    projectId: task.projectId,
+    ownerUserId: project.ownerUserId ?? null,
+  });
 }
 
 /** Register SSE stream routes on the given router. */
@@ -28,13 +44,13 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     const pendingLiveEvents: AgentLogEvent[] = [];
     let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
     let authorizationQueue = Promise.resolve();
-    const taskProjects = new Map<string, Task["projectId"] | null>();
+    const taskAccess = new Map<string, boolean>();
     let closed = false;
     let heartbeatLogs: ReturnType<typeof setInterval> | undefined;
     const cleanup = (): void => {
       closed = true;
       agentLogBus.off("event", eventListener);
-      taskProjects.clear();
+      taskAccess.clear();
       if (heartbeatLogs !== undefined) clearInterval(heartbeatLogs);
     };
     const eventListener = (event: AgentLogEvent): void => {
@@ -52,15 +68,13 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
 
       authorizationQueue = authorizationQueue.then(async () => {
         if (!res.writable) return;
-        let projectId = taskProjects.get(event.taskId);
-        if (projectId === undefined) {
+        let allowed = taskAccess.get(event.taskId);
+        if (allowed === undefined) {
           const task = await deps.stateStore.getTask(makeTaskId(event.taskId));
-          projectId = task?.projectId ?? null;
-          taskProjects.set(event.taskId, projectId);
+          allowed = task ? await canReadTask(req, task, deps) : false;
+          taskAccess.set(event.taskId, allowed);
         }
-        if (projectId === null) return;
-        const perms = getEffectivePermissions(req);
-        if (!perms || !can(perms, "task.read", projectId)) return;
+        if (!allowed) return;
         writeLiveEvent?.(event);
       }).catch(() => undefined);
     };
@@ -77,8 +91,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
 
       // Enforce project-scoped task.read: streaming a task's logs must respect
       // the caller's scope (agent logs can contain cross-project source/secrets).
-      const perms = getEffectivePermissions(req);
-      if (!perms || !can(perms, "task.read", task.projectId)) {
+      if (!await canReadTask(req, task, deps)) {
         writeJson(res, 403, { error: "forbidden", permission: "task.read" });
         return;
       }
@@ -183,7 +196,11 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       try {
         const allTasks = await deps.stateStore.getAllTasks();
         if (closed || !res.writable) return;
-        const sorted = filterTasksByReadScope(req, deduplicateByTicket(allTasks))
+        const candidates = deduplicateByTicket(allTasks);
+        const visible = deps.projectStore
+          ? await filterTasksByReadAccess(req, candidates, deps.projectStore)
+          : filterTasksByReadScope(req, candidates);
+        const sorted = visible
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
         res.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
       } catch { /* ignore */ }

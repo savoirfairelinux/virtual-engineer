@@ -425,7 +425,8 @@ describe("Admin API — Prompt routes", () => {
       expect(vi.mocked(promptStore.createPrompt)).toHaveBeenCalledWith(
         "My New Prompt",
         "My content",
-        "system"
+        "system",
+        null
       );
     });
 

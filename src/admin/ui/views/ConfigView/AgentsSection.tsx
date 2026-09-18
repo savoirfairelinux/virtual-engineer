@@ -12,9 +12,7 @@ import type { ConfigSectionProps } from "./index.tsx";
 
 export function AgentsSection({ agents, integrations, plugins, prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const { can } = useCurrentUser();
-  const canWrite = can("agent.write");
-  const canDelete = can("agent.delete");
-  const canOperate = can("agent.operate");
+  const canCreate = can("agent.create");
   const [busy, setBusy] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<ApiAgent | null>(null);
   const detailId = route.section === "agents" && route.mode === "detail" ? route.id : null;
@@ -84,16 +82,22 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
         item={detailItem}
         prompts={prompts}
         onClose={() => navigate({ section: "agents", mode: "list" })}
-        {...(canWrite ? { onEdit: () => navigate({ section: "agents", mode: "edit", id: detailItem.id }) } : {})}
-        {...(canOperate ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
-        {...(canDelete ? { onDelete: () => { void deleteAgent(detailItem).then((deleted) => { if (deleted) navigate({ section: "agents", mode: "list" }); }); } } : {})}
+        {...(can("agent.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "agents", mode: "edit", id: detailItem.id }) } : {})}
+        {...(can("agent.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+        {...(can("agent.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteAgent(detailItem).then((deleted) => { if (deleted) navigate({ section: "agents", mode: "list" }); }); } } : {})}
       />
     );
   }
 
   if (route.mode === "create" || route.mode === "edit") {
+    if (route.mode === "create" && !canCreate) {
+      return <AgentMissing onBack={() => navigate({ section: "agents", mode: "list" })} />;
+    }
     if (route.mode === "edit" && !editingAgent) {
       return <div className="placeholder config-page-loading">{busy ? "Loading agent…" : "Agent unavailable."}</div>;
+    }
+    if (route.mode === "edit" && editingAgent && !can("agent.write", editingAgent.id, editingAgent.ownerUserId ?? null)) {
+      return <AgentMissing onBack={() => navigate({ section: "agents", mode: "list" })} />;
     }
     return (
       <AgentFormModal
@@ -118,7 +122,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Agents library</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Reusable agent definitions — model config, concurrency, and bound prompts.</p>
           </div>
-          {canWrite && (
+          {canCreate && (
             <button className="btn primary" data-tour="agents-new" onClick={() => navigate({ section: "agents", mode: "create" })}>
               <Icon name="plus" size={14} /> New agent
             </button>
@@ -161,7 +165,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
               </div>
             </div>
             <div onClick={(ev) => ev.stopPropagation()}>
-              {canOperate && (
+              {can("agent.operate", a.id, a.ownerUserId ?? null) && (
                 <Toggle
                   on={a.enabled}
                   label={`Agent ${a.name} enabled`}
@@ -170,7 +174,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
                 />
               )}
             </div>
-            {canDelete && (
+            {can("agent.delete", a.id, a.ownerUserId ?? null) && (
               <button
                 className="iconbtn"
                 title="Delete"

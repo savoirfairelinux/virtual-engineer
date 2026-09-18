@@ -128,10 +128,10 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(scoped?.meta).toMatchObject({ permission: "project.write", resourceParam: "id" });
     expect(scoped?.params["id"]).toBe("project-1");
-    expect(global?.meta).toMatchObject({ permission: "project.write" });
+    expect(global?.meta).toMatchObject({ permission: "project.create" });
     expect(global?.meta.resourceParam).toBeUndefined();
-    expect(resolver?.meta).toMatchObject({ permission: "integration.read" });
-    expect(scanner?.meta).toMatchObject({ permission: "integration.read" });
+    expect(resolver?.meta).toMatchObject({ permission: "integration.read", collection: true });
+    expect(scanner?.meta).toMatchObject({ permission: "integration.read", collection: true });
   });
 
   it("POST /scan-push-targets reads manifests and resolves detected repositories", async () => {

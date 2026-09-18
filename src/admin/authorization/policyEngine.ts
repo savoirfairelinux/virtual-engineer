@@ -1,4 +1,12 @@
-import type { Permission, PolicyRule, UserRole } from "../../interfaces.js";
+import { SYSTEM_PRINCIPALS } from "../../domain/accessControl.js";
+import type {
+  EffectivePolicyRule,
+  Permission,
+  PolicyRule,
+  ResourceType,
+  UserRole,
+} from "../../interfaces.js";
+import { isScopeablePermission } from "./permissions.js";
 
 /** Sentinel meaning "every resource of this permission's type". */
 export const ALL_RESOURCES = "*" as const;
@@ -14,6 +22,20 @@ export type Scope = typeof ALL_RESOURCES | ReadonlySet<string>;
 export interface EffectivePermissions {
   isSuperuser: boolean;
   grants: ReadonlyMap<Permission, Scope>;
+  resourceOwnerGrants: ReadonlySet<Permission>;
+  projectOwnerGrants: ReadonlySet<Permission>;
+  registeredUserGrants: ReadonlySet<Permission>;
+}
+
+export interface ResourceDescriptor {
+  type: ResourceType;
+  id: string;
+  ownerUserId: string | null;
+  projectId?: string | null;
+}
+
+function isEffectivePolicyRule(rule: PolicyRule): rule is EffectivePolicyRule {
+  return "principalType" in rule && "principalId" in rule;
 }
 
 /**
@@ -26,11 +48,38 @@ export function buildEffectivePermissions(
   rules: readonly PolicyRule[]
 ): EffectivePermissions {
   if (role === "admin") {
-    return { isSuperuser: true, grants: new Map() };
+    return {
+      isSuperuser: true,
+      grants: new Map(),
+      resourceOwnerGrants: new Set(),
+      projectOwnerGrants: new Set(),
+      registeredUserGrants: new Set(),
+    };
   }
 
   const grants = new Map<Permission, Set<string> | typeof ALL_RESOURCES>();
+  const resourceOwnerGrants = new Set<Permission>();
+  const projectOwnerGrants = new Set<Permission>();
+  const registeredUserGrants = new Set<Permission>();
   for (const rule of rules) {
+    if (isEffectivePolicyRule(rule) && rule.principalType === "system") {
+      if (rule.principalId === SYSTEM_PRINCIPALS.RESOURCE_OWNER) {
+        resourceOwnerGrants.add(rule.permission);
+        continue;
+      }
+      if (rule.principalId === SYSTEM_PRINCIPALS.PROJECT_OWNERS) {
+        projectOwnerGrants.add(rule.permission);
+        continue;
+      }
+      if (
+        rule.principalId === SYSTEM_PRINCIPALS.REGISTERED_USERS &&
+        isScopeablePermission(rule.permission)
+      ) {
+        registeredUserGrants.add(rule.permission);
+        continue;
+      }
+    }
+
     const existing = grants.get(rule.permission);
     if (existing === ALL_RESOURCES) continue; // already the widest scope
     if (rule.resourceId === null) {
@@ -44,7 +93,53 @@ export function buildEffectivePermissions(
     }
   }
 
-  return { isSuperuser: false, grants };
+  return {
+    isSuperuser: false,
+    grants,
+    resourceOwnerGrants,
+    projectOwnerGrants,
+    registeredUserGrants,
+  };
+}
+
+/** True when a user can exercise a permission on a concrete resource. */
+export function canAccessResource(
+  perms: EffectivePermissions,
+  permission: Permission,
+  resource: ResourceDescriptor,
+  actorUserId: string | null
+): boolean {
+  if (can(perms, permission, resource.type === "task" ? resource.projectId : resource.id)) {
+    return true;
+  }
+  if (actorUserId === null) return false;
+  if (
+    resource.ownerUserId === null &&
+    (resource.type !== "task" || resource.projectId != null) &&
+    perms.registeredUserGrants.has(permission)
+  ) return true;
+  if (resource.ownerUserId === actorUserId && perms.resourceOwnerGrants.has(permission)) return true;
+
+  const projectId = resource.type === "project"
+    ? resource.id
+    : resource.type === "task"
+      ? resource.projectId
+      : null;
+  return projectId != null &&
+    perms.projectOwnerGrants.has(permission) &&
+    can(perms, "project.owner", projectId);
+}
+
+/** True when collection access may be granted by static or dynamic resource rules. */
+export function hasPotentialResourceAccess(
+  perms: EffectivePermissions,
+  permission: Permission
+): boolean {
+  return perms.isSuperuser ||
+    perms.grants.has(permission) ||
+    perms.resourceOwnerGrants.has(permission) ||
+    perms.projectOwnerGrants.has(permission) ||
+    perms.registeredUserGrants.has(permission);
 }
 
 /**
@@ -87,6 +182,9 @@ export interface SerializedPermissions {
   superuser: boolean;
   /** permission → `"*"` (all resources) or a sorted array of scoped resource ids. */
   grants: Record<Permission, "*" | string[]>;
+  resourceOwnerGrants: Permission[];
+  projectOwnerGrants: Permission[];
+  registeredUserGrants: Permission[];
 }
 
 /** Project effective permissions to a JSON-friendly shape for the client. */
@@ -95,5 +193,11 @@ export function serializeEffectivePermissions(perms: EffectivePermissions): Seri
   for (const [permission, scope] of perms.grants) {
     grants[permission] = scope === ALL_RESOURCES ? "*" : [...scope].sort();
   }
-  return { superuser: perms.isSuperuser, grants };
+  return {
+    superuser: perms.isSuperuser,
+    grants,
+    resourceOwnerGrants: [...perms.resourceOwnerGrants].sort(),
+    projectOwnerGrants: [...perms.projectOwnerGrants].sort(),
+    registeredUserGrants: [...perms.registeredUserGrants].sort(),
+  };
 }

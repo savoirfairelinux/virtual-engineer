@@ -1,4 +1,5 @@
 import { getLogger } from "../../logger.js";
+import { SYSTEM_PRINCIPALS, type SystemPrincipalId } from "../../domain/accessControl.js";
 import type { AdminUser, Group, Policy, PolicyBinding, PolicyRule, PrincipalType, UserRole } from "../../interfaces.js";
 import type { PolicyRuleInput } from "../../state/stores/policyStore.js";
 import { PERMISSIONS } from "./permissions.js";
@@ -6,29 +7,16 @@ import { PERMISSIONS } from "./permissions.js";
 const log = getLogger("pbac-seed");
 
 /**
- * Built-in policy that reproduces the legacy `operator` role: full read/write on
- * every non-administrative resource type. Excludes user, audit, and policy
- * management (those stay `admin`-only).
+ * Built-in policy for operators. Existing resources are governed by ownership
+ * and scoped grants; these global grants only allow creating new resources and
+ * using non-resource administrative capabilities.
  */
 const OPERATOR_RULES: PolicyRuleInput[] = [
-  { permission: PERMISSIONS.PROJECT_READ },
-  { permission: PERMISSIONS.PROJECT_WRITE },
-  { permission: PERMISSIONS.PROJECT_DELETE },
-  { permission: PERMISSIONS.PROJECT_OPERATE },
-  { permission: PERMISSIONS.TASK_READ },
-  { permission: PERMISSIONS.TASK_OPERATE },
-  { permission: PERMISSIONS.TASK_DELETE },
-  { permission: PERMISSIONS.INTEGRATION_READ },
-  { permission: PERMISSIONS.INTEGRATION_WRITE },
-  { permission: PERMISSIONS.INTEGRATION_DELETE },
-  { permission: PERMISSIONS.INTEGRATION_OPERATE },
-  { permission: PERMISSIONS.AGENT_READ },
-  { permission: PERMISSIONS.AGENT_WRITE },
-  { permission: PERMISSIONS.AGENT_DELETE },
-  { permission: PERMISSIONS.AGENT_OPERATE },
-  { permission: PERMISSIONS.PROMPT_READ },
-  { permission: PERMISSIONS.PROMPT_WRITE },
-  { permission: PERMISSIONS.PROMPT_DELETE },
+  { permission: PERMISSIONS.PROJECT_CREATE },
+  { permission: PERMISSIONS.INTEGRATION_CREATE },
+  { permission: PERMISSIONS.AGENT_CREATE },
+  { permission: PERMISSIONS.PROMPT_CREATE },
+  { permission: PERMISSIONS.OAUTH_CREATE },
   { permission: PERMISSIONS.OAUTH_MANAGE },
   { permission: PERMISSIONS.OVERVIEW_READ },
   { permission: PERMISSIONS.CONCURRENCY_READ },
@@ -44,24 +32,96 @@ const VIEWER_RULES: PolicyRuleInput[] = [
   { permission: PERMISSIONS.OVERVIEW_READ },
   { permission: PERMISSIONS.CONCURRENCY_READ },
   { permission: PERMISSIONS.SYSTEM_READ },
+];
+
+const REGISTERED_USER_RULES: PolicyRuleInput[] = [
+  { permission: PERMISSIONS.OVERVIEW_READ },
+  { permission: PERMISSIONS.CONCURRENCY_READ },
+  { permission: PERMISSIONS.SYSTEM_READ },
   { permission: PERMISSIONS.PROJECT_READ },
   { permission: PERMISSIONS.TASK_READ },
+  { permission: PERMISSIONS.INTEGRATION_READ },
+  { permission: PERMISSIONS.AGENT_READ },
+  { permission: PERMISSIONS.PROMPT_READ },
+  { permission: PERMISSIONS.OAUTH_READ },
+];
+
+const RESOURCE_OWNER_RULES: PolicyRuleInput[] = [
+  { permission: PERMISSIONS.PROJECT_READ },
+  { permission: PERMISSIONS.PROJECT_WRITE },
+  { permission: PERMISSIONS.PROJECT_DELETE },
+  { permission: PERMISSIONS.PROJECT_OPERATE },
+  { permission: PERMISSIONS.PROJECT_OWNER },
+  { permission: PERMISSIONS.TASK_READ },
+  { permission: PERMISSIONS.TASK_OPERATE },
+  { permission: PERMISSIONS.TASK_DELETE },
+  { permission: PERMISSIONS.INTEGRATION_READ },
+  { permission: PERMISSIONS.INTEGRATION_WRITE },
+  { permission: PERMISSIONS.INTEGRATION_DELETE },
+  { permission: PERMISSIONS.INTEGRATION_OPERATE },
+  { permission: PERMISSIONS.AGENT_READ },
+  { permission: PERMISSIONS.AGENT_WRITE },
+  { permission: PERMISSIONS.AGENT_DELETE },
+  { permission: PERMISSIONS.AGENT_OPERATE },
+  { permission: PERMISSIONS.PROMPT_READ },
+  { permission: PERMISSIONS.PROMPT_WRITE },
+  { permission: PERMISSIONS.PROMPT_DELETE },
+  { permission: PERMISSIONS.OAUTH_READ },
+  { permission: PERMISSIONS.OAUTH_WRITE },
+  { permission: PERMISSIONS.OAUTH_DELETE },
+];
+
+const PROJECT_OWNER_RULES: PolicyRuleInput[] = [
+  { permission: PERMISSIONS.PROJECT_READ },
+  { permission: PERMISSIONS.PROJECT_WRITE },
+  { permission: PERMISSIONS.PROJECT_DELETE },
+  { permission: PERMISSIONS.PROJECT_OPERATE },
+  { permission: PERMISSIONS.PROJECT_OWNER },
+  { permission: PERMISSIONS.TASK_READ },
+  { permission: PERMISSIONS.TASK_OPERATE },
+  { permission: PERMISSIONS.TASK_DELETE },
 ];
 
 /** Names of the seeded built-in policies. Stable identifiers referenced by the migration. */
 export const BUILTIN_POLICY_OPERATOR = "Operator";
 export const BUILTIN_POLICY_VIEWER = "Viewer";
+export const BUILTIN_POLICY_REGISTERED_USERS = "Registered Users";
+export const BUILTIN_POLICY_RESOURCE_OWNER = "Resource Owner";
+export const BUILTIN_POLICY_PROJECT_OWNERS = "Project Owners";
 
-const BUILTIN_POLICIES: ReadonlyArray<{ name: string; description: string; rules: PolicyRuleInput[] }> = [
+const BUILTIN_POLICIES: ReadonlyArray<{
+  name: string;
+  description: string;
+  rules: PolicyRuleInput[];
+  systemPrincipalId?: SystemPrincipalId;
+}> = [
   {
     name: BUILTIN_POLICY_OPERATOR,
-    description: "Full read/write on projects, tasks, integrations, agents and prompts (no user/audit/policy administration).",
+    description: "Create resources and use operational capabilities without access to resources owned by other users.",
     rules: OPERATOR_RULES,
   },
   {
     name: BUILTIN_POLICY_VIEWER,
     description: "Read-only access to the overview, tasks, projects and runtime status.",
     rules: VIEWER_RULES,
+  },
+  {
+    name: BUILTIN_POLICY_REGISTERED_USERS,
+    description: "Read legacy unowned resources and common status pages.",
+    rules: REGISTERED_USER_RULES,
+    systemPrincipalId: SYSTEM_PRINCIPALS.REGISTERED_USERS,
+  },
+  {
+    name: BUILTIN_POLICY_RESOURCE_OWNER,
+    description: "Manage resources created by the current user.",
+    rules: RESOURCE_OWNER_RULES,
+    systemPrincipalId: SYSTEM_PRINCIPALS.RESOURCE_OWNER,
+  },
+  {
+    name: BUILTIN_POLICY_PROJECT_OWNERS,
+    description: "Manage delegated projects and their tasks.",
+    rules: PROJECT_OWNER_RULES,
+    systemPrincipalId: SYSTEM_PRINCIPALS.PROJECT_OWNERS,
   },
 ];
 
@@ -95,6 +155,19 @@ export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void>
     }
     await store.setPolicyRules(policy.id, spec.rules);
     policyIdByName.set(spec.name, policy.id);
+    if (spec.systemPrincipalId) {
+      try {
+        await store.createBinding({
+          policyId: policy.id,
+          principalType: "system",
+          principalId: spec.systemPrincipalId,
+        });
+      } catch (err) {
+        if (!(err instanceof Error && (err as { code?: unknown }).code === "DUPLICATE")) {
+          throw err;
+        }
+      }
+    }
   }
 
   const roleToPolicyName: Partial<Record<UserRole, string>> = {

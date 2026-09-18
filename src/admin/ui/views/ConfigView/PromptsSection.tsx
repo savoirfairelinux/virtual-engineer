@@ -23,8 +23,7 @@ function formatPromptType(promptType: ApiPrompt["promptType"]): string {
 
 export function PromptsSection({ prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const { can } = useCurrentUser();
-  const canWrite = can("prompt.write");
-  const canDelete = can("prompt.delete");
+  const canCreate = can("prompt.create");
   const routeId = route.section === "prompts" && (route.mode === "detail" || route.mode === "edit") ? route.id : null;
   const routePrompt = routeId ? prompts.find((prompt) => prompt.id === routeId) : undefined;
   const [filter, setFilter] = useState<PromptFilter>("all");
@@ -54,7 +53,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
       <PromptFormModal
         prompt={routePrompt}
         readOnly
-        onEdit={canWrite ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
+        onEdit={can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null) ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
         onClose={() => navigate({ section: "prompts", mode: "list" })}
         onSaved={handleSaved}
       />
@@ -63,10 +62,13 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
 
   if (route.mode === "create" || route.mode === "edit") {
     if (route.mode === "edit" && !routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
+    const canUseForm = route.mode === "create"
+      ? canCreate
+      : routePrompt !== undefined && can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null);
     return (
       <PromptFormModal
         prompt={route.mode === "edit" ? routePrompt : undefined}
-        readOnly={!canWrite}
+        readOnly={!canUseForm}
         onClose={() => navigate(route.mode === "edit" && routeId
           ? { section: "prompts", mode: "detail", id: routeId }
           : { section: "prompts", mode: "list" })}
@@ -105,7 +107,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
               <option value="system">System Prompt</option>
               <option value="instructions">Instructions Prompt</option>
             </select>
-            {canWrite && (
+            {canCreate && (
               <button className="btn primary" data-tour="prompts-new" onClick={() => { setFilter("all"); navigate({ section: "prompts", mode: "create" }); }}>
                 <Icon name="plus" size={14} /> New prompt
               </button>
@@ -146,7 +148,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-ghost)", minWidth: "70px", textAlign: "right" }}>
               {p.content.length.toLocaleString()} ch
             </span>
-            {canDelete && !BUILTIN_PROMPT_IDS.has(p.id) && (
+            {can("prompt.delete", p.id, p.ownerUserId ?? null) && !BUILTIN_PROMPT_IDS.has(p.id) && (
               <button
                 className="iconbtn"
                 title="Delete"
