@@ -632,16 +632,23 @@ export class ReviewOrchestrator {
     };
     lifecycleSignal?.addEventListener("abort", cancelForLifecycle, { once: true });
     if (lifecycleSignal?.aborted === true) cancelForLifecycle();
-    const deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), timeoutMs);
-    let deadlineActive = true;
-    const clearDeadline = (): void => {
-      if (!deadlineActive) return;
-      deadlineActive = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const startDeadline = (): void => {
+      if (deadlineTimer !== undefined || deadlineController.signal.aborted) return;
+      deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), timeoutMs);
+    };
+    const pauseDeadline = (): void => {
+      if (deadlineTimer === undefined) return;
       clearTimeout(deadlineTimer);
+      deadlineTimer = undefined;
+    };
+    const clearDeadline = (): void => {
+      pauseDeadline();
       lifecycleSignal?.removeEventListener("abort", cancelForLifecycle);
     };
     const withinDeadline = <T>(operation: Promise<T>): Promise<T> =>
       this.withAbortSignal(operation, deadlineController.signal, timeoutError);
+    startDeadline();
 
     try {
       emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
@@ -807,6 +814,7 @@ export class ReviewOrchestrator {
 
       try {
         if (this.deps.concurrencyTracker !== undefined) {
+          pauseDeadline();
           cycleLease = await this.awaitSignalAware(
             this.deps.concurrencyTracker.acquireWhenAvailable(
               project.id,
@@ -816,6 +824,7 @@ export class ReviewOrchestrator {
             deadlineController.signal,
             timeoutError,
           );
+          startDeadline();
           await withinDeadline(this.assertReviewStillActive(taskId));
         }
         handle = await this.awaitSignalAware(
