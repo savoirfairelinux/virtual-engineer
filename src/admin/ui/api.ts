@@ -161,7 +161,7 @@ export async function login(username: string, password: string): Promise<ApiMe> 
   if (!res.ok) throw new ApiError(res.status, await parseAuthError(res));
   const data = (await res.json()) as LoginResponse;
   storeToken(data.token);
-  return data.user;
+  return getMe();
 }
 
 /**
@@ -178,7 +178,7 @@ export async function setup(username: string, password: string): Promise<ApiMe> 
   if (!res.ok) throw new ApiError(res.status, await parseAuthError(res));
   const data = (await res.json()) as LoginResponse;
   storeToken(data.token);
-  return data.user;
+  return getMe();
 }
 
 /** Revoke a session server-side. Defaults to the current stored token. */

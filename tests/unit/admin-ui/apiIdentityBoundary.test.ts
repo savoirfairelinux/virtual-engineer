@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, connectSse, getStoredToken, onUnauthorized, storeToken } from "../../../src/admin/ui/api.js";
+import { api, connectSse, getStoredToken, login, onUnauthorized, storeToken } from "../../../src/admin/ui/api.js";
 
 describe("admin API identity boundary", () => {
   beforeEach(() => {
@@ -62,5 +62,35 @@ describe("admin API identity boundary", () => {
 
     await expect(api.delete("/api/admin/integrations/shared-github"))
       .rejects.toMatchObject({ status: 409, message });
+  });
+
+  it.each(["operator", "viewer"] as const)("hydrates %s capabilities after login", async (role) => {
+    const token = `${role}-token`;
+    const user = { id: `${role}-1`, username: role, role };
+    const hydratedUser = {
+      ...user,
+      capabilities: {
+        superuser: false,
+        grants: role === "operator" ? { "project.read": "*" } : { "task.read": "*" },
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token, user }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(hydratedUser), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(login(role, "password")).resolves.toEqual(hydratedUser);
+
+    expect(getStoredToken()).toBe(token);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/admin/auth/me", expect.objectContaining({
+      headers: expect.objectContaining({ authorization: `Bearer ${token}` }),
+      method: "GET",
+    }));
   });
 });

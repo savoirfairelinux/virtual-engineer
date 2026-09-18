@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiMe } from "../../../src/admin/ui/types.js";
 
@@ -25,16 +25,27 @@ vi.mock("../../../src/admin/ui/api.js", () => ({
 }));
 
 vi.mock("../../../src/admin/ui/shell/TopBar.js", () => ({
-  TopBar: ({ taskCount, user }: { taskCount: number; user: ApiMe | null }) => (
-    <div data-testid="app-state" data-user={user?.username ?? "loading"}>
-      {taskCount}
-    </div>
+  TopBar: ({ taskCount, user, setView, onLogout }: {
+    taskCount: number;
+    user: ApiMe | null;
+    setView: (view: "overview" | "tasks" | "config") => void;
+    onLogout: () => void;
+  }) => (
+    <>
+      <div data-testid="app-state" data-user={user?.username ?? "loading"}>{taskCount}</div>
+      <button onClick={() => setView("tasks")}>Tasks</button>
+      <button onClick={onLogout}>Sign out</button>
+    </>
   ),
 }));
-vi.mock("../../../src/admin/ui/shell/AuthScreen.js", () => ({ AuthScreen: () => null }));
+vi.mock("../../../src/admin/ui/shell/AuthScreen.js", () => ({
+  AuthScreen: () => <div data-testid="auth-screen" />,
+}));
 vi.mock("../../../src/admin/ui/shell/ChangePasswordModal.js", () => ({ ChangePasswordModal: () => null }));
 vi.mock("../../../src/admin/ui/views/OverviewView.js", () => ({ OverviewView: () => null }));
-vi.mock("../../../src/admin/ui/views/TasksView/index.js", () => ({ TasksView: () => null }));
+vi.mock("../../../src/admin/ui/views/TasksView/index.js", () => ({
+  TasksView: () => <div data-testid="tasks-view" />,
+}));
 vi.mock("../../../src/admin/ui/views/ConfigView/index.js", () => ({ ConfigView: () => null }));
 
 import { App, shouldEnableConfigWorkflow } from "../../../src/admin/ui/App.js";
@@ -94,6 +105,36 @@ describe("App identity loading", () => {
       expect(state.getAttribute("data-user")).toBe("task-reader");
       expect(state.textContent).toBe("1");
     });
+  });
+
+  it.each(["operator", "viewer"] as const)("allows %s task navigation when a denied config route has no mounted guard", async (role) => {
+    window.history.replaceState({}, "", "#config");
+    apiMocks.getMe.mockResolvedValue({
+      id: `${role}-1`,
+      username: role,
+      role,
+    });
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("app-state").getAttribute("data-user")).toBe(role));
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+
+    expect(await screen.findByTestId("tasks-view")).toBeTruthy();
+  });
+
+  it.each(["operator", "viewer"] as const)("allows %s logout when a denied config route has no mounted guard", async (role) => {
+    window.history.replaceState({}, "", "#config");
+    apiMocks.getMe.mockResolvedValue({
+      id: `${role}-1`,
+      username: role,
+      role,
+    });
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("app-state").getAttribute("data-user")).toBe(role));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByTestId("auth-screen")).toBeTruthy();
   });
 
   it("keeps the Configuration workflow active across its setup sections", () => {
