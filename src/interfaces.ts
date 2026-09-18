@@ -69,6 +69,7 @@ export interface AgentRecord {
   feedbackInstructionsPromptId: string | null;
   maxConcurrent: number;
   enabled: boolean;
+  ownerUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -93,6 +94,7 @@ export interface ProjectRecord {
   /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
   reactToCiFailures: boolean;
   enabled: boolean;
+  ownerUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -241,11 +243,10 @@ export interface AuditEntry {
 // ─── PBAC (policy-based access control) ───────────────────────────────────────
 
 /**
- * Resource types that a policy rule can be scoped to. Only `project` accepts a
- * concrete `resourceId`, and `task` rules are scoped by the owning project's id.
- * All other resource types (`integration`, `agent`, `prompt`, `system`, `user`,
- * `audit`, `policy`, `overview`, `concurrency`, `oauth`) are global — their rules
- * carry a null `resourceId` (they are shared, library-style resources).
+ * Resource types targeted by policy rules. Projects, integrations, agents,
+ * prompts and OAuth apps accept concrete resource ids; task rules use the
+ * owning project's id. System, user, audit, overview and policy capabilities
+ * remain global.
  */
 export type ResourceType =
   | "project"
@@ -269,7 +270,7 @@ export type ResourceType =
 export type Permission = string;
 
 /** A principal that a policy can be bound to. */
-export type PrincipalType = "user" | "group";
+export type PrincipalType = "user" | "group" | "system";
 
 /** A named collection of users; policies bound to a group apply to all members. */
 export interface Group {
@@ -301,6 +302,12 @@ export interface PolicyRule {
   permission: Permission;
   resourceId: string | null;
   createdAt: Date;
+}
+
+/** A policy rule annotated with the binding that made it effective. */
+export interface EffectivePolicyRule extends PolicyRule {
+  principalType: PrincipalType;
+  principalId: string;
 }
 
 /** Attaches a policy to a principal (a user or a group). */
@@ -1312,6 +1319,7 @@ export interface Prompt {
   content: string;
   /** Role in the agent session. The user prompt is built dynamically from the ticket or review. */
   promptType: PromptType;
+  ownerUserId?: string | null;
   updatedAt: Date;
 }
 
@@ -1320,7 +1328,7 @@ export interface PromptStore {
   getPrompt(id: string): Promise<Prompt | null>;
   upsertPrompt(id: string, content: string): Promise<Prompt>;
   /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad input (400). */
-  createPrompt(label: string, content: string, promptType: PromptType): Promise<Prompt>;
+  createPrompt(label: string, content: string, promptType: PromptType, ownerUserId?: string | null): Promise<Prompt>;
   /** Delete a prompt. Rejects if not found (404) or if it is built in (403). */
   deletePrompt(id: string): Promise<void>;
 }
@@ -1623,6 +1631,7 @@ export interface Integration {
   name: string;
   configJson: string;
   enabled: boolean;
+  ownerUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   /** JSON snapshot of resources discovered on this integration. NULL = never discovered. */
@@ -1641,21 +1650,30 @@ export interface OAuthApp {
   provider: string;
   baseUrl: string;
   clientId: string;
+  ownerUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
+export type OAuthAppInput = Omit<OAuthApp, "createdAt" | "updatedAt" | "ownerUserId"> & {
+  ownerUserId?: string | null;
+};
+
 export interface OAuthAppStore {
   listOAuthApps(provider?: string): Promise<OAuthApp[]>;
   getOAuthApp(provider: string, baseUrl: string): Promise<OAuthApp | null>;
-  upsertOAuthApp(app: Omit<OAuthApp, "createdAt" | "updatedAt">): Promise<OAuthApp>;
+  upsertOAuthApp(app: OAuthAppInput): Promise<OAuthApp>;
   deleteOAuthApp(provider: string, baseUrl: string): Promise<void>;
 }
+
+export type IntegrationInput = Omit<Integration, "createdAt" | "updatedAt" | "ownerUserId"> & {
+  ownerUserId?: string | null;
+};
 
 export interface IntegrationStore {
   getIntegrations(): Promise<Integration[]>;
   getIntegration(id: string): Promise<Integration | null>;
-  upsertIntegration(integration: Omit<Integration, "createdAt" | "updatedAt">): Promise<Integration>;
+  upsertIntegration(integration: IntegrationInput): Promise<Integration>;
   deleteIntegration(id: string): Promise<void>;
   setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration>;
   /** Count FK references across agents/projects tables; used to guard deletes with 409. */

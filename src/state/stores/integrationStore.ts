@@ -2,8 +2,10 @@ import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   Integration,
+  IntegrationInput,
   IntegrationReferenceDetails,
   OAuthApp,
+  OAuthAppInput,
 } from "../../interfaces.js";
 import { normalizeGitLabBaseUrl } from "../../utils/gitlabAuth.js";
 import {
@@ -19,14 +21,14 @@ import * as schema from "../schema.js";
 export interface IntegrationStoreApi {
   getIntegrations(): Promise<Integration[]>;
   getIntegration(id: string): Promise<Integration | null>;
-  upsertIntegration(data: Omit<Integration, "createdAt" | "updatedAt">): Promise<Integration>;
+  upsertIntegration(data: IntegrationInput): Promise<Integration>;
   deleteIntegration(id: string): Promise<void>;
   getIntegrationReferenceDetails(id: string): Promise<IntegrationReferenceDetails>;
   countIntegrationReferences(id: string): Promise<number>;
   setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration>;
   listOAuthApps(provider?: string): Promise<OAuthApp[]>;
   getOAuthApp(provider: string, baseUrl: string): Promise<OAuthApp | null>;
-  upsertOAuthApp(app: Omit<OAuthApp, "createdAt" | "updatedAt">): Promise<OAuthApp>;
+  upsertOAuthApp(app: OAuthAppInput): Promise<OAuthApp>;
   deleteOAuthApp(provider: string, baseUrl: string): Promise<void>;
   setIntegrationDiscoveredResources(id: string, json: string): Promise<void>;
   getIntegrationDiscoveredResources(id: string): Promise<{ json: string | null; at: Date | null }>;
@@ -47,6 +49,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
       name: row.name,
       configJson: row.configJson,
       enabled: row.enabled === 1,
+      ownerUserId: row.ownerUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       discoveredResourcesJson: row.discoveredResourcesJson ?? null,
@@ -59,6 +62,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
       provider: row.provider,
       baseUrl: row.baseUrl,
       clientId: row.clientId,
+      ownerUserId: row.ownerUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -76,7 +80,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     return row ? rowToIntegration(row) : null;
   }
 
-  async function upsertIntegration(data: Omit<Integration, "createdAt" | "updatedAt">): Promise<Integration> {
+  async function upsertIntegration(data: IntegrationInput): Promise<Integration> {
     const now = new Date();
     const existing = await getIntegration(data.id);
     if (existing) {
@@ -97,6 +101,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
         name: data.name,
         configJson: data.configJson,
         enabled: data.enabled ? 1 : 0,
+        ownerUserId: data.ownerUserId ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -174,7 +179,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     return row ? rowToOAuthApp(row) : null;
   }
 
-  async function upsertOAuthApp(app: Omit<OAuthApp, "createdAt" | "updatedAt">): Promise<OAuthApp> {
+  async function upsertOAuthApp(app: OAuthAppInput): Promise<OAuthApp> {
     const normalizedBaseUrl = normalizeGitLabBaseUrl(app.baseUrl);
     const now = new Date();
     await db
@@ -183,6 +188,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
         provider: app.provider,
         baseUrl: normalizedBaseUrl,
         clientId: app.clientId,
+        ownerUserId: app.ownerUserId ?? null,
         createdAt: now,
         updatedAt: now,
       })

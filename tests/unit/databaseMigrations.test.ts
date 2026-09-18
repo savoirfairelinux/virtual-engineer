@@ -55,6 +55,21 @@ function openMemoryDatabase(): Database.Database {
   return raw;
 }
 
+function removePostBridgeOwnershipSchema(raw: Database.Database): void {
+  raw.exec(`
+    DROP INDEX idx_agents_owner_user_id;
+    DROP INDEX idx_integrations_owner_user_id;
+    DROP INDEX idx_oauth_apps_owner_user_id;
+    DROP INDEX idx_projects_owner_user_id;
+    DROP INDEX idx_prompts_owner_user_id;
+    ALTER TABLE agents DROP COLUMN owner_user_id;
+    ALTER TABLE integrations DROP COLUMN owner_user_id;
+    ALTER TABLE oauth_apps DROP COLUMN owner_user_id;
+    ALTER TABLE projects DROP COLUMN owner_user_id;
+    ALTER TABLE prompts DROP COLUMN owner_user_id;
+  `);
+}
+
 async function trackedLedgerRows(): Promise<MigrationLedgerRow[]> {
   const migrationFolder = join(process.cwd(), "drizzle");
   const journal = JSON.parse(
@@ -268,6 +283,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         DROP INDEX idx_agent_cycles_created_at;
@@ -323,6 +339,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         ALTER TABLE project_vendor_components ADD COLUMN note TEXT NOT NULL DEFAULT '';
@@ -374,6 +391,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -472,6 +490,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         CREATE TABLE project_ticket_source (
@@ -499,6 +518,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -545,6 +565,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO agents (
@@ -579,6 +600,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -609,6 +631,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO audit_log (
@@ -684,6 +707,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
+      removePostBridgeOwnershipSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         ALTER TABLE prompts ADD COLUMN private_note TEXT;

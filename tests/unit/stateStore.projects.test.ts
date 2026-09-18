@@ -52,6 +52,22 @@ describe("SqliteStateStore — Phase 2: agents", () => {
     expect(fetched?.id).toBe(a.id);
   });
 
+  it("persists the creating user as the agent owner", async () => {
+    await store.createUser({
+      id: "agent-owner",
+      username: "agent-owner",
+      passwordHash: "scrypt:16384:8:1:salt:hash",
+      role: "operator",
+    });
+
+    const agent = await makeAgent(store, { ownerUserId: "agent-owner" });
+
+    expect(agent.ownerUserId).toBe("agent-owner");
+    await expect(store.getAgentById(agent.id)).resolves.toMatchObject({
+      ownerUserId: "agent-owner",
+    });
+  });
+
   it("rejects creating an agent with an empty required prompt id", async () => {
     await expect(store.createAgent({
       name: "Invalid",
@@ -124,6 +140,51 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(p.agentId).toBe(a.id);
     expect(p.postCloneScript).toBe("echo hi");
     expect(p.enabled).toBe(true);
+  });
+
+  it("deletes project access policies with the project", async () => {
+    const agent = await makeAgent(store);
+    const project = await store.createProject({
+      id: "acl-cleanup-project",
+      name: "ACL cleanup",
+      type: "coding",
+      agentId: agent.id,
+    });
+    const group = await store.createGroup({ name: "ACL cleanup group" });
+    const policy = await store.createPolicy({
+      id: `project-access:${project.id}:group:${group.id}`,
+      name: "ACL cleanup policy",
+    });
+    await store.setPolicyRules(policy.id, [{ permission: "project.read", resourceId: project.id }]);
+    await store.createBinding({ policyId: policy.id, principalType: "group", principalId: group.id });
+
+    await store.deleteProject(project.id);
+
+    await expect(store.getPolicyById(policy.id)).resolves.toBeNull();
+    await expect(store.listPolicyRules(policy.id)).resolves.toEqual([]);
+    await expect(store.listBindingsForPolicy(policy.id)).resolves.toEqual([]);
+  });
+
+  it("persists the creating user as the project owner", async () => {
+    await store.createUser({
+      id: "project-owner",
+      username: "project-owner",
+      passwordHash: "scrypt:16384:8:1:salt:hash",
+      role: "operator",
+    });
+    const agent = await makeAgent(store);
+
+    const project = await store.createProject({
+      name: "Owned project",
+      type: "coding",
+      agentId: agent.id,
+      ownerUserId: "project-owner",
+    });
+
+    expect(project.ownerUserId).toBe("project-owner");
+    await expect(store.getProjectById(project.id)).resolves.toMatchObject({
+      ownerUserId: "project-owner",
+    });
   });
 
   it("persists and updates skillSourcesJson (defaults to empty array)", async () => {

@@ -25,6 +25,7 @@ export interface AgentStoreApi {
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<AgentRecord>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
@@ -57,6 +58,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
       feedbackInstructionsPromptId: row.feedbackInstructionsPromptId ?? null,
       maxConcurrent: row.maxConcurrent,
       enabled: row.enabled === 1,
+      ownerUserId: row.ownerUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -73,6 +75,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
+    ownerUserId?: string | null;
   }): Promise<AgentRecord> {
     if (!input.systemPromptId.trim()) throw new Error("System prompt is required");
     if (!input.instructionsPromptId.trim()) throw new Error("Instructions prompt is required");
@@ -89,6 +92,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
       feedbackInstructionsPromptId: input.feedbackInstructionsPromptId ?? null,
       maxConcurrent: input.maxConcurrent ?? 1,
       enabled: input.enabled === false ? 0 : 1,
+      ownerUserId: input.ownerUserId ?? null,
       createdAt: now,
       updatedAt: now,
     });

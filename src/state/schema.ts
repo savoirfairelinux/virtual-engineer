@@ -202,19 +202,26 @@ export const reviewThreadReplies = sqliteTable(
   })
 );
 
-export const integrations = sqliteTable("integrations", {
-  id: text("id").primaryKey(),
-  provider: text("provider").$type<ProviderId>().notNull(),
-  name: text("name").notNull(),
-  configJson: text("config_json").notNull(),
-  enabled: integer("enabled").notNull().default(1),
-  /** JSON snapshot of resources discovered on this integration. NULL = never discovered. */
-  discoveredResourcesJson: text("discovered_resources_json"),
-  /** When the discovery snapshot was last refreshed. NULL = never. */
-  discoveredAt: integer("discovered_at", { mode: "timestamp" }),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
-});
+export const integrations = sqliteTable(
+  "integrations",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").$type<ProviderId>().notNull(),
+    name: text("name").notNull(),
+    configJson: text("config_json").notNull(),
+    enabled: integer("enabled").notNull().default(1),
+    /** JSON snapshot of resources discovered on this integration. NULL = never discovered. */
+    discoveredResourcesJson: text("discovered_resources_json"),
+    /** When the discovery snapshot was last refreshed. NULL = never. */
+    discoveredAt: integer("discovered_at", { mode: "timestamp" }),
+    ownerUserId: text("owner_user_id").references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxIntegrationsOwnerUserId: index("idx_integrations_owner_user_id").on(table.ownerUserId),
+  })
+);
 
 export const gitLabOAuthApps = sqliteTable("gitlab_oauth_apps", {
   baseUrl: text("base_url").primaryKey(),
@@ -227,21 +234,30 @@ export const oauthApps = sqliteTable("oauth_apps", {
   provider: text("provider").notNull(),
   baseUrl: text("base_url").notNull(),
   clientId: text("client_id").notNull(),
+  ownerUserId: text("owner_user_id").references(() => users.id),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.provider, table.baseUrl] }),
+  idxOAuthAppsOwnerUserId: index("idx_oauth_apps_owner_user_id").on(table.ownerUserId),
 }));
 
-export const prompts = sqliteTable("prompts", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  content: text("content").notNull(),
-  /** Role in the agent session; the user prompt is generated from the ticket or review. */
-  promptType: text("prompt_type").$type<"system" | "instructions">().notNull().default("instructions"),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
-});
+export const prompts = sqliteTable(
+  "prompts",
+  {
+    id: text("id").primaryKey(),
+    label: text("label").notNull(),
+    content: text("content").notNull(),
+    /** Role in the agent session; the user prompt is generated from the ticket or review. */
+    promptType: text("prompt_type").$type<"system" | "instructions">().notNull().default("instructions"),
+    ownerUserId: text("owner_user_id").references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPromptsOwnerUserId: index("idx_prompts_owner_user_id").on(table.ownerUserId),
+  })
+);
 
 /**
  * Per-repository change tracking. Tracks Gerrit Change-Ids or GitLab MR IDs per
@@ -300,12 +316,14 @@ export const agents = sqliteTable(
     feedbackInstructionsPromptId: text("feedback_instructions_prompt_id").references(() => prompts.id, { onDelete: "set null" }),
     maxConcurrent: integer("max_concurrent").notNull().default(1),
     enabled: integer("enabled").notNull().default(0),
+    ownerUserId: text("owner_user_id").references(() => users.id),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
     idxAgentsName: index("idx_agents_name").on(table.name),
     idxAgentsEnabled: index("idx_agents_enabled").on(table.enabled),
+    idxAgentsOwnerUserId: index("idx_agents_owner_user_id").on(table.ownerUserId),
   })
 );
 
@@ -335,12 +353,14 @@ export const projects = sqliteTable(
     /** When 1, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
     reactToCiFailures: integer("react_to_ci_failures").notNull().default(0),
     enabled: integer("enabled").notNull().default(0),
+    ownerUserId: text("owner_user_id").references(() => users.id),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
     idxProjectsName: index("idx_projects_name").on(table.name),
     idxProjectsEnabled: index("idx_projects_enabled").on(table.enabled),
+    idxProjectsOwnerUserId: index("idx_projects_owner_user_id").on(table.ownerUserId),
   })
 );
 

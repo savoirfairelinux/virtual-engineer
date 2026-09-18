@@ -280,6 +280,26 @@ describe("SqliteStateStore — PromptStore", () => {
   // ── createPrompt ───────────────────────────────────────────────────────────
 
   describe("createPrompt", () => {
+    it("persists the creating user as the prompt owner", async () => {
+      await store.createUser({
+        id: "user-1",
+        username: "prompt-owner",
+        passwordHash: "scrypt:16384:8:1:salt:hash",
+        role: "viewer",
+      });
+      const prompt = await store.createPrompt(
+        "Owned Prompt",
+        "private content",
+        "instructions",
+        "user-1"
+      );
+
+      expect(prompt.ownerUserId).toBe("user-1");
+      await expect(store.getPrompt(prompt.id)).resolves.toMatchObject({
+        ownerUserId: "user-1",
+      });
+    });
+
     it("creates a new prompt with user-provided label and generated id", async () => {
       const prompt = await store.createPrompt("My Custom Prompt", "This is custom content", "instructions");
 
