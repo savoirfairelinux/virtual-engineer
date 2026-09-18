@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AddressInfo } from "node:net";
-import { createAdminServer } from "../../src/admin/adminServer.js";
+import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { Integration, StateStore, Task } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
@@ -115,6 +115,28 @@ async function closeServer(server: ReturnType<typeof createAdminServer>): Promis
   });
 }
 
+function makeUnauthenticatedServer(
+  runtimeGateway?: AdminServerDependencies["runtimeGateway"]
+): ReturnType<typeof createAdminServer> {
+  return createAdminServer({
+    stateStore: makeStateStore(),
+    allowUnauthenticatedAdmin: true,
+    ...(runtimeGateway !== undefined ? { runtimeGateway } : {}),
+    config: {
+      nodeEnv: "test",
+      logLevel: "info",
+      maxAgentCycles: 3,
+      maxRetryAttempts: 5,
+      pollingIntervalMs: 30_000,
+    },
+    polling: {
+      isRunning: () => true,
+      getIntervals: () => ({ intervalMs: 30_000 }),
+    },
+    providers: [],
+  });
+}
+
 describe("createAdminServer behavior", () => {
   it("fails closed when the user store is unavailable", () => {
     expect(() => createAdminServer({
@@ -226,6 +248,81 @@ describe("createAdminServer behavior", () => {
     try {
       const baseUrl = await listen(server);
       const response = await fetch(`${baseUrl}/api/admin/status`, { method: "POST" });
+      expect(response.status).toBe(405);
+      await expect(response.json()).resolves.toEqual({ error: "Method not allowed" });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("reports ready when the runtime gateway is healthy", async () => {
+    const server = makeUnauthenticatedServer({
+      healthy: async () => true,
+      address: "http://127.0.0.1:8080",
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/ready`);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ status: "ready" });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("reports not ready when the runtime gateway probe fails", async () => {
+    const server = makeUnauthenticatedServer({
+      healthy: async () => { throw new Error("gateway unavailable"); },
+      address: undefined,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/ready`);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ status: "not_ready" });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("reports not ready without a gateway and rejects non-GET readiness requests", async () => {
+    const server = makeUnauthenticatedServer();
+
+    try {
+      const baseUrl = await listen(server);
+      const unavailable = await fetch(`${baseUrl}/ready`);
+      expect(unavailable.status).toBe(503);
+      await expect(unavailable.json()).resolves.toEqual({ status: "not_ready" });
+
+      const wrongMethod = await fetch(`${baseUrl}/ready`, { method: "POST" });
+      expect(wrongMethod.status).toBe(405);
+      await expect(wrongMethod.json()).resolves.toEqual({ error: "Method not allowed" });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("returns 404 for a missing admin UI asset", async () => {
+    const server = makeUnauthenticatedServer();
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/admin-ui/missing-ci-coverage.js`);
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({ error: "Not found" });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("rejects unsupported methods before route dispatch", async () => {
+    const server = makeUnauthenticatedServer();
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/api/admin/does-not-exist`, { method: "OPTIONS" });
       expect(response.status).toBe(405);
       await expect(response.json()).resolves.toEqual({ error: "Method not allowed" });
     } finally {
