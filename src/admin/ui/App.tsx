@@ -83,7 +83,7 @@ export function App() {
   useEffect(() => {
     const onHashChange = () => {
       const nextView = viewFromHash(window.location.hash);
-      if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return;
+      if (view === "config" && nextView !== "config" && configNavigationGuardRef.current?.() === false) return;
       setView(nextView);
     };
     window.addEventListener("hashchange", onHashChange);
@@ -295,7 +295,7 @@ export function App() {
     && shouldEnableConfigWorkflow(configSection, configWorkflowActive, tutorialLaunch?.key ?? null);
 
   function requestViewChange(nextView: ViewId): boolean {
-    if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return false;
+    if (view === "config" && nextView !== "config" && configNavigationGuardRef.current?.() === false) return false;
     setView(nextView);
     window.location.hash = nextView;
     return true;
@@ -362,7 +362,7 @@ export function App() {
           onChangePassword={() => setShowChangePassword(true)}
           onStartTutorial={handleStartTutorial}
           onLogout={() => {
-            if (view === "config" && !configNavigationGuardRef.current?.()) return;
+            if (view === "config" && configNavigationGuardRef.current?.() === false) return;
             const token = getStoredToken();
             handleLoggedOut();
             void logout(token);
