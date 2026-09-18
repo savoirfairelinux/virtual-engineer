@@ -30,6 +30,7 @@ function makeContext(): TaskContext {
       agentContainerImage: "agent:test",
       repoCloneUrl: "ssh://git.example.test/project",
       pushRef: "refs/for/main",
+      useChangeIdContinuity: true,
       existingChangeId: makeExternalChangeId("Iroot"),
       perRepoChangeIds: { root: makeExternalChangeId("Irepo") },
       gitAuthorName: "Virtual Engineer",
@@ -79,6 +80,7 @@ describe("containerSpecBuilders", () => {
         GIT_COMMITTER_NAME: "Virtual Engineer",
         GIT_COMMITTER_EMAIL: "ve@example.test",
         TASK_ID: "task-123",
+        USE_CHANGE_ID_CONTINUITY: "1",
         MAX_CONTEXT_BYTES: "123456",
         MAX_COMMITS_PER_CYCLE: "7",
         REPOSITORY_MAP_JSON: JSON.stringify(context.agentSession.repositoryMap),
@@ -113,6 +115,19 @@ describe("containerSpecBuilders", () => {
     });
 
     expect(spec.env["MAX_COMMITS_PER_CYCLE"]).toBe("10");
+  });
+
+  it("disables Change-Id continuity for branch-based review systems", () => {
+    const context = makeContext();
+    context.agentSession.useChangeIdContinuity = false;
+
+    const spec = buildCodegenContainerSpec(context, {
+      providerEnv: {},
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: 7,
+    });
+
+    expect(spec.env["USE_CHANGE_ID_CONTINUITY"]).toBe("0");
   });
 
   it("builds the common review contract with isolated security args", () => {
@@ -215,6 +230,7 @@ describe("containerSpecBuilders", () => {
         GIT_COMMITTER_NAME: "Virtual Engineer",
         GIT_COMMITTER_EMAIL: "ve@example.test",
         TASK_ID: "task-123",
+        USE_CHANGE_ID_CONTINUITY: "1",
         MAX_CONTEXT_BYTES: "123456",
         MAX_COMMITS_PER_CYCLE: "7",
       });

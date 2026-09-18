@@ -16,6 +16,7 @@ import {
   validateCommits,
   deriveChangeId,
   injectChangeIds,
+  repositoryUsesChangeIdContinuity,
   resolveExistingRootChange,
   squashIntoBaseIfNeeded,
 } from "../../agent-worker/src/commitUtils.js";
@@ -119,6 +120,23 @@ describe("agent-worker multi-commit protocol", () => {
 
       const commits = collectCommits(baseSha, repoDir);
       expect(commits[0]!.changeId).toBe("");
+    });
+  });
+
+  describe("repositoryUsesChangeIdContinuity", () => {
+    const mixedMap = {
+      superproject: { repoKey: "gitlab/root", localPath: ".", useChangeIdContinuity: false },
+      submodules: [
+        { repoKey: "gerrit/child", localPath: "child", useChangeIdContinuity: true },
+      ],
+    };
+
+    it("uses the branch-provider root mode", () => {
+      expect(repositoryUsesChangeIdContinuity(mixedMap, "gitlab/root", true)).toBe(false);
+    });
+
+    it("uses the Gerrit child mode", () => {
+      expect(repositoryUsesChangeIdContinuity(mixedMap, "gerrit/child", false)).toBe(true);
     });
   });
 
@@ -405,6 +423,22 @@ describe("agent-worker multi-commit protocol", () => {
         expect(msg).toContain("GitLab: https://gitlab.example.com/issues/123");
         expect(msg).toContain("Change-Id: I");
       }
+    });
+
+    it("appends a ticket footer without Change-Ids for branch providers", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "branch.ts", "branch\n", "feat: branch provider");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      const rewritten = injectChangeIds(baseSha, rawCommits, "TASK-BRANCH", repoDir, {
+        includeChangeIds: false,
+        ticketFooterLine: "GitLab: https://gitlab.example.com/issues/123",
+      });
+
+      expect(rewritten[0]!.changeId).toBe("");
+      const message = git(["log", "-1", "--format=%B"], repoDir);
+      expect(message).toContain("GitLab: https://gitlab.example.com/issues/123");
+      expect(message).not.toContain("Change-Id:");
     });
 
     it("does not duplicate the ticketFooterLine when re-injected on already-footed commits", () => {

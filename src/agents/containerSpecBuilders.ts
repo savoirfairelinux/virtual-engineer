@@ -53,6 +53,7 @@ export function buildCodegenContainerSpec(
     GIT_COMMITTER_NAME: session.gitAuthorName,
     GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
     TASK_ID: context.taskId,
+    USE_CHANGE_ID_CONTINUITY: session.useChangeIdContinuity ? "1" : "0",
     MAX_CONTEXT_BYTES: String(options.maxRepositoryContextBytes),
     MAX_COMMITS_PER_CYCLE: String(options.maxCommitsPerCycle ?? 10),
     ...(session.repositoryMap !== undefined

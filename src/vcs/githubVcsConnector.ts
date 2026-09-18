@@ -115,16 +115,51 @@ export class GitHubVcsConnector implements VcsConnector {
     );
 
     return {
-      changeId: String(pr.number),
+      changeId: `${this.config.owner}/${this.config.repo}#${pr.number}`,
       url: pr.html_url,
       status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
     };
   }
 
   async getChangeStatus(changeId: string): Promise<string> {
-    const pr = await this.fetchPullRequest(parseInt(changeId, 10));
+    const separator = changeId.lastIndexOf("#");
+    if (separator >= 0) {
+      const repository = changeId.slice(0, separator);
+      const configuredRepository = `${this.config.owner}/${this.config.repo}`;
+      if (repository !== configuredRepository) {
+        throw new Error(
+          `GitHub change identity repository '${repository}' does not match configured repository '${configuredRepository}'`,
+        );
+      }
+    }
+    const rawNumber = separator >= 0 ? changeId.slice(separator + 1) : changeId;
+    const prNumber = Number(rawNumber);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      throw new Error(`Invalid GitHub pull request identity: '${changeId}'`);
+    }
+    const pr = await this.fetchPullRequest(prNumber);
     if (pr.state === "closed") return pr.merged ? "MERGED" : "ABANDONED";
     return "OPEN";
+  }
+
+  /** Resolve one existing open PR by source branch without changing provider state. */
+  async findExistingReview(
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<VcsPushResult | null> {
+    const pullRequests = await this.listPullRequestsByHead(sourceBranch, targetBranch);
+    if (pullRequests.length === 0) return null;
+    if (pullRequests.length > 1) {
+      throw new Error(`Multiple open GitHub pull requests found for branch ${sourceBranch}`);
+    }
+    const pullRequest = pullRequests[0]!;
+    return {
+      changeId: `${this.config.owner}/${this.config.repo}#${pullRequest.number}`,
+      url: pullRequest.html_url,
+      status: pullRequest.state === "closed"
+        ? (pullRequest.merged ? "MERGED" : "ABANDONED")
+        : "OPEN",
+    };
   }
 
   getUnresolvedComments(_changeId: string): Promise<ReviewComment[]> {
@@ -162,19 +197,13 @@ export class GitHubVcsConnector implements VcsConnector {
     body: string
   ): Promise<GitHubPrShape> {
     // Try to find existing PR for this head branch first
-    const listUrl = `${this.repoApiUrl()}/pulls?state=open&head=${encodeURIComponent(
-      `${this.config.owner}:${head}`
-    )}`;
-    const listResponse = await globalThis.fetch(listUrl, { headers: this.authHeaders() });
-    if (listResponse.ok) {
-      const existing = (await listResponse.json()) as GitHubPrShape[];
-      if (Array.isArray(existing) && existing.length > 0) {
-        log.info({ prNumber: existing[0]!.number }, "reusing existing PR");
-        return existing[0]!;
-      }
-    } else if (listResponse.status !== 404) {
-      const errorBody = await listResponse.text().catch(() => "");
-      throw new ReviewApiError(listResponse.status, listUrl, errorBody);
+    const existing = await this.listPullRequestsByHead(head, base);
+    if (existing.length > 1) {
+      throw new Error(`Multiple open GitHub pull requests found for branch ${head}`);
+    }
+    if (existing.length === 1) {
+      log.info({ prNumber: existing[0]!.number }, "reusing existing PR");
+      return existing[0]!;
     }
 
     // Create new PR
@@ -193,6 +222,21 @@ export class GitHubVcsConnector implements VcsConnector {
     const pr = (await createResponse.json()) as GitHubPrShape;
     log.info({ prNumber: pr.number, prUrl: pr.html_url }, "created pull request on GitHub");
     return pr;
+  }
+
+  private async listPullRequestsByHead(head: string, base: string): Promise<GitHubPrShape[]> {
+    const listUrl = new URL(`${this.repoApiUrl()}/pulls`);
+    listUrl.searchParams.set("state", "open");
+    listUrl.searchParams.set("head", `${this.config.owner}:${head}`);
+    listUrl.searchParams.set("base", base);
+    const response = await globalThis.fetch(listUrl.toString(), { headers: this.authHeaders() });
+    if (response.status === 404) return [];
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      throw new ReviewApiError(response.status, listUrl.toString(), errorBody);
+    }
+    const pullRequests = (await response.json()) as GitHubPrShape[];
+    return Array.isArray(pullRequests) ? pullRequests : [];
   }
 
   private authHeaders(): Record<string, string> {

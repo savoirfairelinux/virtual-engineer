@@ -118,7 +118,7 @@ export class ReviewProgressService {
     }
 
     const maxAgentCycles = this.dependencies.getMaxAgentCycles();
-    if (feedbackTask.cycleCount > maxAgentCycles) {
+    if (feedbackTask.cycleCount >= maxAgentCycles) {
       await this.dependencies.abandonTask(
         feedbackTask,
         `Max cycles ${maxAgentCycles} reached during review`
@@ -261,7 +261,7 @@ export class ReviewProgressService {
     }
 
     const maxAgentCycles = this.dependencies.getMaxAgentCycles();
-    if (feedbackTask.cycleCount > maxAgentCycles) {
+    if (feedbackTask.cycleCount >= maxAgentCycles) {
       await this.dependencies.abandonTask(
         feedbackTask,
         `Max cycles ${maxAgentCycles} reached during multi-repo review`

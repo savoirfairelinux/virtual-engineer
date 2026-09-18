@@ -89,8 +89,8 @@ export interface GitLabMergeRequestConnectorConfig {
  * GitLabMergeRequestConnector — implements the ReviewConnector interface
  * against GitLab Merge Requests.
  *
- * changeId convention: the GitLab MR IID (within-project integer) stored as
- * a string, e.g. "42".
+ * changeId convention: `project#iid` for canonical routing, with a legacy bare
+ * IID accepted when this connector already has one unambiguous bound project.
  */
 const CurrentUserSchema = z.object({ id: z.number(), username: z.string() });
 
@@ -345,7 +345,7 @@ export class GitLabMergeRequestConnector implements ReviewConnector, ReviewDisco
     return this.currentUserPromise;
   }
 
-  /** Parse and validate a GitLab MR IID string into a positive integer. */
+  /** Parse and validate the IID suffix from a legacy bare GitLab change id. */
   private parseMrNumber(changeId: string): number {
     const n = parseInt(changeId, 10);
     if (isNaN(n) || n <= 0) {

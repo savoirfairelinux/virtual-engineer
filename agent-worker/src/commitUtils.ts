@@ -17,6 +17,20 @@ import { hardenedGit } from './gitHardened.js';
 const CONVENTIONAL_COMMIT_RE =
   /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
 
+/** Resolve Change-Id continuity for one repository, falling back for older host contracts. */
+export function repositoryUsesChangeIdContinuity(
+  repositoryMap: RepositoryMap | undefined,
+  repoKey: string,
+  fallback: boolean,
+): boolean {
+  if (repositoryMap === undefined) return fallback;
+  if (repositoryMap.superproject.repoKey === repoKey) {
+    return repositoryMap.superproject.useChangeIdContinuity ?? fallback;
+  }
+  const submodule = repositoryMap.submodules.find((entry) => entry.repoKey === repoKey);
+  return submodule?.useChangeIdContinuity ?? fallback;
+}
+
 // ── Internal git helper (delegates to hardenedGit) ───────────────────────────
 function git(args: string[], cwd: string): string {
   return hardenedGit(args, cwd);
@@ -228,6 +242,8 @@ export function resolveExistingRootChange(
 
 /** Options for injectChangeIds. */
 export interface InjectChangeIdsOptions {
+  /** Whether missing Gerrit Change-Id trailers should be added. Defaults to true. */
+  includeChangeIds?: boolean | undefined;
   /** Legacy single Change-Id for the first commit (ROOT_CHANGE_ID compatibility). */
   existingChangeId?: string | null | undefined;
   /** Repo key used to look up per-index Change-Ids in perRepoChangeIds. */
@@ -267,9 +283,12 @@ export function injectChangeIds(
 ): CommitDescriptor[] {
   if (commits.length === 0) return commits;
 
+  const includeChangeIds = options?.includeChangeIds ?? true;
   const ticketFooterLine = options?.ticketFooterLine ?? null;
   const needsRewrite = commits.some(
-    (commit) => !commit.changeId || (ticketFooterLine !== null && !commit.body.includes(ticketFooterLine)),
+    (commit) =>
+      (includeChangeIds && !commit.changeId) ||
+      (ticketFooterLine !== null && !commit.body.includes(ticketFooterLine)),
   );
   if (!needsRewrite) return commits;
 
@@ -285,7 +304,7 @@ export function injectChangeIds(
   const changeIdByIndex: Record<number, string> = {};
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
-    if (c && !c.changeId) {
+    if (includeChangeIds && c && !c.changeId) {
       const perIndexId = (perRepoChangeIds && repoKeyForLookup)
         ? resolveExistingChangeId(perRepoChangeIds, repoKeyForLookup, i)
         : null;

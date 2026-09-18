@@ -52,8 +52,9 @@ npm run lint
 ```
 
 Useful project commands include `npm run build:ui`, `npm run build:agent`,
-`npm run db:migrate`, `npm run db:generate`, `npm run build`, and `npm run
-dev`. See [`context/testing.md`](./context/testing.md) for test conventions.
+`npm run db:migrate`, `npm run db:generate`, `npm run repair:change-identities`,
+`npm run build`, and `npm run dev`. See [`context/testing.md`](./context/testing.md)
+for test conventions.
 
 ## Non-negotiable Boundaries
 

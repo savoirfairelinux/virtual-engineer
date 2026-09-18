@@ -239,6 +239,113 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(calls).toContain("DONE");
     });
 
+    it("keeps a multi-repository task in review until every required change is merged", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const changes = [
+        {
+          id: "task-1:root",
+          taskId: task.taskId,
+          repoKey: "root",
+          changeId: "Iabc",
+          reviewUrl: "https://gerrit.example/c/Iabc",
+          status: "OPEN",
+          integrationId: "gerrit-int",
+          reviewSystem: "gerrit",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: "task-1:lib",
+          taskId: task.taskId,
+          repoKey: "lib",
+          changeId: "Idef",
+          reviewUrl: "https://gerrit.example/c/Idef",
+          status: "OPEN",
+          integrationId: "gerrit-int",
+          reviewSystem: "gerrit",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ];
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getTask: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue(changes),
+      });
+      const review = makeReview({
+        getChangeStatus: vi.fn().mockImplementation(async (changeId: string) =>
+          changeId === "Iabc" ? "MERGED" : "OPEN"),
+      });
+      const orch = makeOrchestrator(stateStore, review);
+
+      await orch.markChangeMerged("gerrit-int", "Iabc");
+
+      expect(stateStore.updateChangePerRepositoryStatus).toHaveBeenCalledWith(
+        task.taskId,
+        "root",
+        "MERGED",
+        "Iabc",
+      );
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "CLOSING");
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "DONE");
+    });
+
+    it("matches qualified repository identities exactly when IIDs overlap", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const changes = [
+        {
+          id: "task-1:root",
+          taskId: task.taskId,
+          repoKey: "org/root",
+          changeId: "org/root#7",
+          reviewUrl: "https://gitlab.example/org/root/-/merge_requests/7",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: "task-1:child",
+          taskId: task.taskId,
+          repoKey: "org/child",
+          changeId: "org/child#7",
+          reviewUrl: "https://gitlab.example/org/child/-/merge_requests/7",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ];
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getTask: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue(changes),
+      });
+      const orch = makeOrchestrator(stateStore);
+
+      await orch.markChangeMerged("gitlab-int", "org/root#7");
+
+      expect(stateStore.updateChangePerRepositoryStatus).toHaveBeenCalledTimes(1);
+      expect(stateStore.updateChangePerRepositoryStatus).toHaveBeenCalledWith(
+        task.taskId,
+        "org/root",
+        "MERGED",
+        "org/root#7",
+      );
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
+    });
+
     it("transitions REVIEW_WATCHING → REVIEW_DONE for merged review tasks", async () => {
       const task = makeTask({ state: "REVIEW_WATCHING" });
       const stateStore = makeStateStore({

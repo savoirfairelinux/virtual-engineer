@@ -192,6 +192,19 @@ export class SqliteStateStore {
     }
   }
 
+  /** Open an existing database without creating files, migrating, backfilling, or seeding. */
+  static openReadOnly(dbPath: string): Promise<SqliteStateStore> {
+    let raw: Database.Database | undefined;
+    try {
+      raw = new Database(dbPath, { readonly: true, fileMustExist: true });
+      raw.pragma("foreign_keys = ON");
+      return Promise.resolve(new SqliteStateStore(raw));
+    } catch (error) {
+      raw?.close();
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   /** Close the underlying SQLite database connection. */
   close(): void {
     this.raw.close();

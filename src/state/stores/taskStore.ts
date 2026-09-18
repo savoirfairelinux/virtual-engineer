@@ -6,6 +6,7 @@ import type {
   AgentCycleResult,
   AgentLogEvent,
   ChangePerRepository,
+  ChangeIdentityRepairMutation,
   CycleCost,
   ExternalChangeId,
   ProjectId,
@@ -110,6 +111,7 @@ export interface TaskStoreApi {
     commitIndex?: number,
     subjectHash?: string | null
   ): Promise<void>;
+  applyChangeIdentityRepair(input: ChangeIdentityRepairMutation): Promise<void>;
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
   findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string): Promise<Task | null>;
@@ -964,6 +966,74 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return Promise.resolve();
   }
 
+  function applyChangeIdentityRepair(input: ChangeIdentityRepairMutation): Promise<void> {
+    try {
+      raw.transaction(() => {
+        const now = Math.floor(Date.now() / 1000);
+        const upsert = raw.prepare(
+          `INSERT INTO change_per_repository
+           (id, task_id, repo_key, change_id, review_url, status, integration_id, review_system, commit_index, subject_hash, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             change_id = excluded.change_id,
+             review_url = excluded.review_url,
+             status = excluded.status,
+             integration_id = excluded.integration_id,
+             review_system = excluded.review_system,
+             commit_index = 0,
+             subject_hash = excluded.subject_hash,
+             updated_at = excluded.updated_at`
+        );
+        const orphan = raw.prepare(
+          `UPDATE change_per_repository SET status = 'ORPHANED', updated_at = ?
+           WHERE task_id = ? AND repo_key = ? AND id <> ?
+             AND status <> 'ORPHANED'`
+        );
+        for (const target of input.targets) {
+          const canonicalId = `${input.taskId}:${target.repoKey}`;
+          upsert.run(
+            canonicalId,
+            input.taskId,
+            target.repoKey,
+            target.changeId,
+            target.reviewUrl,
+            target.status,
+            target.integrationId,
+            target.reviewSystem,
+            target.subjectHash,
+            now,
+            now,
+          );
+          orphan.run(now, input.taskId, target.repoKey, canonicalId);
+        }
+        const repairRouting = raw.prepare(
+          `UPDATE change_per_repository
+           SET integration_id = ?, review_system = ?, updated_at = ?
+           WHERE task_id = ? AND repo_key = ?`
+        );
+        for (const routing of input.routingRepairs ?? []) {
+          repairRouting.run(
+            routing.integrationId,
+            routing.reviewSystem,
+            now,
+            input.taskId,
+            routing.repoKey,
+          );
+        }
+        const update = raw.prepare(
+          `UPDATE tasks SET gerrit_change_id = ?, current_patchset = 0,
+             review_url = ?, updated_at = ? WHERE task_id = ?`
+        ).run(input.primaryChangeId, input.primaryReviewUrl, now, input.taskId);
+        if (update.changes !== 1) {
+          throw new Error(`Task not found: ${input.taskId}`);
+        }
+      })();
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   async function getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]> {
     const rows = await db
       .select()
@@ -1177,6 +1247,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     deleteTask,
     deleteTaskGroup,
     saveChangePerRepository,
+    applyChangeIdentityRepair,
     getChangesForTask,
     getChangesForTasks,
     findTaskByExternalChangeId,

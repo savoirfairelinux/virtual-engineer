@@ -13,6 +13,7 @@ import type {
   VendorComponentPromptEntry,
   WorkspaceHandle,
 } from "../interfaces.js";
+import { makeExternalChangeId } from "../interfaces.js";
 import { formatTicketFooter } from "../utils/ticketFooterFormatter.js";
 
 /** Resolved agent adapter + config for a project's configured agent. */
@@ -36,15 +37,26 @@ export function extractAcceptanceCriteria(description: string): string[] {
  * The target with `localPath === "."` (or the lowest `commitOrder` if none) is
  * treated as the superproject; all others become submodules.
  */
-export function buildRepositoryMap(pushTargets: ProjectPushTargetRecord[]): RepositoryMap {
+export function buildRepositoryMap(
+  pushTargets: ProjectPushTargetRecord[],
+  changeIdContinuityByRepo: Readonly<Record<string, boolean>>,
+): RepositoryMap {
   const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
   const rootIdx = sorted.findIndex((t) => t.localPath === ".");
   const root = rootIdx >= 0 ? sorted[rootIdx]! : sorted[0]!;
   const rest = sorted.filter((t) => t !== root);
 
   return {
-    superproject: { repoKey: root.repoKey, localPath: root.localPath },
-    submodules: rest.map((t) => ({ repoKey: t.repoKey, localPath: t.localPath })),
+    superproject: {
+      repoKey: root.repoKey,
+      localPath: root.localPath,
+      useChangeIdContinuity: changeIdContinuityByRepo[root.repoKey] ?? false,
+    },
+    submodules: rest.map((target) => ({
+      repoKey: target.repoKey,
+      localPath: target.localPath,
+      useChangeIdContinuity: changeIdContinuityByRepo[target.repoKey] ?? false,
+    })),
   };
 }
 
@@ -63,7 +75,7 @@ export interface BuildAgentTaskContextParams {
   projectAgentRuntime: ProjectAgentRuntime;
   resolvedCopilotModel: string | undefined;
   providerOptions: Record<string, unknown>;
-  useChangeIdContinuity: boolean;
+  changeIdContinuityByRepo: Readonly<Record<string, boolean>>;
   projectPushTargets: ProjectPushTargetRecord[];
   vendorComponents: VendorComponentPromptEntry[];
   projectRecord: ProjectRecord;
@@ -94,7 +106,7 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
     projectAgentRuntime,
     resolvedCopilotModel,
     providerOptions,
-    useChangeIdContinuity,
+    changeIdContinuityByRepo,
     projectPushTargets,
     vendorComponents,
     projectRecord,
@@ -103,6 +115,26 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
     gitAuthorEmail,
     getChangesForTask,
   } = params;
+  const repositoryMap = buildRepositoryMap(projectPushTargets, changeIdContinuityByRepo);
+  const useChangeIdContinuity = repositoryMap.superproject.useChangeIdContinuity === true;
+  const storedChanges = await getChangesForTask(task.taskId);
+  const validChanges = storedChanges.filter(
+    (change) =>
+      changeIdContinuityByRepo[change.repoKey] === true &&
+      change.status !== "NO_CHANGE" &&
+      change.status !== "ORPHANED" &&
+      change.status !== "CLONE_FAILED" &&
+      change.status !== "PUSH_FAILED" &&
+      change.changeId !== "",
+  );
+  const rootChange = validChanges
+    .filter((change) => change.repoKey === repositoryMap.superproject.repoKey)
+    .sort((left, right) => left.commitIndex - right.commitIndex)[0];
+  const existingRootChangeId = rootChange !== undefined
+    ? makeExternalChangeId(rootChange.changeId)
+    : projectPushTargets.length === 1
+      ? task.externalChangeId ?? undefined
+      : undefined;
 
   return {
     taskId: task.taskId,
@@ -127,18 +159,13 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
       agentContainerImage,
       repoCloneUrl: cloneUrl,
       pushRef,
-      existingChangeId: useChangeIdContinuity ? (task.externalChangeId ?? undefined) : undefined,
-      perRepoChangeIds: await (async (): Promise<Record<string, string | Record<string, string>> | undefined> => {
-        if (!useChangeIdContinuity) return undefined;
-        const storedChanges = await getChangesForTask(task.taskId);
-        if (storedChanges.length === 0) return undefined;
+      useChangeIdContinuity,
+      existingChangeId: useChangeIdContinuity ? existingRootChangeId : undefined,
+      perRepoChangeIds: ((): Record<string, string | Record<string, string>> | undefined => {
+        if (validChanges.length === 0) return undefined;
         // Pass ALL commit Change-Ids per repo, keyed by commit index.
         // Single-commit repos produce a flat string (backward compat).
         // Multi-commit repos produce { "0": "I...", "1": "I..." }.
-        const validChanges = storedChanges.filter(
-          (c) => c.status !== "NO_CHANGE" && c.changeId !== ""
-        );
-        if (validChanges.length === 0) return undefined;
         const byRepo = new Map<string, Map<number, string>>();
         for (const c of validChanges) {
           let m = byRepo.get(c.repoKey);
@@ -211,7 +238,7 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
         ? { openCodeApiBase: projectAgentRuntime.config.extra["openCodeApiBase"] }
         : {}),
       ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
-        ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
+        ? { repositoryMap }
         : {}),
       ...(vendorComponents.length > 0 ? { vendorComponents } : {}),
       ...(projectRecord.skillSourcesJson !== "[]"

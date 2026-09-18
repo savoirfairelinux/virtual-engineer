@@ -28,6 +28,7 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
       agentContainerImage: "agent:test",
       repoCloneUrl: "ssh://git.example.test/project",
       pushRef: "refs/for/main",
+      useChangeIdContinuity: true,
       gitAuthorName: "Virtual Engineer",
       gitAuthorEmail: "ve@example.test",
     },

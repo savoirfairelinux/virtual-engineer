@@ -16,7 +16,7 @@ import type { PatchsetCheckoutOptions, ReviewComment, ReviewSystem } from "../in
  * Represents the change/MR that was created or updated.
  */
 export interface VcsPushResult {
-  /** The change or merge request identifier (Gerrit Change-Id or GitLab MR IID) */
+  /** Canonical review identity: Gerrit Change-Id or repository-qualified GitLab/GitHub MR/PR id. */
   changeId: string;
   /** HTTP URL to view the change/MR */
   url: string;
@@ -57,9 +57,15 @@ export interface VcsConnector {
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
+  /** Find exactly one existing review object for a pushed branch without mutating the provider. */
+  findExistingReview?(
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<VcsPushResult | null>;
+
   /**
    * Get the current status of a change/MR.
-   * @param changeId The Gerrit Change-Id or GitLab MR IID
+  * @param changeId The Gerrit Change-Id or repository-qualified GitLab/GitHub MR/PR id
    * @returns Status string: "OPEN", "MERGED", "ABANDONED", etc.
    * @throws {Error} If status cannot be determined
    */

@@ -378,6 +378,8 @@ export interface FeedbackItem {
 export interface RepositoryMapEntry {
   repoKey: string;
   localPath: string;
+  /** Whether this repository's review system requires Gerrit Change-Id trailers. */
+  useChangeIdContinuity?: boolean | undefined;
 }
 
 /** Multi-repo workspace layout passed to the agent container via REPOSITORY_MAP_JSON. */
@@ -402,7 +404,9 @@ export interface AgentSession {
   // ── Review-system push config ───────────────────────────────────────────────
   /** Ref to push to. For Gerrit: refs/for/<branch>. For GitLab: the feature branch name. */
   pushRef: string;
-  /** Existing external change ID to reuse (Gerrit: reuses the patchset; GitLab: reuses the MR branch). */
+  /** Whether commits require Gerrit Change-Id trailers for review continuity. */
+  useChangeIdContinuity: boolean;
+  /** Existing Gerrit Change-Id for the root repository; branch providers use their persisted feature branch. */
   existingChangeId?: ExternalChangeId | undefined;
   /**
    * Per-repo change IDs for retry cycles.
@@ -675,6 +679,8 @@ export interface ReviewWorkspaceInput {
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
   vcsBaseUrl: string;
+  /** Repository path inside a multi-repository workspace. Defaults to the root. */
+  subPath?: string | undefined;
   /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */
   revisionNumber: number;
   /** Patchset/revision number to check out */
@@ -707,7 +713,7 @@ export interface WorkspaceRunner {
   ): Promise<CloneResult>;
   /**
    * Clone every push target sorted by `commitOrder`, then run `postCloneScript`.
-   * Per-target failures are logged but non-fatal; only root clone failure is hard.
+    * Every configured target is required; any clone failure aborts preparation.
    */
   prepareProjectWorkspace?(
     handle: WorkspaceHandle,
@@ -1325,6 +1331,28 @@ export interface PromptStore {
   deletePrompt(id: string): Promise<void>;
 }
 
+export interface ChangeIdentityRepairMutationTarget {
+  repoKey: string;
+  changeId: string;
+  reviewUrl: string;
+  status: string;
+  integrationId: string;
+  reviewSystem: string;
+  subjectHash: string | null;
+}
+
+export interface ChangeIdentityRepairMutation {
+  taskId: TaskId;
+  targets: ChangeIdentityRepairMutationTarget[];
+  routingRepairs?: Array<{
+    repoKey: string;
+    integrationId: string;
+    reviewSystem: string;
+  }> | undefined;
+  primaryChangeId: ExternalChangeId;
+  primaryReviewUrl: string;
+}
+
 export interface StateStore {
   // Task management
   createTask(
@@ -1472,7 +1500,7 @@ export interface StateStore {
   ): Promise<void>;
 
   // Per-repository change tracking (multi-repo tasks)
-  /** Upsert a per-repo change record (Gerrit Change-Id or GitLab MR IID). */
+  /** Upsert a per-repo canonical review identity (Gerrit Change-Id or qualified GitLab/GitHub MR/PR id). */
   saveChangePerRepository(
     taskId: TaskId,
     repoKey: string,
@@ -1484,6 +1512,8 @@ export interface StateStore {
     commitIndex?: number,
     subjectHash?: string | null
   ): Promise<void>;
+  /** Atomically repair canonical per-repository identities and the task-level primary mirror. */
+  applyChangeIdentityRepair(input: ChangeIdentityRepairMutation): Promise<void>;
 
   /** Get all per-repo change records for a task. */
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;

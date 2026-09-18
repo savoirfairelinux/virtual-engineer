@@ -30,10 +30,36 @@ describe("buildRepositoryMap", () => {
       makeTarget({ id: 2, repoKey: "daemon", localPath: "daemon", commitOrder: 1 }),
     ];
 
-    const map = buildRepositoryMap(targets);
+    const map = buildRepositoryMap(targets, {
+      "jami-client-qt": false,
+      daemon: true,
+    });
 
-    expect(map.superproject).toEqual({ repoKey: "jami-client-qt", localPath: "." });
-    expect(map.submodules).toEqual([{ repoKey: "daemon", localPath: "daemon" }]);
+    expect(map.superproject).toEqual({
+      repoKey: "jami-client-qt",
+      localPath: ".",
+      useChangeIdContinuity: false,
+    });
+    expect(map.submodules).toEqual([{
+      repoKey: "daemon",
+      localPath: "daemon",
+      useChangeIdContinuity: true,
+    }]);
+  });
+
+  it("preserves mixed-provider continuity when Gerrit is the root", () => {
+    const targets = [
+      makeTarget({ id: 1, repoKey: "gerrit/root", localPath: ".", commitOrder: 1 }),
+      makeTarget({ id: 2, repoKey: "github/child", localPath: "child", commitOrder: 2 }),
+    ];
+
+    const map = buildRepositoryMap(targets, {
+      "gerrit/root": true,
+      "github/child": false,
+    });
+
+    expect(map.superproject.useChangeIdContinuity).toBe(true);
+    expect(map.submodules[0]?.useChangeIdContinuity).toBe(false);
   });
 
   it("falls back to lowest commitOrder when no localPath is '.'", () => {
@@ -42,7 +68,7 @@ describe("buildRepositoryMap", () => {
       makeTarget({ id: 2, repoKey: "repo-b", localPath: "b", commitOrder: 1 }),
     ];
 
-    const map = buildRepositoryMap(targets);
+    const map = buildRepositoryMap(targets, { "repo-a": true, "repo-b": true });
 
     expect(map.superproject.repoKey).toBe("repo-b");
     expect(map.submodules).toHaveLength(1);
@@ -56,7 +82,11 @@ describe("buildRepositoryMap", () => {
       makeTarget({ id: 3, repoKey: "lib-a", localPath: "libs/a", commitOrder: 1 }),
     ];
 
-    const map = buildRepositoryMap(targets);
+    const map = buildRepositoryMap(targets, {
+      parent: true,
+      "lib-b": true,
+      "lib-a": true,
+    });
 
     expect(map.superproject.repoKey).toBe("parent");
     expect(map.submodules.map((s) => s.repoKey)).toEqual(["lib-a", "lib-b"]);
@@ -67,7 +97,7 @@ describe("buildRepositoryMap", () => {
       makeTarget({ id: 1, repoKey: "only-repo", localPath: ".", commitOrder: 1 }),
     ];
 
-    const map = buildRepositoryMap(targets);
+    const map = buildRepositoryMap(targets, { "only-repo": true });
 
     expect(map.superproject.repoKey).toBe("only-repo");
     expect(map.submodules).toEqual([]);

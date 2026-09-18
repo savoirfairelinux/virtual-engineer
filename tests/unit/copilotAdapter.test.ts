@@ -81,6 +81,7 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
       agentContainerImage: "virtual-engineer-workspace:latest",
       repoCloneUrl: "ssh://localhost:29418/demo-project",
       pushRef: "refs/for/main",
+      useChangeIdContinuity: true,
       gitAuthorName: "Virtual Engineer",
       gitAuthorEmail: "virtual-engineer@localhost",
       githubToken: "ghp_test-token-deterministic",

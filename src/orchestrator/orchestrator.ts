@@ -44,7 +44,7 @@ import {
   type ProjectAgentRuntime,
 } from "./agentContextBuilder.js";
 import { AgentRuntimeResolver } from "./agentRuntimeResolver.js";
-import { ProjectPushService } from "./projectPushService.js";
+import { ProjectPushService, type ProjectPushSummary } from "./projectPushService.js";
 import {
   enrichPushTargets,
   resolveCloneKnownHostsPath,
@@ -373,6 +373,47 @@ export class Orchestrator {
       if (current.state !== "IN_REVIEW") {
         log.info({ taskId: current.taskId, state: current.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
         return;
+      }
+
+      const perRepoChanges = await this.stateStore.getChangesForTask(current.taskId);
+      if (perRepoChanges.length > 0) {
+        const separator = externalChangeId.indexOf("#");
+        const eventIsQualified = separator > 0 && separator < externalChangeId.length - 1;
+        const legacyBareId = eventIsQualified ? externalChangeId.slice(separator + 1) : externalChangeId;
+        const matchingChanges = perRepoChanges.filter((change) =>
+          change.integrationId === integrationId &&
+          (change.changeId === externalChangeId ||
+            (eventIsQualified && !change.changeId.includes("#") && change.changeId === legacyBareId))
+        );
+        if (matchingChanges.length === 0) {
+          log.warn(
+            { taskId: current.taskId, integrationId, externalChangeId },
+            "webhook merged: no matching per-repository change; staying IN_REVIEW",
+          );
+          return;
+        }
+        for (const change of matchingChanges) {
+          await this.stateStore.updateChangePerRepositoryStatus(
+            current.taskId,
+            change.repoKey,
+            "MERGED",
+            change.changeId,
+          );
+        }
+        const matchingIds = new Set(matchingChanges.map((change) => change.id));
+        const activeChanges = perRepoChanges.filter(
+          (change) => change.status !== "NO_CHANGE" && change.status !== "ORPHANED",
+        );
+        const allMerged = activeChanges.every(
+          (change) => matchingIds.has(change.id) || change.status === "MERGED",
+        );
+        if (!allMerged) {
+          log.info(
+            { taskId: current.taskId, externalChangeId },
+            "webhook merged: repository merged; waiting for remaining required reviews",
+          );
+          return;
+        }
       }
       log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: closing ticket");
       const merged = await this.stateStore.transition(current.taskId, "MERGED");
@@ -704,11 +745,31 @@ export class Orchestrator {
         );
       }
       const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
+      const connectorsByRepo = new Map<string, VcsConnector>(
+        await Promise.all(projectPushTargets.map(async (target) => {
+          const connector = target === root
+            ? rootConnector
+            : await this.resolveVcsConnectorForTarget(target.integrationId, {
+                repoKey: target.repoKey,
+                targetBranch: target.targetBranch,
+              });
+          return [target.repoKey, connector] as const;
+        })),
+      );
+      const changeIdContinuityByRepo = Object.fromEntries(
+        [...connectorsByRepo].map(([repoKey, connector]) => [repoKey, connector.useChangeIdContinuity]),
+      );
       const pushRef = await this.resolvePushRef(task, () =>
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
 
-      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, activeHandle, root, rootConnector);
+      const hasPriorPatchset = await this.checkoutPriorPatchsets(
+        task,
+        cycleNumber,
+        activeHandle,
+        projectPushTargets,
+        connectorsByRepo,
+      );
       const context = await buildAgentTaskContext({
         task,
         ticket,
@@ -723,7 +784,7 @@ export class Orchestrator {
         projectAgentRuntime,
         resolvedCopilotModel,
         providerOptions,
-        useChangeIdContinuity: rootConnector.useChangeIdContinuity,
+        changeIdContinuityByRepo,
         projectPushTargets,
         vendorComponents,
         projectRecord,
@@ -803,7 +864,7 @@ export class Orchestrator {
         // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
         // For GitLab: all N commits land in one MR via force-push.
         if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-          await this.pushProjectChanges(
+          const pushSummary = await this.pushProjectChanges(
             task,
             activeHandle,
             projectPushTargets,
@@ -811,6 +872,10 @@ export class Orchestrator {
             agentResult.commits,
             projectRecord.gerritTopicOverride
           );
+          if (pushSummary.reviewCount === 0) {
+            await this.handleNoChange(task, cycleNumber);
+            return;
+          }
         }
 
         task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
@@ -865,79 +930,72 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * On retry cycles with Change-Id continuity, fetch the existing Gerrit patchset into
-   * the volume so the agent starts from its previous work rather than a blank slate.
-   *
-   * For multi-commit pushes, the primary change (commitIndex 0) is checked out as
-   * detached HEAD, then commits 1..N are cherry-picked on top in order.
-   * Cherry-pick failures for secondary commits are non-fatal (logged and skipped).
-   */
-  /**
-   * Returns `true` if a prior patchset was successfully checked out into the
-   * workspace volume (so the agent can amend existing commits), `false` if no
-   * patchset was applied (first cycle, non-Gerrit connector, no stored change,
-   * or checkout failure).
-   */
-  private async checkoutPriorPatchset(
+  /** Restore every persisted Gerrit patchset chain before reusing its Change-Ids. */
+  private async checkoutPriorPatchsets(
     task: Task,
     cycleNumber: number,
     handle: WorkspaceHandle,
-    root: ProjectPushTargetRecord,
-    rootConnector: VcsConnector
+    pushTargets: ProjectPushTargetRecord[],
+    connectorsByRepo: ReadonlyMap<string, VcsConnector>,
   ): Promise<boolean> {
-    if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return false;
-    if (!rootConnector.resolvePatchsetOptions) return false;
-    if (!this.workspaceRunner.applyPriorPatchset) return false;
+    if (cycleNumber <= 1) return false;
 
     const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
-    const rootChanges = storedChanges
-      .filter((c) => c.repoKey === root.repoKey && c.status !== "NO_CHANGE" && c.changeId !== "")
-      .sort((a, b) => a.commitIndex - b.commitIndex);
-
-    const primaryChange = rootChanges.find((c) => c.commitIndex === 0);
-    if (!primaryChange) return false;
-
-    try {
-      const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
-      // The connector cannot know the repo path; supply the full clone URL
-      // (base + repo) so `git fetch` has a valid remote to pull refs/changes from.
-      await this.workspaceRunner.applyPriorPatchset(handle, { ...patchsetOpts, vcsBaseUrl: root.cloneUrl });
-      log.info(
-        { taskId: task.taskId, changeId: primaryChange.changeId, revisionNumber: patchsetOpts.revisionNumber, patchset: patchsetOpts.patchset },
-        "checked out existing patchset for retry cycle"
-      );
-
-      // Cherry-pick secondary commits (indices 1..N) on top of the primary.
-      // Each is a separate Gerrit change; resolve its latest patchset and cherry-pick.
-      const secondaryChanges = rootChanges.filter((c) => c.commitIndex > 0);
-      if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickPriorPatchset) {
-        for (const change of secondaryChanges) {
-          try {
-            const secOpts = await rootConnector.resolvePatchsetOptions(change.changeId);
-            await this.workspaceRunner.cherryPickPriorPatchset(handle, { ...secOpts, vcsBaseUrl: root.cloneUrl });
-            log.info(
-              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secOpts.revisionNumber, patchset: secOpts.patchset },
-              "cherry-picked secondary patchset for retry cycle"
-            );
-          } catch (err) {
-            log.warn(
-              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, err },
-              "failed to cherry-pick secondary patchset; agent will see partial history"
-            );
-            // Stop cherry-picking further commits — they likely depend on this one.
-            break;
-          }
-        }
+    let restored = false;
+    for (const target of [...pushTargets].sort((left, right) => left.commitOrder - right.commitOrder)) {
+      const connector = connectorsByRepo.get(target.repoKey);
+      if (!connector?.useChangeIdContinuity) continue;
+      const targetChanges = storedChanges
+        .filter((change) =>
+          change.repoKey === target.repoKey &&
+          change.changeId !== "" &&
+          change.status !== "NO_CHANGE" &&
+          change.status !== "ORPHANED" &&
+          change.status !== "CLONE_FAILED" &&
+          change.status !== "PUSH_FAILED")
+        .sort((left, right) => left.commitIndex - right.commitIndex);
+      const primaryChange = targetChanges.find((change) => change.commitIndex === 0);
+      if (primaryChange === undefined) continue;
+      if (connector.resolvePatchsetOptions === undefined || this.workspaceRunner.applyPriorPatchset === undefined) {
+        throw new Error(`Cannot restore required Gerrit target ${target.repoKey}: patchset checkout is unavailable`);
       }
-      return true;
-    } catch (err) {
-      log.warn(
-        { taskId: task.taskId, changeId: primaryChange.changeId, err },
-        "failed to checkout patchset for retry; agent will work from fresh clone"
-      );
-      return false;
+
+      try {
+        const patchsetOpts = await connector.resolvePatchsetOptions(primaryChange.changeId);
+        await this.workspaceRunner.applyPriorPatchset(handle, {
+          ...patchsetOpts,
+          vcsBaseUrl: target.cloneUrl,
+          subPath: target.localPath,
+        });
+        restored = true;
+        log.info(
+          { taskId: task.taskId, repoKey: target.repoKey, changeId: primaryChange.changeId, revisionNumber: patchsetOpts.revisionNumber, patchset: patchsetOpts.patchset },
+          "checked out existing patchset for retry cycle",
+        );
+
+        const secondaryChanges = targetChanges.filter((change) => change.commitIndex > 0);
+        if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickPriorPatchset === undefined) {
+          throw new Error(`Cannot restore required Gerrit target ${target.repoKey}: patchset cherry-pick is unavailable`);
+        }
+        for (const change of secondaryChanges) {
+          const secondaryOptions = await connector.resolvePatchsetOptions(change.changeId);
+          await this.workspaceRunner.cherryPickPriorPatchset!(handle, {
+            ...secondaryOptions,
+            vcsBaseUrl: target.cloneUrl,
+            subPath: target.localPath,
+          });
+          log.info(
+            { taskId: task.taskId, repoKey: target.repoKey, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secondaryOptions.revisionNumber, patchset: secondaryOptions.patchset },
+            "cherry-picked secondary patchset for retry cycle",
+          );
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to restore required Gerrit target ${target.repoKey}: ${detail}`);
+      }
     }
+
+    return restored;
   }
 
   /** Resolve the per-project agent adapter and resolved config from the project's agent record. */
@@ -984,7 +1042,7 @@ export class Orchestrator {
     fallbackCommitMessage: string,
     agentCommits: import("../interfaces.js").CommitDescriptor[] | undefined = undefined,
     topicOverride: string | null = null,
-  ): Promise<void> {
+  ): Promise<ProjectPushSummary> {
     return this.projectPushService.pushProjectChanges(
       task,
       handle,

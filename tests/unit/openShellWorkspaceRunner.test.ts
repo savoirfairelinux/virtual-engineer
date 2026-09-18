@@ -286,7 +286,7 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(res.error).toContain("fatal");
   });
 
-  it("prepareProjectWorkspace clones targets in commitOrder and tolerates secondary failures", async () => {
+  it("prepareProjectWorkspace fails when a secondary target cannot be cloned", async () => {
     const cloneRepo = vi
       .fn()
       .mockResolvedValueOnce(undefined) // root
@@ -298,8 +298,66 @@ describe("OpenShellWorkspaceRunner", () => {
       { repoKey: "root", cloneUrl: "u1", targetBranch: "main", role: "primary", commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null } as unknown as ProjectPushTargetRecord,
     ];
     const res = await runner.prepareProjectWorkspace(handle, targets);
-    expect(res.success).toBe(true);
+    expect(res).toEqual({
+      success: false,
+      localPath: "/tmp/ws-1",
+      error: "Failed to clone required push target lib: secondary boom",
+    });
     expect((cloneRepo.mock.calls[0] ?? [])[1]).toBe("u1"); // root cloned first
+  });
+
+  it("uses each target's SSH known-hosts path when cloning a mixed-host workspace", async () => {
+    const cloneRepo = vi.fn().mockResolvedValue(undefined);
+    const git = fakeGit({ cloneRepo });
+    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient() });
+    const targets: ProjectPushTargetRecord[] = [
+      {
+        repoKey: "root",
+        cloneUrl: "https://gitlab.example/root.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 1,
+        localPath: ".",
+        integrationId: "gitlab",
+        sshKeyPath: null,
+        sshKnownHostsPath: "/secrets/gitlab-known-hosts",
+      } as unknown as ProjectPushTargetRecord,
+      {
+        repoKey: "gerrit/project",
+        cloneUrl: "ssh://gerrit.example/gerrit/project",
+        targetBranch: "main",
+        role: "dependency",
+        commitOrder: 2,
+        localPath: "gerrit-project",
+        integrationId: "gerrit",
+        sshKeyPath: "/secrets/gerrit-key",
+        sshKnownHostsPath: "/secrets/gerrit-known-hosts",
+      } as unknown as ProjectPushTargetRecord,
+    ];
+
+    await expect(
+      runner.prepareProjectWorkspace(handle, targets, undefined, "/legacy-root-known-hosts"),
+    ).resolves.toEqual({ success: true, localPath: "/tmp/ws-1" });
+    expect(cloneRepo).toHaveBeenNthCalledWith(
+      1,
+      "/tmp/ws-1",
+      "https://gitlab.example/root.git",
+      "main",
+      ".",
+      null,
+      "/secrets/gitlab-known-hosts",
+      undefined,
+    );
+    expect(cloneRepo).toHaveBeenNthCalledWith(
+      2,
+      "/tmp/ws-1",
+      "ssh://gerrit.example/gerrit/project",
+      "main",
+      "gerrit-project",
+      "/secrets/gerrit-key",
+      "/secrets/gerrit-known-hosts",
+      undefined,
+    );
   });
 
   it("runs the configured post-clone script inside the sandbox", async () => {

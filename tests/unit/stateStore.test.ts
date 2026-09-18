@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import { existsSync } from "node:fs";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
@@ -19,6 +20,40 @@ describe("SqliteStateStore", () => {
 
   afterEach(() => {
     store.close();
+  });
+
+  describe("openReadOnly", () => {
+    it("rejects a missing database without creating it", async () => {
+      const dbPath = tempDbPath();
+
+      await expect(SqliteStateStore.openReadOnly(dbPath)).rejects.toThrow();
+
+      expect(existsSync(dbPath)).toBe(false);
+    });
+
+    it("does not migrate a pre-migration database", async () => {
+      const dbPath = tempDbPath();
+      const raw = new Database(dbPath);
+      raw.exec("CREATE TABLE marker (id INTEGER PRIMARY KEY)");
+      raw.close();
+
+      const readOnlyStore = await SqliteStateStore.openReadOnly(dbPath);
+      try {
+        await expect(readOnlyStore.getActiveTasks()).rejects.toThrow();
+      } finally {
+        readOnlyStore.close();
+      }
+
+      const verification = new Database(dbPath, { readonly: true });
+      try {
+        const tables = verification.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        ).all() as Array<{ name: string }>;
+        expect(tables.map((row) => row.name)).toEqual(["marker"]);
+      } finally {
+        verification.close();
+      }
+    });
   });
 
   describe("managed OpenShell providers", () => {
@@ -1388,6 +1423,151 @@ describe("SqliteStateStore", () => {
       expect(sorted[0]?.status).toBe("OPEN");
       expect(sorted[1]?.status).toBe("MERGED");  // untouched
       expect(sorted[2]?.status).toBe("ORPHANED");
+    });
+
+    it("applies a provider identity repair atomically", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("identity-repair"));
+      await store.saveChangePerRepository(taskId, "group/project", "Iwrong", "wrong", "OPEN", "gitlab-1", "gitlab", 0, "h0");
+      await store.saveChangePerRepository(taskId, "group/project", "Iwrong2", "", "MERGED", "gitlab-1", "gitlab", 1, "h1");
+      await store.saveChangePerRepository(taskId, "group/project", "Iwrong3", "", "ABANDONED", "gitlab-1", "gitlab", 2, "h2");
+
+      await store.applyChangeIdentityRepair({
+        taskId,
+        targets: [{
+          repoKey: "group/project",
+          changeId: "group/project#9",
+          reviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+          status: "OPEN",
+          integrationId: "gitlab-1",
+          reviewSystem: "gitlab",
+          subjectHash: "h0",
+        }],
+        primaryChangeId: makeExternalChangeId("group/project#9"),
+        primaryReviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+      });
+
+      const changes = (await store.getChangesForTask(taskId)).sort((left, right) => left.commitIndex - right.commitIndex);
+      expect(changes[0]).toMatchObject({ changeId: "group/project#9", commitIndex: 0, status: "OPEN" });
+      expect(changes[1]).toMatchObject({ changeId: "Iwrong2", commitIndex: 1, status: "ORPHANED" });
+      expect(changes[2]).toMatchObject({ changeId: "Iwrong3", commitIndex: 2, status: "ORPHANED" });
+      expect(await store.getTask(taskId)).toMatchObject({
+        externalChangeId: "group/project#9",
+        reviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+      });
+    });
+
+    it("orphans a duplicate legacy index-zero row during identity repair", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("identity-repair-duplicate-zero"));
+      await store.saveChangePerRepository(taskId, "group/project", "Iwrong", "wrong", "OPEN", "gitlab-1", "gitlab", 0, "h0");
+      const raw = (store as unknown as { raw: Database.Database }).raw;
+      const now = Math.floor(Date.now() / 1000);
+      raw.prepare(
+        `INSERT INTO change_per_repository
+         (id, task_id, repo_key, change_id, review_url, status, integration_id, review_system, commit_index, subject_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        `${taskId}:group/project:legacy-zero`,
+        taskId,
+        "group/project",
+        "Iduplicate",
+        "duplicate",
+        "OPEN",
+        "gitlab-1",
+        "gitlab",
+        0,
+        "duplicate-hash",
+        now,
+        now,
+      );
+
+      await store.applyChangeIdentityRepair({
+        taskId,
+        targets: [{
+          repoKey: "group/project",
+          changeId: "group/project#9",
+          reviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+          status: "OPEN",
+          integrationId: "gitlab-1",
+          reviewSystem: "gitlab",
+          subjectHash: "h0",
+        }],
+        primaryChangeId: makeExternalChangeId("group/project#9"),
+        primaryReviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+      });
+
+      const changes = await store.getChangesForTask(taskId);
+      expect(changes.find((change) => change.id === `${taskId}:group/project`)).toMatchObject({
+        changeId: "group/project#9",
+        status: "OPEN",
+      });
+      expect(changes.find((change) => change.id.endsWith(":legacy-zero"))).toMatchObject({
+        changeId: "Iduplicate",
+        status: "ORPHANED",
+      });
+    });
+
+    it("repairs Gerrit routing metadata without collapsing commit rows", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("gerrit-routing-repair"));
+      await store.saveChangePerRepository(taskId, "gerrit/project", "Ione", "one", "OPEN", "", "", 0, "h0");
+      await store.saveChangePerRepository(taskId, "gerrit/project", "Itwo", "two", "MERGED", "", "", 1, "h1");
+
+      await store.applyChangeIdentityRepair({
+        taskId,
+        targets: [],
+        routingRepairs: [{
+          repoKey: "gerrit/project",
+          integrationId: "gerrit-1",
+          reviewSystem: "gerrit",
+        }],
+        primaryChangeId: makeExternalChangeId("Ione"),
+        primaryReviewUrl: "one",
+      });
+
+      const changes = (await store.getChangesForTask(taskId)).sort((left, right) => left.commitIndex - right.commitIndex);
+      expect(changes).toEqual([
+        expect.objectContaining({ changeId: "Ione", commitIndex: 0, status: "OPEN", integrationId: "gerrit-1", reviewSystem: "gerrit" }),
+        expect.objectContaining({ changeId: "Itwo", commitIndex: 1, status: "MERGED", integrationId: "gerrit-1", reviewSystem: "gerrit" }),
+      ]);
+    });
+
+    it("rolls back every identity repair write when one target is invalid", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("identity-repair-rollback"));
+      await store.saveChangePerRepository(taskId, "group/project", "Iwrong", "wrong", "OPEN", "gitlab-1", "gitlab", 0, "h0");
+
+      await expect(store.applyChangeIdentityRepair({
+        taskId,
+        targets: [
+          {
+            repoKey: "group/project",
+            changeId: "group/project#9",
+            reviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+            status: "OPEN",
+            integrationId: "gitlab-1",
+            reviewSystem: "gitlab",
+            subjectHash: "h0",
+          },
+          {
+            repoKey: "group/invalid",
+            changeId: null as unknown as string,
+            reviewUrl: "",
+            status: "OPEN",
+            integrationId: "gitlab-1",
+            reviewSystem: "gitlab",
+            subjectHash: null,
+          },
+        ],
+        primaryChangeId: makeExternalChangeId("group/project#9"),
+        primaryReviewUrl: "https://gitlab.example.test/group/project/-/merge_requests/9",
+      })).rejects.toThrow();
+
+      expect(await store.getChangesForTask(taskId)).toEqual([
+        expect.objectContaining({ repoKey: "group/project", changeId: "Iwrong", status: "OPEN" }),
+      ]);
+      expect(await store.getTask(taskId)).toMatchObject({ externalChangeId: null, reviewUrl: null });
     });
   });
 
