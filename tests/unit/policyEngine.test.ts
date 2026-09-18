@@ -135,6 +135,26 @@ describe("policyEngine — buildEffectivePermissions", () => {
     )).toBe(false);
   });
 
+  it("fails closed for unresolved task ownership unless access is explicitly scoped", () => {
+    const registeredOnly = buildEffectivePermissions("viewer", [
+      systemRule("task.read", "registered_users"),
+    ]);
+    const unresolvedTask = {
+      type: "task",
+      id: "task-1",
+      projectId: "project-1",
+      ownerUserId: undefined,
+    } as const;
+
+    expect(canAccessResource(registeredOnly, "task.read", unresolvedTask, "user-2")).toBe(false);
+
+    const explicitlyScoped = buildEffectivePermissions("viewer", [
+      systemRule("task.read", "registered_users"),
+      rule("task.read", "project-1"),
+    ]);
+    expect(canAccessResource(explicitlyScoped, "task.read", unresolvedTask, "user-2")).toBe(true);
+  });
+
   it("applies Project Owners permissions only inside delegated projects", () => {
     const perms = buildEffectivePermissions("operator", [
       rule("project.owner", "project-1"),

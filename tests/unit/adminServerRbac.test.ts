@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
@@ -997,6 +997,47 @@ describe("adminServer PBAC project scoping", () => {
     );
     expect(revoke.status).toBe(204);
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskId}`, authed(delegate.token))).status).toBe(403);
+  });
+
+  it("fails closed when a task project owner cannot be resolved", async () => {
+    const admin = await setupAdmin();
+    const owner = await createUserAndLogin(admin, "unresolved-task-owner", "operator");
+    const peer = await createUserAndLogin(admin, "unresolved-task-peer", "viewer");
+    const agent = await store.createAgent({
+      name: "Unresolved task agent",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      ownerUserId: owner.user.id,
+    });
+    const project = await store.createProject({
+      name: "Unresolved task project",
+      type: "coding",
+      agentId: agent.id,
+      ownerUserId: owner.user.id,
+    });
+    const taskId = randomUUID();
+    await store.createTask(
+      makeTaskId(taskId),
+      makeTicketId("UNRESOLVED-1"),
+      "Unresolved owner task",
+      "",
+      "redmine",
+      undefined,
+      undefined,
+      undefined,
+      project.id
+    );
+    vi.spyOn(store, "getProjectById").mockResolvedValue(null);
+
+    const response = await fetch(`${baseUrl}/api/admin/tasks/${taskId}`, authed(peer.token));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "forbidden",
+      permission: "task.read",
+    });
   });
 
   it("does not reveal private agents through legacy prompt usage", async () => {
