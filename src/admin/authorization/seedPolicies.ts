@@ -90,34 +90,40 @@ export const BUILTIN_POLICY_RESOURCE_OWNER = "Resource Owner";
 export const BUILTIN_POLICY_PROJECT_OWNERS = "Project Owners";
 
 const BUILTIN_POLICIES: ReadonlyArray<{
+  id: string;
   name: string;
   description: string;
   rules: PolicyRuleInput[];
   systemPrincipalId?: SystemPrincipalId;
 }> = [
   {
+    id: "builtin:operator",
     name: BUILTIN_POLICY_OPERATOR,
     description: "Create resources and use operational capabilities without access to resources owned by other users.",
     rules: OPERATOR_RULES,
   },
   {
+    id: "builtin:viewer",
     name: BUILTIN_POLICY_VIEWER,
     description: "Read-only access to the overview, tasks, projects and runtime status.",
     rules: VIEWER_RULES,
   },
   {
+    id: "builtin:registered-users",
     name: BUILTIN_POLICY_REGISTERED_USERS,
     description: "Read legacy unowned resources and common status pages.",
     rules: REGISTERED_USER_RULES,
     systemPrincipalId: SYSTEM_PRINCIPALS.REGISTERED_USERS,
   },
   {
+    id: "builtin:resource-owner",
     name: BUILTIN_POLICY_RESOURCE_OWNER,
     description: "Manage resources created by the current user.",
     rules: RESOURCE_OWNER_RULES,
     systemPrincipalId: SYSTEM_PRINCIPALS.RESOURCE_OWNER,
   },
   {
+    id: "builtin:project-owners",
     name: BUILTIN_POLICY_PROJECT_OWNERS,
     description: "Manage delegated projects and their tasks.",
     rules: PROJECT_OWNER_RULES,
@@ -128,7 +134,8 @@ const BUILTIN_POLICIES: ReadonlyArray<{
 /** Store surface the policy seeder needs (satisfied by SqliteStateStore). */
 export interface PolicySeedStore {
   listPolicies(): Promise<Policy[]>;
-  createPolicy(input: { name: string; description?: string; builtin?: boolean }): Promise<Policy>;
+  createPolicy(input: { id?: string; name: string; description?: string; builtin?: boolean }): Promise<Policy>;
+  updatePolicy(id: string, partial: { name?: string; description?: string }): Promise<Policy | null>;
   setPolicyRules(policyId: string, rules: readonly PolicyRuleInput[]): Promise<PolicyRule[]>;
   listUsers(): Promise<AdminUser[]>;
   listBindingsForPrincipal(principalType: PrincipalType, principalId: string): Promise<PolicyBinding[]>;
@@ -146,12 +153,45 @@ export interface PolicySeedStore {
 export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void> {
   const existing = await store.listPolicies();
   const byName = new Map(existing.map((p) => [p.name, p]));
+  const byId = new Map(existing.map((p) => [p.id, p]));
+  const usedNames = new Set(existing.map((p) => p.name));
 
   const policyIdByName = new Map<string, string>();
   for (const spec of BUILTIN_POLICIES) {
-    let policy = byName.get(spec.name);
+    let policy = byId.get(spec.id);
+    if (policy && !policy.builtin) {
+      throw new Error(`Reserved built-in policy id is already in use: ${spec.id}`);
+    }
+    const namedPolicy = byName.get(spec.name);
+    if (!policy && namedPolicy?.builtin) policy = namedPolicy;
+    if (!policy && namedPolicy) {
+      let replacementName = `${spec.name} (custom ${namedPolicy.id})`;
+      let suffix = 2;
+      while (usedNames.has(replacementName)) {
+        replacementName = `${spec.name} (custom ${namedPolicy.id} ${suffix})`;
+        suffix += 1;
+      }
+      const renamed = await store.updatePolicy(namedPolicy.id, { name: replacementName });
+      if (!renamed) throw new Error(`Failed to preserve colliding policy ${namedPolicy.id}`);
+      usedNames.delete(spec.name);
+      usedNames.add(replacementName);
+      byName.delete(spec.name);
+      byName.set(replacementName, renamed);
+      log.warn(
+        { policyId: namedPolicy.id, reservedName: spec.name, replacementName },
+        "renamed policy that collided with a reserved built-in name"
+      );
+    }
     if (!policy) {
-      policy = await store.createPolicy({ name: spec.name, description: spec.description, builtin: true });
+      policy = await store.createPolicy({
+        id: spec.id,
+        name: spec.name,
+        description: spec.description,
+        builtin: true,
+      });
+      byId.set(policy.id, policy);
+      byName.set(policy.name, policy);
+      usedNames.add(policy.name);
     }
     await store.setPolicyRules(policy.id, spec.rules);
     policyIdByName.set(spec.name, policy.id);

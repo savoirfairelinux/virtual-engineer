@@ -42,6 +42,18 @@ describe("permissions catalog", () => {
     expect(isScopeablePermission(PERMISSIONS.OVERVIEW_READ)).toBe(false);
   });
 
+  it("keeps resource creation permissions global", () => {
+    for (const permission of [
+      PERMISSIONS.PROJECT_CREATE,
+      PERMISSIONS.INTEGRATION_CREATE,
+      PERMISSIONS.AGENT_CREATE,
+      PERMISSIONS.PROMPT_CREATE,
+      PERMISSIONS.OAUTH_CREATE,
+    ]) {
+      expect(isScopeablePermission(permission)).toBe(false);
+    }
+  });
+
   it("catalog has no duplicate permission strings", () => {
     expect(new Set(ALL_PERMISSIONS).size).toBe(ALL_PERMISSIONS.length);
   });

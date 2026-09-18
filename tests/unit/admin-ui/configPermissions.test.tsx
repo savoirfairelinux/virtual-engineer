@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CurrentUserProvider, makeCan, makeHasPermission } from "../../../src/admin/ui/authContext.js";
 import { ConfigView, type ConfigViewData } from "../../../src/admin/ui/views/ConfigView/index.js";
@@ -9,6 +9,7 @@ import {
 } from "../../../src/admin/ui/views/ConfigView/configPermissions.js";
 import type { ConfigSectionId } from "../../../src/admin/ui/views/ConfigView/configRouting.js";
 import type { ApiAgent, ApiIntegration, ApiMe, ApiProject, ApiPrompt } from "../../../src/admin/ui/types.js";
+import { api } from "../../../src/admin/ui/api.js";
 
 const integration: ApiIntegration = {
   id: "integration-1",
@@ -123,8 +124,26 @@ describe("Configuration PBAC", () => {
     expect(makeHasPermission(user)("agent.write")).toBe(true);
   });
 
-  it("shows project access management to the resource owner", () => {
+  it("loads and switches the selected group's existing project access", async () => {
     window.history.replaceState({}, "", "#config/projects/project-1");
+    vi.spyOn(api, "get").mockResolvedValue({
+      grants: [
+        {
+          groupId: "writers",
+          groupName: "Writers",
+          permissions: ["project.read", "project.write"],
+        },
+        {
+          groupId: "operators",
+          groupName: "Operators",
+          permissions: ["project.read", "task.read", "task.operate"],
+        },
+      ],
+      availableGroups: [
+        { id: "writers", name: "Writers" },
+        { id: "operators", name: "Operators" },
+      ],
+    });
     const user: ApiMe = {
       id: "limited-user",
       username: "project-owner",
@@ -147,7 +166,18 @@ describe("Configuration PBAC", () => {
       </CurrentUserProvider>,
     );
 
-    expect(screen.getByRole("button", { name: "Access" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Access" }));
+
+    await waitFor(() => {
+      expect((screen.getByRole("checkbox", { name: "Edit project" }) as HTMLInputElement).checked).toBe(true);
+    });
+    expect((screen.getByRole("checkbox", { name: "Read tasks" }) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "operators" } });
+    await waitFor(() => {
+      expect((screen.getByRole("checkbox", { name: "Operate tasks" }) as HTMLInputElement).checked).toBe(true);
+    });
+    expect((screen.getByRole("checkbox", { name: "Edit project" }) as HTMLInputElement).checked).toBe(false);
   });
 
   it.each<[ConfigSectionId, string]>([

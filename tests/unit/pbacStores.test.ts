@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { randomUUID } from "crypto";
+import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import type { UserRole } from "../../src/interfaces.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
@@ -220,6 +221,46 @@ describe("built-in policy seeding & migration", () => {
       .resolves.toEqual([expect.objectContaining({ policyId: resourceOwner!.id })]);
     await expect(store.listBindingsForPrincipal("system", "project_owners"))
       .resolves.toEqual([expect.objectContaining({ policyId: projectOwners!.id })]);
+  });
+
+  it("preserves and renames a custom policy that collides with a reserved name", async () => {
+    const path = tempDbPath();
+    const first = await SqliteStateStore.create(path);
+    const user = await makeUser(first);
+    const builtIn = (await first.listPolicies()).find((policy) => policy.name === "Resource Owner");
+    expect(builtIn).toBeDefined();
+    await first.deletePolicy(builtIn!.id);
+
+    const custom = await first.createPolicy({ name: "Pre-upgrade owner policy" });
+    await first.setPolicyRules(custom.id, [{ permission: "project.read", resourceId: "project-1" }]);
+    await first.createBinding({ policyId: custom.id, principalType: "user", principalId: user.id });
+    first.close();
+
+    const raw = new Database(path);
+    raw.prepare("UPDATE policies SET name = ? WHERE id = ?").run("Resource Owner", custom.id);
+    raw.close();
+
+    const reopened = await SqliteStateStore.create(path);
+    try {
+      const reserved = (await reopened.listPolicies()).find((policy) => policy.name === "Resource Owner");
+      expect(reserved).toMatchObject({ id: "builtin:resource-owner", builtin: true });
+      expect(reserved?.id).not.toBe(custom.id);
+
+      const preserved = await reopened.getPolicyById(custom.id);
+      expect(preserved).toMatchObject({ builtin: false });
+      expect(preserved?.name).not.toBe("Resource Owner");
+      await expect(reopened.listPolicyRules(custom.id)).resolves.toEqual([
+        expect.objectContaining({ permission: "project.read", resourceId: "project-1" }),
+      ]);
+      await expect(reopened.listBindingsForPrincipal("user", user.id)).resolves.toEqual([
+        expect.objectContaining({ policyId: custom.id }),
+      ]);
+      await expect(reopened.listBindingsForPrincipal("system", "resource_owner")).resolves.toEqual([
+        expect.objectContaining({ policyId: reserved?.id }),
+      ]);
+    } finally {
+      reopened.close();
+    }
   });
 
   it("binds a pre-existing operator user to the Operator policy on re-open", async () => {

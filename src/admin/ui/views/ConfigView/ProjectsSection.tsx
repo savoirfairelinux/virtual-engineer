@@ -233,6 +233,8 @@ const PROJECT_ACCESS_OPTIONS = [
   ["task.delete", "Delete tasks"],
 ] as const;
 
+const DEFAULT_PROJECT_ACCESS_PERMISSIONS = ["project.read", "task.read"];
+
 interface ProjectAccessResponse {
   grants: Array<{ groupId: string; groupName: string; permissions: string[] }>;
   availableGroups: Array<{ id: string; name: string }>;
@@ -241,7 +243,7 @@ interface ProjectAccessResponse {
 function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClose: () => void }) {
   const [data, setData] = useState<ProjectAccessResponse>({ grants: [], availableGroups: [] });
   const [groupId, setGroupId] = useState("");
-  const [permissions, setPermissions] = useState<string[]>(["project.read", "task.read"]);
+  const [permissions, setPermissions] = useState<string[]>(DEFAULT_PROJECT_ACCESS_PERMISSIONS);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -254,6 +256,11 @@ function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClos
       });
     return () => { cancelled = true; };
   }, [project.id]);
+
+  useEffect(() => {
+    const existing = data.grants.find((grant) => grant.groupId === groupId);
+    setPermissions(existing ? [...existing.permissions] : [...DEFAULT_PROJECT_ACCESS_PERMISSIONS]);
+  }, [data.grants, groupId]);
 
   const save = async (): Promise<void> => {
     if (!groupId || permissions.length === 0) return;
