@@ -1693,10 +1693,57 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
   });
 
-  it("times out and cancels a review while it waits for agent capacity", async () => {
+  it("does not consume the review execution timeout while waiting for agent capacity", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+      let grantLease: ((value: typeof lease) => void) | undefined;
+      let queueSignal: AbortSignal | undefined;
+      const concurrencyTracker = {
+        acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
+          queueSignal = signal;
+          return new Promise<typeof lease>((resolve) => {
+            grantLease = resolve;
+          });
+        }),
+        release: vi.fn(),
+      };
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+        concurrencyTracker: concurrencyTracker as never,
+        agentTimeoutMs: 100,
+      }));
+      let outcome: "pending" | "resolved" | "rejected" = "pending";
+      const reviewPromise = orch.runReview(initial.taskId).then(
+        () => { outcome = "resolved"; },
+        () => { outcome = "rejected"; },
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce();
+      expect(outcome).toBe("pending");
+      expect(queueSignal?.aborted).toBe(false);
+      expect(runner.createWorkspace).not.toHaveBeenCalled();
+
+      grantLease?.(lease);
+      await reviewPromise;
+
+      expect(outcome).toBe("resolved");
+      expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+      expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a queued review through the shared lifecycle coordinator", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
+    const lifecycleCoordinator = new TaskLifecycleCoordinator();
     let queueSignal: AbortSignal | undefined;
     const concurrencyTracker = {
       acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
@@ -1709,14 +1756,70 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     };
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
       concurrencyTracker: concurrencyTracker as never,
-      agentTimeoutMs: 1,
+      lifecycleCoordinator,
+      agentTimeoutMs: 100,
     }));
 
-    await expect(orch.runReview(initial.taskId)).rejects.toThrow("Review timed out after 1ms");
+    const review = orch.runReview(initial.taskId);
+    await vi.waitFor(() => expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce());
+    const mutate = lifecycleCoordinator.cancelTaskAndRun(initial.taskId, async () => {
+      expect(queueSignal?.aborted).toBe(true);
+      mocks.store.task = makeTask({ ...mocks.store.task, state: "ABANDONED" });
+    });
 
-    expect(queueSignal?.aborted).toBe(true);
+    await Promise.all([review, mutate]);
     expect(runner.createWorkspace).not.toHaveBeenCalled();
     expect(concurrencyTracker.release).not.toHaveBeenCalled();
+    expect(mocks.store.task?.state).toBe("ABANDONED");
+  });
+
+  it("starts a fresh review execution timeout after agent capacity is acquired", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+      let grantLease: ((value: typeof lease) => void) | undefined;
+      let agentSignal: AbortSignal | undefined;
+      const concurrencyTracker = {
+        acquireWhenAvailable: vi.fn(() => new Promise<typeof lease>((resolve) => {
+          grantLease = resolve;
+        })),
+        release: vi.fn(),
+      };
+      runner.runReviewInDocker.mockImplementation(
+        async (_handle: unknown, input: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            agentSignal = input.abortSignal;
+            input.abortSignal?.addEventListener("abort", () => reject(input.abortSignal?.reason), {
+              once: true,
+            });
+          }),
+      );
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+        concurrencyTracker: concurrencyTracker as never,
+        agentTimeoutMs: 100,
+      }));
+
+      const review = orch.runReview(initial.taskId);
+      const rejected = expect(review).rejects.toThrow("Review timed out after 100ms");
+      await vi.advanceTimersByTimeAsync(1_000);
+      grantLease?.(lease);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(agentSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+
+      expect(agentSignal?.aborted).toBe(true);
+      expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
+      expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("treats a lost concurrent review claim as a benign duplicate invocation", async () => {
