@@ -367,6 +367,17 @@ async function countProjectsForAgent(
   })).length;
 }
 
+async function hasProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<boolean> {
+  return (await store.listProjects()).some((project) => project.agentId === agentId);
+}
+
+function writeAgentReferenceConflict(res: import("node:http").ServerResponse): void {
+  writeJson(res, 409, {
+    error: "Conflict",
+    message: "Agent is referenced by one or more projects and cannot be deleted",
+  });
+}
+
 async function readableAgentIntegrationId(
   req: IncomingMessage,
   deps: AgentsRouteDeps,
@@ -888,15 +899,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
-    const count = await countProjectsForAgent(req, store, id);
-    if (count > 0) {
-      writeJson(res, 409, {
-        error: "Conflict",
-        message: `Agent ${id} is referenced by ${count} project(s) and cannot be deleted`,
-        referencedByProjects: count,
-      });
-      return;
-    }
+    if (await hasProjectsForAgent(store, id)) { writeAgentReferenceConflict(res); return; }
     try {
       await store.deleteAgent(id);
       recordAudit(deps.auditStore, req, { action: "agent.delete", targetType: "agent", targetId: id, details: { name: existing.name, type: existing.type } });
@@ -904,6 +907,10 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       res.end();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("still referenced") || msg.includes("FOREIGN KEY constraint")) {
+        writeAgentReferenceConflict(res);
+        return;
+      }
       log.warn({ err, id }, "delete agent failed");
       writeJson(res, 500, { error: msg });
     }

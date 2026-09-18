@@ -69,7 +69,8 @@ const ALL_PERMISSIONS_SET: ReadonlySet<Permission> = new Set(ALL_PERMISSIONS);
  * Resource types whose rules may carry a concrete (non-null) `resourceId`.
  *
  * Projects, integrations, agents, prompts and OAuth apps are owned resources.
- * Tasks use their owning project id as their resource scope.
+ * Tasks use their owning project id as their resource scope. Creation remains
+ * global because no concrete resource exists before a create route runs.
  */
 export const SCOPEABLE_RESOURCE_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>([
   "project",
@@ -97,6 +98,7 @@ export function resourceTypeOf(permission: Permission): ResourceType | null {
 
 /** True when a permission's resource type may be scoped to a concrete resource id. */
 export function isScopeablePermission(permission: Permission): boolean {
+  if (permission.endsWith(".create")) return false;
   if (permission === PERMISSIONS.OAUTH_MANAGE) return false;
   const type = resourceTypeOf(permission);
   return type !== null && SCOPEABLE_RESOURCE_TYPES.has(type);

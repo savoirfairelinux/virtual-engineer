@@ -626,6 +626,38 @@ describe("adminServer PBAC project scoping", () => {
     )).status).toBe(403);
   });
 
+  it("returns a generic conflict when a hidden project references an owned agent", async () => {
+    const admin = await setupAdmin();
+    const owner = await createUserAndLogin(admin, "agent-delete-owner", "operator");
+    const projectOwner = await createUserAndLogin(admin, "hidden-project-owner", "operator");
+    const agent = await store.createAgent({
+      name: "Agent with hidden reference",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      ownerUserId: owner.user.id,
+    });
+    await store.createProject({
+      name: "Hidden referencing project",
+      type: "coding",
+      agentId: agent.id,
+      ownerUserId: projectOwner.user.id,
+    });
+
+    const response = await fetch(`${baseUrl}/api/admin/agents/${agent.id}`, {
+      method: "DELETE",
+      ...authed(owner.token),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Conflict",
+      message: "Agent is referenced by one or more projects and cannot be deleted",
+    });
+    await expect(store.getAgentById(agent.id)).resolves.not.toBeNull();
+  });
+
   it("rejects cross-owner prompt references when creating an agent", async () => {
     const admin = await setupAdmin();
     const owner = await createUserAndLogin(admin, "reference-owner", "operator");
