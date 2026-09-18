@@ -180,6 +180,22 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
       await expect(makeConnector().getChangeStatus("42")).rejects.toThrow();
     });
+
+    it("accepts a repository-qualified PR identity", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
+
+      await makeConnector().getChangeStatus("octocat/hello-world#42");
+
+      const [url] = fetchMock.mock.calls[0] as [string];
+      expect(url).toBe(`${API_BASE_URL}/repos/${OWNER}/${REPO}/pulls/42`);
+    });
+
+    it("rejects a qualified PR identity for another repository", async () => {
+      await expect(makeConnector().getChangeStatus("other/repository#42")).rejects.toThrow(
+        "does not match configured repository",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("getUnresolvedComments / resolveComments", () => {
@@ -189,6 +205,44 @@ describe("GitHubVcsConnector", () => {
 
     it("resolveComments is a no-op (handled by ReviewConnector)", async () => {
       await expect(makeConnector().resolveComments("42", [])).resolves.toBeUndefined();
+    });
+  });
+
+  describe("findExistingReview", () => {
+    it("returns the canonical PR identity for one matching branch", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([PR_RESPONSE]));
+
+      const result = await makeConnector().findExistingReview("feature/task-1", "main");
+
+      expect(result).toEqual({
+        changeId: "octocat/hello-world#42",
+        url: PR_RESPONSE.html_url,
+        status: "OPEN",
+      });
+      const [listUrl] = fetchMock.mock.calls[0] as [string];
+      expect(listUrl).toContain("head=octocat%3Afeature%2Ftask-1");
+      expect(listUrl).toContain("base=main");
+    });
+
+    it("does not select a pull request for a different target branch", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+      const result = await makeConnector().findExistingReview("feature/task-1", "release");
+
+      expect(result).toBeNull();
+      const [listUrl] = fetchMock.mock.calls[0] as [string];
+      expect(listUrl).toContain("base=release");
+    });
+
+    it("rejects ambiguous matching pull requests", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        PR_RESPONSE,
+        { ...PR_RESPONSE, number: 43, html_url: "https://github.com/octocat/hello-world/pull/43" },
+      ]));
+
+      await expect(
+        makeConnector().findExistingReview("feature/task-1", "main"),
+      ).rejects.toThrow("Multiple open GitHub pull requests");
     });
   });
 
@@ -217,7 +271,7 @@ describe("GitHubVcsConnector", () => {
         "feature-x"
       );
 
-      expect(result.changeId).toBe("42");
+      expect(result.changeId).toBe("octocat/hello-world#42");
       expect(result.url).toBe(PR_RESPONSE.html_url);
       expect(result.status).toBe("OPEN");
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -235,7 +289,7 @@ describe("GitHubVcsConnector", () => {
         gitRunnerWithHead("Add feature X", "Details here")
       ).pushDirect("/tmp/repo", "feature-x");
 
-      expect(result.changeId).toBe("42");
+      expect(result.changeId).toBe("octocat/hello-world#42");
       expect(fetchMock).toHaveBeenCalledTimes(2);
       const [createUrl, createInit] = fetchMock.mock.calls[1] as [string, RequestInit];
       expect(createUrl).toBe(`${API_BASE_URL}/repos/${OWNER}/${REPO}/pulls`);

@@ -16,6 +16,16 @@ import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
 
 const log = getLogger("gitlab-vcs");
 
+function parseMergeRequestIid(changeId: string, expectedProjectId: string | number): number | null {
+  const separator = changeId.lastIndexOf("#");
+  if (separator >= 0 && changeId.slice(0, separator) !== String(expectedProjectId)) {
+    return null;
+  }
+  const rawIid = separator >= 0 ? changeId.slice(separator + 1) : changeId;
+  const iid = Number(rawIid);
+  return Number.isInteger(iid) && iid > 0 ? iid : null;
+}
+
 export interface GitLabVcsConnectorConfig {
   baseUrl: string;
   projectId: string | number;
@@ -126,7 +136,7 @@ export class GitLabVcsConnector implements VcsConnector {
         || `${this.config.baseUrl}/project/${this.config.projectId}/-/merge_requests/${mrIid}`;
 
       return {
-        changeId: mrIid,
+        changeId: `${String(this.config.projectId)}#${mrIid}`,
         url: mrUrl,
         status: "OPEN",
       };
@@ -141,7 +151,8 @@ export class GitLabVcsConnector implements VcsConnector {
    */
   async getChangeStatus(changeId: string): Promise<string> {
     try {
-      const mrIid = String(changeId);
+      const mrIid = parseMergeRequestIid(changeId, this.config.projectId);
+      if (mrIid === null) return "UNKNOWN";
       const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${mrIid}`;
       const mr = await this.httpClient.fetchJson<{ state: string }>(url);
 
@@ -154,6 +165,35 @@ export class GitLabVcsConnector implements VcsConnector {
       );
       return "UNKNOWN";
     }
+  }
+
+  /** Resolve one existing open MR by source/target branch without changing provider state. */
+  async findExistingReview(
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<VcsPushResult | null> {
+    const mergeRequests = await this.listExistingMergeRequests(sourceBranch, targetBranch);
+    if (mergeRequests.length === 0) return null;
+    if (mergeRequests.length > 1) {
+      throw new Error(
+        `Multiple open GitLab merge requests found for branches ${sourceBranch} → ${targetBranch}`,
+      );
+    }
+    const mergeRequest = mergeRequests[0]!;
+    const iid = mergeRequest["iid"];
+    if (typeof iid !== "number" && typeof iid !== "string") {
+      throw new Error("Existing Merge Request response did not include an IID");
+    }
+    const iidText = String(iid);
+    const url = typeof mergeRequest["web_url"] === "string"
+      ? mergeRequest["web_url"]
+      : `${this.config.baseUrl}/project/${this.config.projectId}/-/merge_requests/${iidText}`;
+    const state = mergeRequest["state"];
+    return {
+      changeId: `${String(this.config.projectId)}#${iidText}`,
+      url,
+      status: state === "merged" ? "MERGED" : state === "closed" ? "ABANDONED" : "OPEN",
+    };
   }
 
   /**
@@ -245,18 +285,26 @@ export class GitLabVcsConnector implements VcsConnector {
     sourceBranch: string,
     targetBranch: string
   ): Promise<Record<string, unknown>> {
+    const mrs = await this.listExistingMergeRequests(sourceBranch, targetBranch);
+    if (mrs.length > 1) {
+      throw new Error(
+        `Multiple open GitLab merge requests found for branches ${sourceBranch} → ${targetBranch}`,
+      );
+    }
+    if (mrs.length === 1) return mrs[0]!;
+
+    throw new Error(`No open MR found for branches ${sourceBranch} → ${targetBranch}`);
+  }
+
+  private async listExistingMergeRequests(
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<Record<string, unknown>[]> {
     const query = `state=opened&source_branch=${encodeURIComponent(sourceBranch)}&target_branch=${encodeURIComponent(targetBranch)}`;
 
     const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests?${query}`;
     const result = await this.httpClient.fetchJson<Record<string, unknown>[]>(url);
-
-    const mrs = Array.isArray(result) ? result : [];
-    if (mrs.length > 0) {
-      // Length guard above ensures element exists; non-null assertion safe here.
-      return mrs[0]!;
-    }
-
-    throw new Error(`No open MR found for branches ${sourceBranch} → ${targetBranch}`);
+    return Array.isArray(result) ? result : [];
   }
 
   /**
@@ -264,8 +312,8 @@ export class GitLabVcsConnector implements VcsConnector {
    * changeId is the MR IID (within-project integer) as a string.
    */
   async getUnresolvedComments(changeId: string): Promise<ReviewComment[]> {
-    const mrNumber = parseInt(changeId, 10);
-    if (isNaN(mrNumber) || mrNumber <= 0) {
+    const mrNumber = parseMergeRequestIid(changeId, this.config.projectId);
+    if (mrNumber === null) {
       log.warn({ changeId }, "invalid MR IID for getUnresolvedComments");
       return [];
     }
@@ -317,8 +365,8 @@ export class GitLabVcsConnector implements VcsConnector {
    */
   async resolveComments(changeId: string, comments: ReviewComment[]): Promise<void> {
     if (comments.length === 0) return;
-    const mrNumber = parseInt(changeId, 10);
-    if (isNaN(mrNumber) || mrNumber <= 0) {
+    const mrNumber = parseMergeRequestIid(changeId, this.config.projectId);
+    if (mrNumber === null) {
       log.warn({ changeId }, "invalid MR IID for resolveComments");
       return;
     }

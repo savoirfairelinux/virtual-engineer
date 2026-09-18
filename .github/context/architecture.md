@@ -64,6 +64,8 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 
 `src/orchestrator/reviewProgressService.ts` owns code-generation review polling after a push: single/multi-repository convergence, feedback aggregation, CI-failure policy, retry dispatch, and comment resolution. `Orchestrator` supplies narrow lifecycle and connector callbacks and retains the state-machine side effects.
 
+Code-generation delivery is all-or-nothing across configured targets. Gerrit uses one review identity per commit, while GitLab/GitHub use one repository-qualified MR/PR identity per pushed target. Only after every target is durably `PUSHED` or `NO_CHANGE` does the first pushed target by `commitOrder` become the task-level compatibility identity used by fallback polling.
+
 ### Review runtime — `src/review/`
 
 - `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the OpenShell sandbox via `workspaceRunner.runReviewInDocker()` (name retained for compatibility; `REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`). The repository is uploaded but never downloaded back, so review edits are discarded.

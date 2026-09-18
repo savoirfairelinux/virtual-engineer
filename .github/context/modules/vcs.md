@@ -25,6 +25,11 @@ interface VcsConnector {
     topic?: string,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
+  /** Read-only lookup used by identity repair; must fail on ambiguity. */
+  findExistingReview?(
+    sourceBranch: string,
+    targetBranch: string
+  ): Promise<VcsPushResult | null>;
 }
 ```
 
@@ -32,11 +37,11 @@ The optional feedback methods use the shared `ReviewComment` contract. Built-in 
 
 There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
 
-All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids and configured ticket trailers before returning; the host then pushes the existing commit chain from the downloaded workspace. It does not create another commit.
+All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids only when `useChangeIdContinuity` is true (Gerrit); configured ticket trailers remain provider-independent. The host then pushes the existing commit chain from the downloaded workspace and does not create another commit.
 
-`pushProjectChanges()` only invokes git in repository sub-paths reported by `WorkspaceRunner.listTrustedRepoPaths()` — directories VE cloned itself and whose `.git` metadata was rebuilt from host-trusted remotes. A push target whose clone failed is agent-authored and is refused rather than handed credentials.
+`pushProjectChanges()` only invokes git in repository sub-paths reported by `WorkspaceRunner.listTrustedRepoPaths()` — directories VE cloned itself and whose `.git` metadata was rebuilt from host-trusted remotes. Workspace preparation normally aborts before agent execution when any configured clone fails; the trusted-path check is a second defensive boundary that still refuses an unrecognized directory rather than handing it credentials.
 
-`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR identifier. Per-repository results are stored in `change_per_repository`; the legacy task-level `tasks.gerrit_change_id` and `tasks.review_url` fields retain the primary result.
+`VcsPushResult.changeId` is the provider's canonical identity: a Gerrit Change-Id, `project#iid` for GitLab, or `owner/repo#number` for GitHub. Gerrit stores one `change_per_repository` row per commit; branch-based providers store one row per pushed target regardless of commit count. Every configured target is required: a clone, connector, or push failure prevents `IN_REVIEW`. A retry target with no new commits preserves its prior review row rather than overwriting it with `NO_CHANGE` or a cycle-local failure. Each target derives its ref from its own connector; only the primary target reuses the task-level `push_ref` compatibility mirror. Gerrit retry results are matched back to absolute commit indices by Change-Id, then subject hash, so a cycle that amends only a later change cannot renumber or orphan the rest of the chain. After every target is durably pushed, preserved, or `NO_CHANGE`, the first review-bearing result by `commitOrder` is copied into the legacy task-level `tasks.gerrit_change_id` / `tasks.review_url` compatibility fields for fallback polling.
 
 ## Implementations
 
@@ -55,11 +60,13 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Returns the MR web URL.
 - Reviewer emails are looked up through the Users API and matched exactly, case-insensitively, against visible `email` or `public_email` values. Matched IDs are included as `reviewer_ids`; unmatched or inaccessible addresses are logged and skipped. A 409 existing-MR path updates the existing MR when at least one reviewer resolves.
 - `pushDirect(repoDir, ref, topic, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
+- Returns `project#iid` and implements read-only exact-one branch lookup for repair/reconciliation. Both canonical and legacy bare IID values remain accepted by status/comment methods.
 
 ### `githubVcsConnector.ts`
 - HTTP-based clone and push for GitHub, mirroring the GitLab design: clones via HTTPS with the token in the remote URL, pushes a feature branch, and creates or updates a Pull Request via the GitHub REST API (`apiBaseUrl` supports both `api.github.com` and GHE `/api/v3`).
 - `reviewSystemLabel = "github"`, `useChangeIdContinuity = false`.
 - `buildPushSpec(baseBranch, taskId, ticketTitle)` derives the branch ref via `buildFeatureBranchRef` (no Gerrit topic).
+- Returns `owner/repo#number` and implements read-only exact-one branch lookup for repair/reconciliation. Status lookup accepts canonical and legacy bare PR numbers.
 - Reviewer-email configuration is not supported because GitHub's request-reviewers API requires usernames. The admin API rejects non-empty reviewer-email lists for GitHub push targets.
 - Config: `apiBaseUrl`, `host`, `owner`, `repo`, `token`, git author identity, optional `targetBranch` (default `main`).
 
@@ -73,6 +80,10 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Passes an optional `SourceControlRuntimeContext` as the fourth descriptor-factory argument. Its shared `gitRunner` is reused by cached integration-global connectors and project-bound connectors.
 - Used by `src/index.ts` and refreshed through `refreshRuntimeDependencies()`.
 
+## Identity repair
+
+`npm run repair:change-identities` is dry-run by default. It opens an existing database read-only, derives each target's ref from its own connector (using the task mirror only for the primary target), and resolves branch-provider reviews through `findExistingReview()`. Legacy branch-provider `NO_CHANGE` rows are verified against the provider rather than trusted. The command reports clean, repairable, or blocked tasks without creating, migrating, backfilling, or seeding data. Run it with polling/webhook intake stopped. After reviewing a clean dry-run, `npm run repair:change-identities -- --apply` idempotently collapses every extra GitLab/GitHub commit-index row (including stale `MERGED`/`ABANDONED` rows), repairs legacy `integration_id` / `review_system` routing metadata in place for every Gerrit commit row, and repairs the task-level mirror in one SQLite transaction per task. If any target is missing or ambiguous, the command performs no writes for that task and exits non-zero.
+
 ## Tests
 
 - `tests/unit/vcsConnector.test.ts`
@@ -82,6 +93,7 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - `tests/unit/githubVcsConnector.test.ts`
 - `tests/unit/branchNaming.test.ts`
 - `tests/unit/nodeGitRunner.test.ts`
+- `tests/unit/changeIdentityRepair.test.ts`
 
 ## Adding a new VCS
 

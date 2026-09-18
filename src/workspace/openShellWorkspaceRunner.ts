@@ -260,7 +260,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         root.targetBranch,
         root.localPath,
         root.sshKeyPath,
-        sshKnownHostsPath,
+        root.sshKnownHostsPath ?? sshKnownHostsPath,
         signal,
       );
       this.rememberTrustedRemote(handle.containerId, root.localPath, root.cloneUrl);
@@ -273,14 +273,14 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
             target.targetBranch,
             target.localPath,
             target.sshKeyPath,
-            sshKnownHostsPath,
+            target.sshKnownHostsPath ?? undefined,
             signal,
           );
           this.rememberTrustedRemote(handle.containerId, target.localPath, target.cloneUrl);
         } catch (err) {
           if (signal?.aborted === true) throw signal.reason ?? err;
-          // Per-target failures are non-fatal (mirrors the Docker runner).
-          log.warn({ repoKey: target.repoKey, err }, "secondary push-target clone failed");
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(`Failed to clone required push target ${target.repoKey}: ${message}`);
         }
       }
       if (postCloneScript?.trim()) this.postCloneScripts.set(handle.containerId, postCloneScript);
@@ -320,7 +320,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       handle.hostWorkspacePath,
       opts.vcsBaseUrl,
       changeRef(opts.revisionNumber, opts.patchset),
-      ".",
+      opts.subPath ?? ".",
       opts.sshKeyPath ?? null,
       opts.sshKnownHostsPath ?? null,
       opts.signal,
@@ -332,7 +332,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       handle.hostWorkspacePath,
       opts.vcsBaseUrl,
       changeRef(opts.revisionNumber, opts.patchset),
-      ".",
+      opts.subPath ?? ".",
       opts.sshKeyPath ?? null,
       opts.sshKnownHostsPath ?? null,
       opts.signal,

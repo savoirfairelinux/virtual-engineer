@@ -304,7 +304,7 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
        │
        ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
        │
-      ├─ worker normalizes commits    ← Change-Ids + configured ticket trailer
+      ├─ worker normalizes commits    ← Gerrit Change-Ids + configured ticket trailer
       ├─ HostGitExecutor push          ← push existing HEAD commit chain host-side
        │
        └─ client.removeSandbox()  +  HostGitExecutor.destroyWorkspace(dir)
@@ -316,7 +316,7 @@ The OpenShell gateway's selected compute driver schedules the sandbox and
 enforces the deny-by-default policy applied before the agent starts. Docker is
 the default; Kubernetes is an explicit experimental deployment option.
 
-The worker validates the commits created during the agent run and injects missing Change-Ids and configured ticket trailers before returning. Project pushes require `VcsConnector.pushDirect()`: the host owns credentials and push orchestration but does not synthesize another commit.
+The worker validates the commits created during the agent run, injects missing Change-Ids only for Gerrit, and applies configured ticket trailers for every provider. Continuity is encoded per repository in multi-target workspaces, so mixed-provider projects do not inherit the root connector's semantics; the root Change-Id is read only from the root's own persisted row. Project pushes require `VcsConnector.pushDirect()`: the host owns credentials and push orchestration but does not synthesize another commit. Every configured target must be durably pushed, preserve an existing review, or be recorded as `NO_CHANGE` before the task enters review; GitLab/GitHub persist one qualified MR/PR identity per target, while Gerrit persists one identity per commit.
 
 ---
 

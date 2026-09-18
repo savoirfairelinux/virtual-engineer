@@ -26,6 +26,7 @@ import {
   collectCommits,
   validateCommits,
   injectChangeIds,
+    repositoryUsesChangeIdContinuity,
   resolveExistingRootChange,
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
@@ -61,6 +62,7 @@ const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer
 const GIT_COMMITTER_NAME = process.env['GIT_COMMITTER_NAME'] ?? GIT_AUTHOR_NAME;
 const GIT_COMMITTER_EMAIL = process.env['GIT_COMMITTER_EMAIL'] ?? GIT_AUTHOR_EMAIL;
 const TASK_ID = process.env['TASK_ID'] ?? '';
+const USE_CHANGE_ID_CONTINUITY = process.env['USE_CHANGE_ID_CONTINUITY'] !== '0';
 const MAX_COMMITS_PER_CYCLE = Number(process.env['MAX_COMMITS_PER_CYCLE']) || 10;
 /** Change-Id to reuse for the root-repo's first commit on retry cycles. */
 const ROOT_CHANGE_ID = process.env['ROOT_CHANGE_ID'] ?? null;
@@ -429,6 +431,11 @@ async function main(): Promise<AgentResult> {
             }
 
             rootCommits = injectChangeIds(baseSha, rootCommits, TASK_ID, REPO_PATH, {
+              includeChangeIds: repositoryUsesChangeIdContinuity(
+                REPOSITORY_MAP,
+                REPOSITORY_MAP?.superproject.repoKey ?? rootCommits[0]?.repoKey ?? 'superproject',
+                USE_CHANGE_ID_CONTINUITY,
+              ),
               existingChangeId: rootExistingChange.changeId,
               repoKeyForLookup: rootExistingChange.repoKey,
               perRepoChangeIds: PER_REPO_CHANGE_IDS,
@@ -457,6 +464,11 @@ async function main(): Promise<AgentResult> {
                 : (subEntry != null ? (subEntry['0'] ?? null) : null);
 
               const injected = injectChangeIds(subBase, subCommitsForPath, TASK_ID, subPath, {
+                includeChangeIds: repositoryUsesChangeIdContinuity(
+                  REPOSITORY_MAP,
+                  subRepoKey ?? localPath,
+                  USE_CHANGE_ID_CONTINUITY,
+                ),
                 existingChangeId: subChangeId,
                 repoKeyForLookup: subRepoKey,
                 perRepoChangeIds: PER_REPO_CHANGE_IDS,

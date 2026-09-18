@@ -29,6 +29,13 @@ project has active tasks.
 - `project_push_targets.reviewer_emails` is a non-null text column containing a JSON string array, defaulting to `[]`. Gerrit receives one `r=<email>` push option per address, while GitLab resolves visible `email` or `public_email` values to numeric `reviewer_ids` and updates an existing MR when necessary.
 - The admin API trims and lowercases addresses, removes case-insensitive duplicates, and accepts at most 20 per target. Reviewer emails are supported only for Gerrit and GitLab push targets; GitHub requires usernames and rejects non-empty reviewer-email configuration.
 - `addProjectPushTarget` and `replaceProjectPushTargets` JSON-encode reviewer emails on write. `listProjectPushTargets` returns parsed string arrays and safely falls back to `[]` for malformed legacy values.
+- Every configured target is required during code generation. Successful `change_per_repository.status` values come from the provider (normally `OPEN`); local push-service outcomes use `NO_CHANGE`, `CLONE_FAILED`, or `PUSH_FAILED`. A clone failure detected during workspace preparation happens before per-repository persistence and is recorded on the failed cycle/task instead. Any failure prevents the task from entering `IN_REVIEW`.
+
+## Per-repository changes
+
+- Gerrit stores one `change_per_repository` row per pushed commit, keyed by absolute `commit_index`, because each commit is a separate change. Retry-local commits are matched to existing rows by Change-Id, then subject hash; a partial retry cannot renumber or orphan absent changes. GitLab and GitHub store exactly one row per target because every commit on the feature branch belongs to one MR/PR. Retry cycles preserve an existing review row when the target has no new commits or when a new push fails; cycle-local outcomes never erase durable provider identity.
+- `change_id` stores the provider's canonical identity: Gerrit `I...`, GitLab `project#iid`, or GitHub `owner/repo#number`. The task-level `gerrit_change_id` and `review_url` columns are compatibility mirrors of the first pushed target by `commit_order`, populated only after every configured target has a durable successful outcome.
+- `SqliteStateStore.openReadOnly()` opens an existing database without creating directories/files, enabling WAL, migrating, backfilling, or seeding. `npm run repair:change-identities` uses this path by default. With intake stopped, `-- --apply` uses the normal migration-validated writable store and `applyChangeIdentityRepair()` atomically repairs canonical branch-provider rows, Gerrit routing metadata, and the task mirror; a failure rolls the whole task repair back, and blocked tasks receive no writes.
 
 ## Project Vendor Components
 

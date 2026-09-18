@@ -63,7 +63,7 @@ There are **no boolean columns**. `pauseTask()` / `resumeTask()` append a `state
 
 | Limit | Default | Source | Behaviour |
 |---|---|---|---|
-| `MAX_AGENT_CYCLES` | 3 | `src/config.ts` | Applies to ticket-driven code-gen tasks. When exceeded before re-entering `AGENT_RUNNING`, the task moves to `FAILED`. |
+| `MAX_AGENT_CYCLES` | 3 | `src/config.ts` | Applies to ticket-driven code-gen tasks. Review feedback does not dispatch another cycle when `cycleCount >= maxAgentCycles`. |
 | `MAX_RETRY_ATTEMPTS` | 5 | `src/config.ts` | Polling skips a ticket once prior `FAILED` + `ABANDONED` attempts for the same ticket/source reach the cap. |
 
 `getTaskByTicketId()` orders by `created_at DESC`, so polling always sees the newest task row first.
@@ -80,7 +80,7 @@ Implemented primarily in [src/orchestrator/orchestrator.ts](../../src/orchestrat
 |---|---|
 | `→ CONTEXT_BUILDING` | Fetch ticket details and resolve project-aware repository context |
 | `→ AGENT_RUNNING` | Clone workspace, build `TaskContext`, launch agent container |
-| `→ IN_REVIEW` | Push host-managed review objects or agent-created commit chain via VCS layer |
+| `→ IN_REVIEW` | Entered only after every configured push target is durably `PUSHED` or `NO_CHANGE`; the first pushed review is mirrored onto the task for polling |
 | `→ FEEDBACK_PROCESSING` | Deduplicate external comments via `feedbackProcessor` + `processed_comments` |
 | `→ RETRY_CYCLE` | Rebuild context with prior feedback |
 | `→ MERGED` | Mark merged and advance toward ticket closure |

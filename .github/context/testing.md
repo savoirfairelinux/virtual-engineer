@@ -22,13 +22,13 @@ tests/
 |---|---|
 | Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminUiSse`, `adminImageProxy`, `imageProxyTokenStore`, `adminHealthEndpoint`, `adminOverviewRoutes`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminModelUsageRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminRuntimePolicyRoutes`, `adminRuntimeStatusRoute`, `runtimePolicyValidation`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `toolAuthorizationSection`, `toolUsageSummary`, `projectFormModal`, `apiIdentityBoundary`, `appIdentityHandoff`, `configDirtyRace`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `guidedTour`, `topBar`, `identityReset` |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `projectConnectorResolver`, `agentRuntimeResolver`, `projectPushService`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `taskLifecycleCoordinator`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
-| State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`, `.reviewDedup`, `.modelUsage`), `settingsStore`, `databaseMigrations`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
+| State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`, `.reviewDedup`, `.modelUsage`, read-only opening, atomic identity repair/rollback), `settingsStore`, `databaseMigrations`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
 | PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |
 | Connectors — Redmine | `redmineConnector`, `redmineDiscovery`, `webhookHandlerRedmine` |
 | Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshKeyPair`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `githubConnectionValidator`, `branchNaming`, `webhookHandlerGithubPullRequest` |
-| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector` |
+| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector`, `changeIdentityRepair` |
 | Agents / shared + Copilot | `providerOptions`, `toolAuthorization`, `toolAuthorizationValidation`, `agentStderrPipeline`, `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotWorker`, `mcpSubmission`, `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerPromptLoader`, `workerCopilotProvider`, `workerClaudeProvider`, `workerNetworkGuard`, `workerToolAuthorization`, `workerSkills` |
 | Agents / Claude | `claudeAdapter`, `claudeDescriptor`, `claudeOAuth`, `claudeWorker`, `claudeConnectionValidator` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
@@ -130,6 +130,8 @@ Shared infrastructure and extracted workflow modules also have focused non-regre
 These are truthful non-regression ratchets based on measured coverage. Raise them as coverage improves; do not lower them merely to land a change. Threshold failure must fail CI.
 
 ## Pre-commit gate (mandatory)
+
+Operational repair command: `npm run repair:change-identities` is read-only by default; stop intake, inspect its report, then use `npm run repair:change-identities -- --apply` only when every affected target resolves unambiguously.
 
 ```sh
 npm test            # unit + integration

@@ -256,7 +256,7 @@ describe("ReviewProgressService", () => {
   });
 
   it("reads the current cycle limit before abandoning feedback", async () => {
-    const task = makeTask({ cycleCount: 4 });
+    const task = makeTask({ cycleCount: 3 });
     const comment = makeComment();
     const feedback: FeedbackItem = { source: "review_comment", content: comment.message };
     const reviewConnector = {
@@ -274,7 +274,7 @@ describe("ReviewProgressService", () => {
 
     expect(getMaxAgentCycles).toHaveBeenCalledOnce();
     expect(dependencies.abandonTask).toHaveBeenCalledWith(
-      expect.objectContaining({ state: "FEEDBACK_PROCESSING", cycleCount: 4 }),
+      expect.objectContaining({ state: "FEEDBACK_PROCESSING", cycleCount: 3 }),
       "Max cycles 3 reached during review"
     );
     expect(dependencies.runAgentCycle).not.toHaveBeenCalled();
@@ -324,6 +324,31 @@ describe("ReviewProgressService", () => {
     );
     expect(dependencies.transition).toHaveBeenNthCalledWith(2, task.taskId, "IN_REVIEW");
     expect(dependencies.abandonTask).not.toHaveBeenCalled();
+  });
+
+  it("abandons multi-repository feedback at the cycle limit", async () => {
+    const task = makeTask({ cycleCount: 3 });
+    const change = makeChange(task);
+    const comment = makeComment();
+    const feedback: FeedbackItem = { source: "review_comment", content: comment.message };
+    const vcsConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
+    } as unknown as VcsConnector;
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn().mockResolvedValue([change]),
+      resolveVcsConnector: vi.fn().mockResolvedValue(vcsConnector),
+      extractNewFeedback: vi.fn().mockResolvedValue([[feedback], [comment]]),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.check(task);
+
+    expect(dependencies.abandonTask).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "FEEDBACK_PROCESSING", cycleCount: 3 }),
+      "Max cycles 3 reached during multi-repo review",
+    );
+    expect(dependencies.runAgentCycle).not.toHaveBeenCalled();
   });
 
   it("preserves provider provenance while aggregating multi-repository feedback", async () => {

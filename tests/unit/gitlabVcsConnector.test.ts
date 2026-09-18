@@ -140,6 +140,53 @@ describe("GitLabVcsConnector", () => {
       const status = await connector.getChangeStatus("99");
       expect(status).toBe("UNKNOWN");
     });
+
+    it("accepts a repository-qualified MR identity", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson.mockResolvedValue({ state: "opened" });
+
+      await connector.getChangeStatus("my-project#42");
+
+      expect(httpClient.fetchJson).toHaveBeenCalledWith(
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/42",
+      );
+    });
+
+    it("rejects a qualified MR identity for another project", async () => {
+      const httpClient = getHttpClient(connector);
+
+      expect(await connector.getChangeStatus("other-project#42")).toBe("UNKNOWN");
+      expect(httpClient.fetchJson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("findExistingReview", () => {
+    it("returns the canonical MR identity for one matching branch", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson.mockResolvedValue([
+        { iid: 9, web_url: "https://gitlab.example.com/my-project/-/merge_requests/9", state: "opened" },
+      ]);
+
+      const result = await connector.findExistingReview("feature/task-1", "main");
+
+      expect(result).toEqual({
+        changeId: "my-project#9",
+        url: "https://gitlab.example.com/my-project/-/merge_requests/9",
+        status: "OPEN",
+      });
+    });
+
+    it("rejects ambiguous matching merge requests", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson.mockResolvedValue([
+        { iid: 9, web_url: "https://gitlab.example.com/mr/9", state: "opened" },
+        { iid: 10, web_url: "https://gitlab.example.com/mr/10", state: "opened" },
+      ]);
+
+      await expect(
+        connector.findExistingReview("feature/task-1", "main"),
+      ).rejects.toThrow("Multiple open GitLab merge requests");
+    });
   });
 
   describe("pushDirect", () => {
@@ -166,7 +213,7 @@ describe("GitLabVcsConnector", () => {
         ["push", "--force", "-u", "origin", "feature-TASK-1"],
         expect.any(Object)
       );
-      expect(result.changeId).toBe("5");
+      expect(result.changeId).toBe("my-project#5");
     });
 
     it("resets remote URL after push to avoid token leak", async () => {
@@ -248,7 +295,7 @@ describe("GitLabVcsConnector", () => {
         .mockResolvedValueOnce([{ iid: 3, web_url: "https://gitlab.example.com/mr/3" }]);
 
       const result = await connector.pushDirect("/tmp/workspace/repo", "feature-dup");
-      expect(result.changeId).toBe("3");
+      expect(result.changeId).toBe("my-project#3");
     });
 
     it("updates reviewers when the merge request already exists", async () => {
@@ -332,6 +379,17 @@ describe("GitLabVcsConnector", () => {
       const comments = await connector.getUnresolvedComments("not-a-number");
       expect(comments).toEqual([]);
     });
+
+    it("accepts a repository-qualified MR identity", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson.mockResolvedValue([]);
+
+      await connector.getUnresolvedComments("my-project#7");
+
+      expect(httpClient.fetchJson).toHaveBeenCalledWith(
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/7/discussions",
+      );
+    });
   });
 
   describe("resolveComments", () => {
@@ -355,6 +413,20 @@ describe("GitLabVcsConnector", () => {
       const httpClient = getHttpClient(connector);
       await connector.resolveComments("7", []);
       expect(httpClient.fetchJsonVoid).not.toHaveBeenCalled();
+    });
+
+    it("accepts a repository-qualified MR identity", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJsonVoid.mockResolvedValue(undefined);
+
+      await connector.resolveComments("my-project#7", [
+        { id: "disc-1", author: "a", message: "x", unresolved: true, patchset: 0, updatedAt: new Date() },
+      ]);
+
+      expect(httpClient.fetchJsonVoid).toHaveBeenCalledWith(
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/7/discussions/disc-1",
+        expect.objectContaining({ method: "PUT" }),
+      );
     });
   });
 
