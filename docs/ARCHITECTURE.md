@@ -873,7 +873,8 @@ Runs inside the container. Two modes:
 ### Security constraints
 
 The sandbox is governed by OpenShell's deny-by-default **policy engine**
-across four domains — **filesystem** (writes restricted to `/sandbox`, `/tmp`, `/dev/null`),
+across four domains — **filesystem** (writes restricted to `/sandbox`, `/tmp`, `/dev/null`,
+`/dev/pts`),
 **network** (L7 egress allow-list, deny by default), **process** (no privilege
 escalation, dropped capabilities), and **inference** (model-endpoint routing).
 Policies are declarative YAML applied before the agent starts and surfaced/audited

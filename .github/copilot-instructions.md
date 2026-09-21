@@ -62,7 +62,8 @@ dev`. See [`context/testing.md`](./context/testing.md) for test conventions.
   review. There is no direct Docker workspace runner or named workspace volume.
 - OpenShell runtime policies provide the isolation floor: deny-by-default
   filesystem, network, and process access; the `sandbox` user/group; and
-  writable paths limited to `/sandbox`, `/tmp`, and `/dev/null`. Do not restore
+  writable paths limited to `/sandbox`, `/tmp`, `/dev/null`, and the narrow
+  `/dev/pts` PTY device tree required by nested agent shells. Do not restore
   Docker security flags as a substitute.
 - The host owns clone, checkout, cherry-pick, and push orchestration. The
   worker owns commit collection and Change-Id/trailer injection inside the

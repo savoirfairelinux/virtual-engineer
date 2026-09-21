@@ -24,6 +24,7 @@ describe("openShellPolicyBuilder", () => {
     expect(yaml).toContain("include_workdir: true");
     expect(yaml).toContain("read_write:");
     expect(yaml).toContain("- /sandbox");
+    expect(yaml).toContain("- /dev/pts");
     expect(yaml).toContain("landlock:");
     expect(yaml).toContain("compatibility: best_effort");
     expect(yaml).toContain("run_as_user: sandbox");
