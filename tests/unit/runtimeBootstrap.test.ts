@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
-import type { AgentAdapter, AgentRecord, AgentResult, ReviewConnector, Integration, ProjectRecord, ProviderId, DomainCapability, TicketConnector, Task } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentRecord, AgentResult, PromptStore, ReviewConnector, Integration, ProjectRecord, ProviderId, DomainCapability, TicketConnector, Task, WorkspaceRunner } from "../../src/interfaces.js";
+import type { PluginManager } from "../../src/plugins/pluginManager.js";
+import { buildRuntimeDependencies, configureAgentAdapters } from "../../src/bootstrap/runtimeBuilder.js";
 
 type ConnectorByType = Partial<Record<ProviderId, TicketConnector | ReviewConnector | AgentAdapter | null>>;
 
@@ -485,6 +487,33 @@ describe("runtime bootstrap provider selection", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("configures every active agent integration, not only the default adapter", () => {
+    const primary = { ...makeDbAgentAdapter("primary"), configure: vi.fn() };
+    const secondary = { ...makeDbAgentAdapter("secondary"), configure: vi.fn() };
+    const integrations = [
+      makeIntegration({ id: "copilot-primary", provider: "copilot" }),
+      makeIntegration({ id: "copilot-secondary", provider: "copilot" }),
+    ];
+    const adapters = new Map([
+      [integrations[0]!.id, primary],
+      [integrations[1]!.id, secondary],
+    ]);
+    const pluginManager = {
+      getActiveIntegrationsByCapability: vi.fn(() => integrations),
+      getConnectorForCapability: vi.fn((integrationId: string) => adapters.get(integrationId) ?? null),
+    } as unknown as PluginManager;
+    const store = {} as PromptStore;
+    const runner = {} as WorkspaceRunner;
+
+    const runtime = buildRuntimeDependencies(pluginManager);
+    configureAgentAdapters(runtime.agentAdapters, store, runner);
+
+    expect(runtime.agentAdapter).toBe(primary);
+    expect(runtime.agentAdapters).toEqual([primary, secondary]);
+    expect(primary.configure).toHaveBeenCalledWith({ store, runner });
+    expect(secondary.configure).toHaveBeenCalledWith({ store, runner });
   });
 
   it("prefers database-selected providers over env-configured fallbacks", async () => {

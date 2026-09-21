@@ -9,8 +9,7 @@ import { PluginManager } from "../plugins/pluginManager.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { createVcsConnectorForIntegration } from "../vcs/vcsFactory.js";
 import type {
-  WorkspaceRunner, AgentAdapter, ConfigurableAdapter, Integration, ProviderId } from "../interfaces.js";
-import type { SqliteStateStore } from "../state/stateStore.js";
+  WorkspaceRunner, AgentAdapter, ConfigurableAdapter, Integration, ProviderId, PromptStore } from "../interfaces.js";
 import type { AppConfig } from "../config.js";
 
 // ─── Shared low-level helpers ────────────────────────────────────────────────
@@ -52,27 +51,33 @@ function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: Pro
 
 // ─── Agent adapter ───────────────────────────────────────────────────────────
 
-/** Return the first active agent-adapter connector found in the plugin manager, or undefined. */
-function getDatabaseAgentAdapter(pluginManager: PluginManager): AgentAdapter | undefined {
+/** Return every active agent-adapter connector, preserving plugin-manager order. */
+function getDatabaseAgentAdapters(pluginManager: PluginManager): AgentAdapter[] {
+  const adapters: AgentAdapter[] = [];
+  const seen = new Set<AgentAdapter>();
   // Any provider that declares agent_execution qualifies, so future AI
   // providers are picked up automatically.
   for (const integration of pluginManager.getActiveIntegrationsByCapability("agent_execution")) {
     const connector = pluginManager.getConnectorForCapability<AgentAdapter>(integration.id, "agent_execution");
-    if (connector) {
-      return connector;
+    if (connector && !seen.has(connector)) {
+      seen.add(connector);
+      adapters.push(connector);
     }
   }
-  return undefined;
+  return adapters;
 }
 
 export interface RuntimeDependencies {
   agentAdapter: AgentAdapter | undefined;
+  agentAdapters: readonly AgentAdapter[];
 }
 
 /** Assemble the mutable runtime dependencies (agent adapter) from the current plugin state. */
 export function buildRuntimeDependencies(pluginManager: PluginManager): RuntimeDependencies {
+  const agentAdapters = getDatabaseAgentAdapters(pluginManager);
   return {
-    agentAdapter: getDatabaseAgentAdapter(pluginManager),
+    agentAdapter: agentAdapters[0],
+    agentAdapters,
   };
 }
 
@@ -153,10 +158,24 @@ export async function buildOrchestratorConfig(
 /** Wire the adapter to its runtime dependencies if it implements ConfigurableAdapter. */
 export function configureAgentAdapter(
   agentAdapter: AgentAdapter,
-  stateStore: SqliteStateStore,
+  promptStore: PromptStore,
   workspaceRunner: WorkspaceRunner
 ): void {
   if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
-    (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });
+    (agentAdapter as ConfigurableAdapter).configure({ store: promptStore, runner: workspaceRunner });
+  }
+}
+
+/** Wire every active agent adapter to the shared prompt store and workspace runner. */
+export function configureAgentAdapters(
+  agentAdapters: readonly AgentAdapter[],
+  promptStore: PromptStore,
+  workspaceRunner: WorkspaceRunner,
+): void {
+  const configured = new Set<AgentAdapter>();
+  for (const agentAdapter of agentAdapters) {
+    if (configured.has(agentAdapter)) continue;
+    configured.add(agentAdapter);
+    configureAgentAdapter(agentAdapter, promptStore, workspaceRunner);
   }
 }

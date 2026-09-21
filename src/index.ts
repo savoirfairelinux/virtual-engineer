@@ -26,7 +26,7 @@ import { createAdminServer } from "./admin/adminServer.js";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
 import { buildAdminProviderSummaries } from "./admin/providerSummary.js";
-import { buildRuntimeDependencies, buildOrchestratorConfig, configureAgentAdapter } from "./bootstrap/runtimeBuilder.js";
+import { buildRuntimeDependencies, buildOrchestratorConfig, configureAgentAdapters } from "./bootstrap/runtimeBuilder.js";
 import { buildReviewBundle, buildReviewTrigger } from "./review/reviewBootstrap.js";
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
 import { recoverActiveReviews } from "./review/reviewRecovery.js";
@@ -133,9 +133,7 @@ async function main(): Promise<void> {
     execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
   };
   const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
-  if (runtimeDependencies.agentAdapter) {
-    configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
-  }
+  configureAgentAdapters(runtimeDependencies.agentAdapters, stateStore, workspaceRunner);
 
   // ─── Orchestrator ────────────────────────────────────────────────────────────
   // Phase 6 — single in-process concurrency tracker shared by orchestrator and
@@ -290,9 +288,7 @@ async function main(): Promise<void> {
     runtimeDependencies = buildRuntimeDependencies(pluginManager);
     // Hot-swap the runner's agent adapter by mutating the shared deps object.
     openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
-    if (runtimeDependencies.agentAdapter) {
-      configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
-    }
+    configureAgentAdapters(runtimeDependencies.agentAdapters, stateStore, workspaceRunner);
     orchestrator.updateRuntime({
       config: await buildOrchestratorConfig(config, pluginManager),
     });

@@ -81,7 +81,8 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
       prompt: "review this",
       systemPrompt: "you are a reviewer",
       agentToken: SECRET,
-    } as unknown as ReviewWorkspaceInput;
+      agentAdapter: reviewAdapter,
+    } as unknown as ReviewWorkspaceInput & { agentAdapter: AgentAdapter };
 
     await runner.runReviewInDocker(handle, input);
 

@@ -13,7 +13,7 @@ export function createDefaultPolicyDocument(): Record<string, unknown> {
     filesystem_policy: {
       include_workdir: true,
       read_only: ["/usr", "/lib", "/proc", "/dev/urandom", "/app", "/etc", "/var/log"],
-      read_write: ["/sandbox", "/tmp", "/dev/null"],
+      read_write: ["/sandbox", "/tmp", "/dev/null", "/dev/pts"],
     },
     landlock: { compatibility: "best_effort" },
     process: {

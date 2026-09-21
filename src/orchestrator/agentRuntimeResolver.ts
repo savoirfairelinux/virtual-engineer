@@ -4,7 +4,7 @@ import type {
 } from "../interfaces.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 import type { ProjectAgentRuntime } from "./agentContextBuilder.js";
-import { resolveIntegrationConfig } from "./integrationConfig.js";
+import { readStoredIntegrationConfig, resolveIntegrationConfig } from "./integrationConfig.js";
 import type { ProjectModeDeps } from "./projectMode.js";
 
 export interface AgentRuntimeResolverDependencies {
@@ -47,6 +47,7 @@ export class AgentRuntimeResolver {
     if (!encryptedSessionToken || !apiKey || Object.keys(extra).length === 0) {
       const integration = projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
+        const storedIntegrationConfig = readStoredIntegrationConfig(integration);
         const integrationConfig = resolveIntegrationConfig(projectMode, integration);
         if (integration.provider === "claude") {
           if (integrationConfig["authMode"] === "api_key") {
@@ -55,7 +56,7 @@ export class AgentRuntimeResolver {
               if (typeof key === "string" && key) apiKey = key;
             }
           } else if (!encryptedSessionToken) {
-            const sessionToken = integrationConfig["sessionToken"];
+            const sessionToken = storedIntegrationConfig["sessionToken"];
             if (typeof sessionToken === "string" && sessionToken) {
               encryptedSessionToken = sessionToken;
             }
@@ -67,7 +68,7 @@ export class AgentRuntimeResolver {
               if (typeof key === "string" && key) apiKey = key;
             }
           } else if (!encryptedSessionToken) {
-            const accessToken = integrationConfig["accessToken"];
+            const accessToken = storedIntegrationConfig["accessToken"];
             if (typeof accessToken === "string" && accessToken) {
               encryptedSessionToken = accessToken;
             }
@@ -114,7 +115,7 @@ export class AgentRuntimeResolver {
           if (typeof key === "string" && key) extra["openCodeApiKey"] = key;
           if (typeof base === "string" && base) extra["openCodeApiBase"] = base;
         } else if (!encryptedSessionToken) {
-          const sessionToken = integrationConfig["sessionToken"];
+          const sessionToken = storedIntegrationConfig["sessionToken"];
           if (typeof sessionToken === "string" && sessionToken) {
             encryptedSessionToken = sessionToken;
           } else if (integrationConfig["authMode"] === "pat") {

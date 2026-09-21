@@ -54,10 +54,10 @@ function isProtectedWritePath(entry: string): boolean {
 }
 
 /**
- * A bound runtime policy replaces its whole section, so re-assert the two
+ * A bound runtime policy replaces its whole section, so re-assert the
  * non-negotiable properties of the sandbox after composition: the agent runs as
- * the unprivileged `sandbox` account, and it cannot gain write access to the
- * image's executable or configuration trees.
+ * the unprivileged `sandbox` account, it cannot gain write access to the image's
+ * executable or configuration trees, and nested agent shells retain `/dev/pts`.
  */
 function enforceSandboxFloor(document: Record<string, unknown>): void {
   const base = createDefaultPolicyDocument();
@@ -81,6 +81,11 @@ function enforceSandboxFloor(document: Record<string, unknown>): void {
           `Runtime filesystem policy may not grant write access to ${offending.join(", ")}`
         );
       }
+      if (!readWrite.includes("/dev/pts")) {
+        readWrite.push("/dev/pts");
+      }
+    } else if (readWrite === undefined) {
+      policy["read_write"] = ["/dev/pts"];
     }
   }
 }

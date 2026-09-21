@@ -26,6 +26,8 @@ describe("HostGitExecutor", () => {
       "--branch",
       "main",
       "--single-branch",
+      "--depth",
+      "1",
       "https://host/repo.git",
       "libs/core",
     ]);
@@ -82,6 +84,108 @@ describe("HostGitExecutor", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("retries transient clone failures after removing the partial destination", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-retry-"));
+    let attempts = 0;
+    const git: GitRunner = async (args, cwd) => {
+      if (args[0] !== "clone") return "";
+      attempts += 1;
+      if (attempts > 1) {
+        await expect(access(join(cwd, "partial.txt"))).rejects.toThrow();
+      }
+      await writeFile(join(cwd, "partial.txt"), "partial");
+      if (attempts < 3) {
+        throw new Error("git clone: RPC failed; curl 56 Recv failure: Connection timed out; early EOF; invalid index-pack output");
+      }
+      return "";
+    };
+    const exec = new HostGitExecutor({
+      baseDir: tmpdir(),
+      git,
+      cloneMaxAttempts: 3,
+      cloneRetryDelayMs: 0,
+      cloneTimeoutMs: 1_000,
+    });
+
+    try {
+      await exec.cloneRepo(workspace, "https://host/repo.git", "main");
+      expect(attempts).toBe(3);
+      await expect(access(join(workspace, "partial.txt"))).resolves.toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("times out a stuck clone attempt", async () => {
+    vi.useFakeTimers();
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-timeout-"));
+    const git: GitRunner = async (_args, _cwd, _env, signal) => new Promise<string>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason ?? new Error("clone aborted")), { once: true });
+    });
+    const exec = new HostGitExecutor({
+      baseDir: tmpdir(),
+      git,
+      cloneMaxAttempts: 1,
+      cloneTimeoutMs: 1_000,
+    });
+
+    try {
+      const clone = exec.cloneRepo(workspace, "https://host/repo.git", "main");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(clone).rejects.toThrow(/timed out/i);
+    } finally {
+      vi.useRealTimers();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a clone after an attempt timeout", async () => {
+    vi.useFakeTimers();
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-timeout-retry-"));
+    let attempts = 0;
+    const git: GitRunner = vi.fn(async (_args, _cwd, _env, signal) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason ?? new Error("clone aborted")), { once: true });
+        });
+      }
+      return "";
+    });
+    const exec = new HostGitExecutor({
+      baseDir: tmpdir(),
+      git,
+      cloneMaxAttempts: 2,
+      cloneRetryDelayMs: 0,
+      cloneTimeoutMs: 1_000,
+    });
+
+    try {
+      const clone = exec.cloneRepo(workspace, "https://host/repo.git", "main");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(clone).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not retry non-transient clone failures", async () => {
+    const git: GitRunner = vi.fn(async () => {
+      throw new Error("git clone: remote: Repository not found");
+    });
+    const exec = new HostGitExecutor({
+      baseDir: "/tmp",
+      git,
+      cloneMaxAttempts: 3,
+      cloneRetryDelayMs: 0,
+    });
+
+    await expect(exec.cloneRepo("/tmp/ws", "https://host/repo.git", "main")).rejects.toThrow(/Repository not found/);
+    expect(git).toHaveBeenCalledOnce();
   });
 
   it("shell-quotes SSH paths before passing GIT_SSH_COMMAND", async () => {

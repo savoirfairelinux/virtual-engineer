@@ -185,6 +185,17 @@ describe("createRuntimePolicyResolver", () => {
       expect(yaml).toContain("run_as_user: sandbox");
     });
 
+    it("retains PTY access when a filesystem policy replaces the defaults", async () => {
+      const tighten = {
+        ...policy("fs-pty", "filesystem_policy:\n  read_write: [/sandbox]\n"),
+        kind: "filesystem" as const,
+      };
+
+      const yaml = await resolverWithProjectPolicy(tighten)({ taskId: "task-1", mode: "coding" });
+
+      expect(yaml).toContain("- /dev/pts");
+    });
+
     it("still composes a network-only tightening policy", async () => {
       const yaml = await resolverWithProjectPolicy(policy("net-only", denyNetwork))({ taskId: "task-1", mode: "coding" });
 

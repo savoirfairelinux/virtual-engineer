@@ -128,7 +128,7 @@ The agent may create local commits, but the host still owns the final push orche
 
 ### Plugin system — `src/plugins/`
 
-Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent. Historical unprefixed AES-GCM detection applies only to `sessionToken` and `sshPrivateKeyEnc`, avoiding collisions with valid base64 provider credentials.
+Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. `runtimeBuilder.ts` collects and configures every active agent adapter against the shared prompt store and workspace runner; the first adapter remains the runner's default while project routing resolves the adapter by integration id. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent. Historical unprefixed AES-GCM detection applies only to `sessionToken` and `sshPrivateKeyEnc`, avoiding collisions with valid base64 provider credentials.
 
 See [modules/plugins.md](modules/plugins.md).
 
@@ -160,7 +160,7 @@ Isolation comes from **OpenShell runtime policies**, not from Docker flags. `bui
 
 There is no `networkMode`, no `additionalDockerArgs`, and no `--read-only` / `--cap-drop` / `--security-opt` / `--tmpfs`. `command` is always `["node", "/app/agent-worker/dist/index.js"]`.
 
-- Base policy: `buildDefaultPolicyYaml()` ([src/openshell/openShellPolicyBuilder.ts](../../src/openshell/openShellPolicyBuilder.ts)) — `version: 1`, `filesystem_policy.read_only = [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]`, `filesystem_policy.read_write = [/sandbox, /tmp, /dev/null]`, `landlock.compatibility: best_effort`, `process.run_as_user/run_as_group = sandbox`. Network is deny-by-default (no `network_policies` section = no egress).
+- Base policy: `buildDefaultPolicyYaml()` ([src/openshell/openShellPolicyBuilder.ts](../../src/openshell/openShellPolicyBuilder.ts)) — `version: 1`, `filesystem_policy.read_only = [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]`, `filesystem_policy.read_write = [/sandbox, /tmp, /dev/null, /dev/pts]`, `landlock.compatibility: best_effort`, `process.run_as_user/run_as_group = sandbox`. `/dev/pts` is the narrow PTY device exception required by provider shells that call `forkpty`; it does not grant the rest of `/dev`. Network is deny-by-default (no `network_policies` section = no egress).
 - Per-project / per-agent overrides compose through [src/openshell/runtimePolicyResolver.ts](../../src/openshell/runtimePolicyResolver.ts); after composition `enforceSandboxFloor()` re-asserts `process.run_as_user/group = sandbox` and rejects a `read_write` entry naming `/`, `/usr`, `/lib`, `/etc`, `/app`, `/bin`, `/sbin`, `/boot`, or `/var`.
 - Egress is opened explicitly per run via `OpenShellClient.allowEgress({ hosts, binaries })` from the adapter's `AgentEgressSpec` (`COPILOT_EGRESS` / `CLAUDE_EGRESS` / `src/agents/backendEgress.ts`).
 - Sandbox paths: repository at `/sandbox/<basename(workspaceDir)>` (the exec `workdir`), prompt at `/tmp/user-prompt.txt`, worker runtime at `/app/agent-worker/`, MCP submission artifact at `/tmp/ve-agent-submission.json`. `/workspace` and `/ve-home` no longer exist.
@@ -172,6 +172,7 @@ There is no `networkMode`, no `additionalDockerArgs`, and no `--read-only` / `--
 - Enabled DB integrations win over env-only fallbacks.
 - Multiple integrations of the same **provider** may be active simultaneously.
 - `PluginManager.loadFromDatabase()` instantiates every enabled integration row and keeps it addressable by `integrationId`.
+- Bootstrap configures every active `agent_execution` adapter, so per-integration project routing receives the prompt store and workspace runner even when several rows use the same provider.
 - Runtime routing must resolve connectors by `integrationId`, capability, or explicit integration lists, not by assuming a single active provider.
 - Project-mode routing uses `pluginManager.getConnectorForIntegration(integrationId)`.
 - Review-mode webhook routing also resolves the exact Gerrit integration by `integrationId`; code-review tasks must retain that integration in `ticketSourceLabel` so resume/retry paths reopen the correct provider.

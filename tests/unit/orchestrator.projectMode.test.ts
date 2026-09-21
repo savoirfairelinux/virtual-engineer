@@ -38,7 +38,7 @@ import {
 import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
-import { encryptToken } from "../../src/utils/encryption.js";
+import { decryptToken, encryptToken } from "../../src/utils/encryption.js";
 import { validateTransition } from "../../src/state/stateMachine.js";
 
 registerBuiltinPlugins();
@@ -1063,8 +1063,12 @@ describe("Orchestrator — Phase 4 project mode", () => {
       config: { authMode: "subscription", accessToken: "codex-token" },
       assertResolved: (resolved: ResolvedAgentConfig) => {
         // Codex stores its subscription credential under `accessToken`, not
-        // `sessionToken` — regression test for a PR review finding.
-        expect(resolved.encryptedSessionToken).toBe("codex-token");
+        // `sessionToken`; preserve the managed envelope until the adapter
+        // decrypts it at the execution boundary.
+        const encryptedToken = resolved.encryptedSessionToken;
+        expect(encryptedToken).toBeDefined();
+        if (encryptedToken === undefined) throw new Error("Codex token was not resolved");
+        expect(decryptToken(encryptedToken, "orchestrator-runtime-admin-secret")).toBe("codex-token");
       },
     },
     {
