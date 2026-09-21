@@ -1073,6 +1073,14 @@ export class Orchestrator {
       return;
     }
 
+    if (TERMINAL_STATES.has(current.state)) {
+      log.warn(
+        { taskId: task.taskId, currentState: current.state, err },
+        "task reached a terminal state before fatal error handling; preserving it",
+      );
+      return;
+    }
+
     if (this.isTicketNotFoundError(err)) {
       const reason = `Ticket ${task.ticketId} (${task.ticketSourceLabel}) was not found`;
       log.warn({ taskId: task.taskId, ticketId: task.ticketId, err }, "ticket missing during task execution");

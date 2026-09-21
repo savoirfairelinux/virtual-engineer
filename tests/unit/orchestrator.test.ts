@@ -532,6 +532,23 @@ describe("Orchestrator", () => {
     expect(handleFatalError).toHaveBeenCalledWith(expect.objectContaining({ state: "DETECTED" }), expect.any(Error));
   });
 
+  it("does not rewrite a task that was abandoned while the workflow was running", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const current = makeTask({
+      state: "ABANDONED",
+      failureReason: "Task abandoned by operator",
+    });
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockResolvedValue(current),
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+
+    await (orchestrator as any).handleFatalError(task, new Error("workspace clone failed"));
+
+    expect(stateStore.setFailureReason).not.toHaveBeenCalled();
+    expect(stateStore.transition).not.toHaveBeenCalled();
+  });
+
   it("moves merged changes through ticket closing", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({
