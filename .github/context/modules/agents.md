@@ -91,6 +91,7 @@ Every git invocation inside the worker goes through `agent-worker/src/gitHardene
 ## Copilot native review compatibility
 
 - The strategy depends on the pinned Copilot CLI exposing the built-in `task` tool and `code-review` agent. Copilot SDK/CLI lockfile upgrades require an opt-in real-token smoke test in the hardened agent image that verifies one delegation, one MCP submission, a valid artifact, and no workspace mutation.
+- Copilot `assistant.usage` events normalize `inputTokens` to uncached input by subtracting `cacheReadTokens`; the SDK reports cache reads as a subset of total input, while the admin metrics expose the two values separately.
 - Usage events retain the actual model reported by the CLI when available. Strategy/delegation events contain only sanitized names/status; delegated prompt and diff content are not copied into summary metadata.
 
 ## Claude engine specifics

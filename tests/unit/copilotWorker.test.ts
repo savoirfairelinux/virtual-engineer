@@ -209,7 +209,7 @@ describe("runCopilotAgent", () => {
       input: { path: "src/index.ts" },
     }));
     expect(mocks.emitEvent).toHaveBeenCalledWith("assistant.usage", expect.objectContaining({
-      inputTokens: 12,
+      inputTokens: 9,
       outputTokens: 8,
       cacheReadTokens: 3,
       totalNanoAiu: 42,

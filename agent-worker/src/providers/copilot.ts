@@ -515,12 +515,13 @@ function registerSessionEventHandlers(
     const outputTokens = deepFindNum(event, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens']);
     const cacheRead = deepFindNum(event, ['cacheReadTokens', 'cache_read_tokens', 'cacheReadInputTokens']);
     const cacheWrite = deepFindNum(event, ['cacheWriteTokens', 'cache_write_tokens', 'cacheCreationInputTokens']);
+    const uncachedInput = inputTokens === null ? null : Math.max(0, inputTokens - (cacheRead ?? 0));
     const apiCallId = deepFindStr(event, ['apiCallId', 'api_call_id']);
     const providerCallId = deepFindStr(event, ['providerCallId', 'provider_call_id']);
     const totalNanoAiu = deepFindNum(event, ['totalNanoAiu', 'total_nano_aiu']);
     const cost = deepFindNum(event, ['cost']);
     emitEvent('assistant.usage', {
-      inputTokens,
+      inputTokens: uncachedInput,
       outputTokens,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
