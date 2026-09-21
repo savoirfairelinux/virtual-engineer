@@ -128,7 +128,7 @@ The agent may create local commits, but the host still owns the final push orche
 
 ### Plugin system — `src/plugins/`
 
-Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent. Historical unprefixed AES-GCM detection applies only to `sessionToken` and `sshPrivateKeyEnc`, avoiding collisions with valid base64 provider credentials.
+Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. `runtimeBuilder.ts` collects and configures every active agent adapter against the shared prompt store and workspace runner; the first adapter remains the runner's default while project routing resolves the adapter by integration id. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent. Historical unprefixed AES-GCM detection applies only to `sessionToken` and `sshPrivateKeyEnc`, avoiding collisions with valid base64 provider credentials.
 
 See [modules/plugins.md](modules/plugins.md).
 
@@ -172,6 +172,7 @@ There is no `networkMode`, no `additionalDockerArgs`, and no `--read-only` / `--
 - Enabled DB integrations win over env-only fallbacks.
 - Multiple integrations of the same **provider** may be active simultaneously.
 - `PluginManager.loadFromDatabase()` instantiates every enabled integration row and keeps it addressable by `integrationId`.
+- Bootstrap configures every active `agent_execution` adapter, so per-integration project routing receives the prompt store and workspace runner even when several rows use the same provider.
 - Runtime routing must resolve connectors by `integrationId`, capability, or explicit integration lists, not by assuming a single active provider.
 - Project-mode routing uses `pluginManager.getConnectorForIntegration(integrationId)`.
 - Review-mode webhook routing also resolves the exact Gerrit integration by `integrationId`; code-review tasks must retain that integration in `ticketSourceLabel` so resume/retry paths reopen the correct provider.

@@ -10,6 +10,11 @@ The `agent_execution` capability has eight engines: **Copilot** (`copilotAdapter
 - Each `agent_execution` descriptor declares its own `configFields`, so `AgentFormModal.tsx` renders and serializes advanced settings without provider branches. Adding an engine requires its worker provider, host adapter/descriptor, and registry entries, but no branch in worker `index.ts` or the generic admin form.
 - Review strategy is agent-owned under `modelConfig.providerOptions.reviewStrategy`; absence means `ve_direct`. Descriptors may advertise optional `reviewStrategies` metadata for the generic admin form. Copilot currently advertises experimental `copilot_native`; Goose advertises experimental `goose_native`; Codex advertises experimental `codex_native`; OpenCode advertises experimental `opencode_native`; Claude, Aider, Gemini CLI, and Cursor remain direct-only.
 
+## Runtime wiring
+
+- `src/bootstrap/runtimeBuilder.ts` discovers every active `agent_execution` adapter by integration id and returns the first as the shared runner default.
+- `src/index.ts` configures every discovered adapter with the shared `PromptStore` and `WorkspaceRunner` at startup and after integration hot-refresh. This is required when multiple active integrations use the same provider; project-bound execution still resolves its exact integration adapter through `PluginManager`.
+
 ## Per-agent tool authorization
 
 Per-agent tool authorization uses a **blocklist-only** model: everything is allowed by default, and the user configures a `blockedTools` list to restrict specific tools. The config lives under `modelConfig.providerOptions.toolAuthorization` (provider-specific shape). The admin API validates the shape per provider and rejects `allowedTools` (no longer supported); the host adapter forwards the blocklist to the worker as env vars, and each provider enforces it natively. VE's network floor is immutable — user `blockedTools` only add to it, never relax it.
