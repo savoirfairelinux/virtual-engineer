@@ -1702,6 +1702,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
       let grantLease: ((value: typeof lease) => void) | undefined;
       let queueSignal: AbortSignal | undefined;
+      const lifecycleCoordinator = new TaskLifecycleCoordinator();
       const concurrencyTracker = {
         acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
           queueSignal = signal;
@@ -1713,6 +1714,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       };
       const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
         concurrencyTracker: concurrencyTracker as never,
+        lifecycleCoordinator,
         agentTimeoutMs: 100,
       }));
       let outcome: "pending" | "resolved" | "rejected" = "pending";
@@ -1734,6 +1736,46 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       expect(outcome).toBe("resolved");
       expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
       expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a queued review when no lifecycle coordinator is available", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      type TestLease = import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+      let queueSignal: AbortSignal | undefined;
+      const concurrencyTracker = {
+        acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
+          queueSignal = signal;
+          return new Promise<TestLease>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }),
+        release: vi.fn(),
+      };
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+        concurrencyTracker: concurrencyTracker as never,
+        agentTimeoutMs: 100,
+      }));
+      let outcome: "pending" | "resolved" | "rejected" = "pending";
+      const reviewPromise = orch.runReview(initial.taskId).then(
+        () => { outcome = "resolved"; },
+        () => { outcome = "rejected"; },
+      );
+
+      await vi.waitFor(() => expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(100);
+      await reviewPromise;
+
+      expect(outcome).toBe("rejected");
+      expect(queueSignal?.aborted).toBe(true);
+      expect(runner.createWorkspace).not.toHaveBeenCalled();
+      expect(concurrencyTracker.release).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -1782,6 +1824,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
       let grantLease: ((value: typeof lease) => void) | undefined;
       let agentSignal: AbortSignal | undefined;
+      const lifecycleCoordinator = new TaskLifecycleCoordinator();
       const concurrencyTracker = {
         acquireWhenAvailable: vi.fn(() => new Promise<typeof lease>((resolve) => {
           grantLease = resolve;
@@ -1799,6 +1842,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       );
       const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
         concurrencyTracker: concurrencyTracker as never,
+        lifecycleCoordinator,
         agentTimeoutMs: 100,
       }));
 
