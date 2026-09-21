@@ -5,8 +5,10 @@ import { CurrentUserProvider, makeCan, makeHasPermission } from "../../../src/ad
 import { ConfigView, type ConfigViewData } from "../../../src/admin/ui/views/ConfigView/index.js";
 import {
   canAccessConfigSection,
+  canAccessConfigRoute,
   canViewConfiguration,
 } from "../../../src/admin/ui/views/ConfigView/configPermissions.js";
+import { canViewProjectStatistics } from "../../../src/admin/ui/views/ConfigView/ProjectsSection.js";
 import type { ConfigSectionId } from "../../../src/admin/ui/views/ConfigView/configRouting.js";
 import type { ApiAgent, ApiIntegration, ApiMe, ApiProject, ApiPrompt } from "../../../src/admin/ui/types.js";
 import { api } from "../../../src/admin/ui/api.js";
@@ -99,6 +101,51 @@ function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>) 
 describe("Configuration PBAC", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("uses the statistics permission for project statistics deep links", () => {
+    expect(canAccessConfigRoute(
+      () => false,
+      (permission) => permission === "project.read" || permission === "project.statistics.read",
+      { section: "projects", mode: "statistics", id: "project-1" },
+    )).toBe(true);
+    expect(canAccessConfigRoute(
+      () => false,
+      (permission) => permission === "project.read" || permission === "project.write",
+      { section: "projects", mode: "statistics", id: "project-1" },
+    )).toBe(false);
+  });
+
+  it("matches server statistics visibility: admin or direct owner only", () => {
+    const owner: ApiMe = {
+      id: "limited-user",
+      username: "owner",
+      role: "operator",
+      capabilities: { superuser: false, grants: {} },
+    };
+    const delegate: ApiMe = {
+      ...owner,
+      id: "delegate-user",
+      username: "delegate",
+    };
+
+    expect(canViewProjectStatistics(project, owner, false, true)).toBe(true);
+    expect(canViewProjectStatistics(project, delegate, false, true)).toBe(false);
+    expect(canViewProjectStatistics(project, null, true, true)).toBe(true);
+    expect(canViewProjectStatistics({ ...project, ownerUserId: null }, owner, false, true)).toBe(false);
+  });
+
+  it("requires the statistics permission as well as admin or direct-owner access", () => {
+    const owner: ApiMe = {
+      id: "limited-user",
+      username: "owner",
+      role: "operator",
+      capabilities: { superuser: false, grants: {} },
+    };
+
+    expect(canViewProjectStatistics(project, owner, false, false)).toBe(false);
+    expect(canViewProjectStatistics(project, owner, false, true)).toBe(true);
+    expect(canViewProjectStatistics(project, null, true, false)).toBe(false);
   });
 
   it("resolves dynamic owner and registered-user grants against resource ownership", () => {

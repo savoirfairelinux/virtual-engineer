@@ -23,6 +23,7 @@ export type ConfigRoute =
   | { section: ConfigSectionId; mode: "list" }
   | { section: ConfigEntitySection; mode: "create" }
   | { section: ConfigStandardEntitySection; mode: "detail" | "edit"; id: string }
+  | { section: "projects"; mode: "statistics"; id: string }
   | { section: "users"; mode: "password"; id: string }
   | { section: "oauth"; mode: "detail"; provider: string; baseUrl: string };
 
@@ -75,6 +76,9 @@ export function parseConfigHash(hash: string): ConfigRoute {
 
   const id = decodeSegment(segments[2] ?? "");
   if (!id) return DEFAULT_ROUTE;
+  if (rawSection === "projects" && segments.length === 4 && segments[3] === "statistics") {
+    return { section: "projects", mode: "statistics", id };
+  }
   if (segments.length === 3) {
     return { section: rawSection as ConfigStandardEntitySection, mode: "detail", id };
   }
@@ -98,5 +102,6 @@ export function formatConfigHash(route: ConfigRoute): string {
 
   const itemRoot = `${root}/${encodeURIComponent(route.id)}`;
   if (route.mode === "detail") return itemRoot;
+  if (route.mode === "statistics") return `${itemRoot}/statistics`;
   return `${itemRoot}/${route.mode}`;
 }

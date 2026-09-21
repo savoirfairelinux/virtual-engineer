@@ -27,6 +27,17 @@ adds VE idempotently on revision events, while initial open-change backfill is
 disabled. Mode changes are execution-affecting and are rejected while the
 project has active tasks.
 
+## Project statistics
+
+`getProjectStatistics(projectId, options?)` is an on-demand `StateStore` aggregate;
+it adds no tables, columns, indexes, or migration. It scopes current task state,
+period task creation and terminal transitions, agent cycles and validation,
+creation-to-terminal timing, and cost/model summaries through `tasks.project_id`.
+The optional `since` bound uses the existing seconds-since-epoch timestamps, and
+the optional live-concurrency value is supplied by the in-memory tracker rather
+than persisted. Cost and token values preserve the existing distinction between
+measured zero and missing provider usage.
+
 ## Projects Skill Columns
 
 - `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value. `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts` to fetch and install configured sources **host-side**, before the workspace is uploaded to the sandbox, so the resulting skill files reach the sandbox without any SSH material ever entering it (see [modules/workspace.md](modules/workspace.md#external-skill-sources)).

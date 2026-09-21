@@ -4,11 +4,12 @@ import { Icon } from "../../components/Icon.tsx";
 import { RowCard } from "../../components/RowCard.tsx";
 import { api } from "../../api.ts";
 import { useEffect, useState } from "react";
-import { useCurrentUser } from "../../authContext.tsx";
+import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
+import { ProjectStatisticsView } from "./ProjectStatisticsView.tsx";
 import { FieldSelect, Modal } from "../../components/Modal.tsx";
-import type { ApiProject } from "../../types.ts";
+import type { ApiMe, ApiProject } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
 interface ApiProjectDetail extends ApiProject {
@@ -37,14 +38,26 @@ interface ApiProjectDetail extends ApiProject {
   reactToCiFailures?: boolean;
 }
 
+export function canViewProjectStatistics(
+  project: ApiProject,
+  user: ApiMe | null,
+  isAdmin: boolean,
+  hasStatisticsPermission: boolean,
+): boolean {
+  return hasStatisticsPermission && (isAdmin || project.ownerUserId === user?.id);
+}
+
 export function ProjectsSection({ projects, agents, integrations, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const [accessProject, setAccessProject] = useState<ApiProject | null>(null);
-  const { can } = useCurrentUser();
+  const { can, isAdmin, user } = useCurrentUser();
+  const hasStatisticsPermission = makeHasPermission(user)("project.statistics.read");
   const [busy, setBusy] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
   const detailId = route.section === "projects" && route.mode === "detail" ? route.id : null;
   const editingId = route.section === "projects" && route.mode === "edit" ? route.id : null;
+  const statisticsId = route.section === "projects" && route.mode === "statistics" ? route.id : null;
   const detailItem = detailId ? projects.find((project) => project.id === detailId) : undefined;
+  const statisticsItem = statisticsId ? projects.find((project) => project.id === statisticsId) : undefined;
 
   useEffect(() => {
     if (!editingId) {
@@ -102,6 +115,18 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
       : { section: "projects", mode: "list" });
   }
 
+  if (route.mode === "statistics") {
+    if (!statisticsItem || !canViewProjectStatistics(statisticsItem, user, isAdmin, hasStatisticsPermission)) {
+      return <ProjectMissing onBack={() => navigate({ section: "projects", mode: "list" })} />;
+    }
+    return (
+      <ProjectStatisticsView
+        project={statisticsItem}
+        onBack={() => navigate({ section: "projects", mode: "detail", id: statisticsItem.id })}
+      />
+    );
+  }
+
   if (route.mode === "detail") {
     if (!detailItem) return <ProjectMissing onBack={() => navigate({ section: "projects", mode: "list" })} />;
     if (accessProject) {
@@ -114,6 +139,9 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
         onClose={() => navigate({ section: "projects", mode: "list" })}
         {...(can("project.owner", detailItem.id, detailItem.ownerUserId ?? null)
           ? { onAccess: () => setAccessProject(detailItem) }
+          : {})}
+        {...(canViewProjectStatistics(detailItem, user, isAdmin, hasStatisticsPermission)
+          ? { onStatistics: () => navigate({ section: "projects", mode: "statistics", id: detailItem.id }) }
           : {})}
         {...(can("project.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
         {...(can("project.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}

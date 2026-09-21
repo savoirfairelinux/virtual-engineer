@@ -374,6 +374,58 @@ export interface ApiModelUsageSummary {
   sinceEpochSeconds: number | null;
 }
 
+export interface ApiProjectStatistics {
+  projectId: string;
+  sinceEpochSeconds: number | null;
+  current: {
+    taskCount: number;
+    byState: Record<TaskState, number>;
+    byBucket: Record<TaskWorkflowBucket, number>;
+  };
+  period: {
+    tasksCreated: number;
+    terminalTasks: number;
+    terminalByState: Record<TaskState, number>;
+    terminalByBucket: Record<TaskWorkflowBucket, number>;
+  };
+  execution: {
+    cycles: number;
+    tasksWithCycles: number;
+    retryTasks: number;
+    averageCyclesPerTask: number | null;
+    validation: {
+      samples: number;
+      passed: number;
+      failed: number;
+      skipped: number;
+    };
+  };
+  cost: {
+    totalUsd: number;
+    totalAiCredits: number;
+    totalPremiumRequests: number;
+    totalRuns: number;
+    totalTokens: ApiCycleCostTokens;
+    totalRunsWithTokens: number;
+    byBucket: Array<{
+      workflowBucket: TaskWorkflowBucket;
+      usd: number;
+      aiCredits: number;
+      premiumRequests: number;
+      runCount: number;
+      tokens: ApiCycleCostTokens;
+      runCountWithTokens: number;
+    }>;
+  };
+  models: ApiModelUsageEntry[];
+  timing: {
+    samples: number;
+    averageSeconds: number | null;
+    medianSeconds: number | null;
+  };
+  liveConcurrency: { active: number } | null;
+}
+
 /* ─── Auth / users / audit ────────────────────────────────────────────── */
 
 export type UserRole = "admin" | "operator" | "viewer";

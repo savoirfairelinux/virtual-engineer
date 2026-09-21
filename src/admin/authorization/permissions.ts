@@ -2,8 +2,9 @@ import type { Permission, ResourceType } from "../../interfaces.js";
 
 /**
  * The authoritative catalog of admin permissions. Each entry is a
- * `"<resourceType>.<action>"` string consumed by the policy engine and declared
- * as route metadata. Grant-only: possessing a permission authorizes the action;
+ * `"<resourceType>.<action>"` string (with optional sub-resource segments)
+ * consumed by the policy engine and declared as route metadata. Grant-only:
+ * possessing a permission authorizes the action;
  * the absence of a grant denies it (default-deny).
  *
  * Scopeable resource types accept
@@ -16,6 +17,7 @@ export const PERMISSIONS = {
   // Projects (scopeable) — and the tasks they own.
   PROJECT_CREATE: "project.create",
   PROJECT_READ: "project.read",
+  PROJECT_STATISTICS_READ: "project.statistics.read",
   PROJECT_WRITE: "project.write",
   PROJECT_DELETE: "project.delete",
   PROJECT_OPERATE: "project.operate",

@@ -19,6 +19,11 @@ describe("Configuration routing", () => {
       mode: "edit",
       id: "github primary",
     }],
+    ["#config/projects/project-1/statistics", {
+      section: "projects",
+      mode: "statistics",
+      id: "project-1",
+    }],
     ["#config/users/user-1/password", {
       section: "users",
       mode: "password",
@@ -39,6 +44,7 @@ describe("Configuration routing", () => {
     { section: "projects", mode: "create" },
     { section: "projects", mode: "detail", id: "project/with spaces" },
     { section: "projects", mode: "edit", id: "project/with spaces" },
+    { section: "projects", mode: "statistics", id: "project/with spaces" },
     { section: "users", mode: "password", id: "user/équipe" },
     {
       section: "oauth",

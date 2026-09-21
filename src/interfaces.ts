@@ -1263,6 +1263,71 @@ export interface CostSummary {
   sinceEpochSeconds: number | null;
 }
 
+export interface ProjectStatisticsBucketCounts {
+  active: number;
+  watching: number;
+  done: number;
+  failed: number;
+}
+
+export interface ProjectStatisticsCurrent {
+  taskCount: number;
+  byState: Record<TaskState, number>;
+  byBucket: ProjectStatisticsBucketCounts;
+}
+
+export interface ProjectStatisticsPeriod {
+  tasksCreated: number;
+  terminalTasks: number;
+  terminalByState: Record<TaskState, number>;
+  terminalByBucket: ProjectStatisticsBucketCounts;
+}
+
+export interface ProjectStatisticsValidation {
+  samples: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface ProjectStatisticsExecution {
+  cycles: number;
+  tasksWithCycles: number;
+  retryTasks: number;
+  averageCyclesPerTask: number | null;
+  validation: ProjectStatisticsValidation;
+}
+
+export type ProjectStatisticsCostBucket = Omit<CostSummaryProject, "projectId" | "projectName">;
+
+export interface ProjectStatisticsCost {
+  totalUsd: number;
+  totalAiCredits: number;
+  totalPremiumRequests: number;
+  totalRuns: number;
+  totalTokens: CycleCostTokens;
+  totalRunsWithTokens: number;
+  byBucket: ProjectStatisticsCostBucket[];
+}
+
+export interface ProjectStatisticsTiming {
+  samples: number;
+  averageSeconds: number | null;
+  medianSeconds: number | null;
+}
+
+export interface ProjectStatistics {
+  projectId: ProjectId;
+  sinceEpochSeconds: number | null;
+  current: ProjectStatisticsCurrent;
+  period: ProjectStatisticsPeriod;
+  execution: ProjectStatisticsExecution;
+  cost: ProjectStatisticsCost;
+  models: ModelUsageEntry[];
+  timing: ProjectStatisticsTiming;
+  liveConcurrency: { active: number } | null;
+}
+
 /** Run-count and cost for a single model. */
 export interface ModelUsageEntry {
   /** Model id, or null when the model could not be resolved from the cycle. */
@@ -1444,10 +1509,15 @@ export interface StateStore {
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
 
   /** Aggregate agent-cycle execution cost per project and instance-wide. */
-  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
+  getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary>;
 
   /** Aggregate AI-model usage distribution by run count and cost. */
-  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
+  getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary>;
+
+  getProjectStatistics(
+    projectId: ProjectId,
+    options?: { since?: Date; liveConcurrency?: number | null },
+  ): Promise<ProjectStatistics>;
 
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
 

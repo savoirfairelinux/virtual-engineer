@@ -8,9 +8,9 @@ import {
 } from "../../src/admin/authorization/permissions.js";
 
 describe("permissions catalog", () => {
-  it("every catalog value is a <resourceType>.<action> string", () => {
+  it("every catalog value is a resource/action permission string", () => {
     for (const perm of ALL_PERMISSIONS) {
-      expect(perm).toMatch(/^[a-z]+\.[a-z_]+$/);
+      expect(perm).toMatch(/^[a-z]+(?:\.[a-z_]+)+$/);
     }
   });
 

@@ -18,9 +18,10 @@ interface DrawerActionsProps {
   onDelete?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
   onAccess?: (() => void) | undefined;
+  onStatistics?: (() => void) | undefined;
 }
 
-function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onAccess }: DrawerActionsProps) {
+function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onAccess, onStatistics }: DrawerActionsProps) {
   return (
     <>
       <button className="btn" onClick={onClose}>Close</button>
@@ -28,6 +29,11 @@ function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onAccess 
             {onAccess && (
               <button className="btn" onClick={onAccess}>
                 <Icon name="user" size={13} /> Access
+              </button>
+            )}
+            {onStatistics && (
+              <button className="btn" onClick={onStatistics}>
+                <Icon name="pulse" size={13} /> Statistics
               </button>
             )}
       {onDelete && (
@@ -262,9 +268,10 @@ interface ProjectDrawerProps {
   onToggle?: () => void;
   onDelete?: () => void;
   onAccess?: () => void;
+  onStatistics?: () => void;
 }
 
-export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete, onAccess }: ProjectDrawerProps) {
+export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete, onAccess, onStatistics }: ProjectDrawerProps) {
   const agentName = agents.find((a) => a.id === item.agentId)?.name ?? item.agentId ?? "—";
 
   const banner = item.enabled
@@ -301,6 +308,7 @@ export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelet
           onToggle={onToggle}
           onDelete={onDelete}
           onAccess={onAccess}
+          onStatistics={onStatistics}
         />
       }
     >
