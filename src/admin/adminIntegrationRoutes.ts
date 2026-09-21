@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { oauthAppResourceId } from "../domain/accessControl.js";
@@ -73,6 +73,50 @@ export interface IntegrationRouteDeps {
 
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
+  const discoverModels = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+    integration: Integration,
+  ): Promise<void> => {
+    const descriptor = getProviderDescriptor(integration.provider);
+    if (!descriptor || typeof descriptor.discoverModels !== "function") {
+      writeJson(res, 400, { error: `Provider '${integration.provider}' does not support model discovery` });
+      return;
+    }
+
+    let parsedModelConfig: unknown;
+    try {
+      parsedModelConfig = deps.pluginManager
+        ? deps.pluginManager.decryptIntegrationConfig(integration)
+        : JSON.parse(integration.configJson);
+    } catch {
+      writeJson(res, 500, { error: "Stored integration config is not valid JSON" });
+      return;
+    }
+
+    try {
+      const models = await descriptor.discoverModels(parsedModelConfig);
+      const discoveredAt = new Date().toISOString();
+      await deps.integrationStore!.setIntegrationDiscoveredResources!(id, JSON.stringify({ models, discoveredAt }));
+      recordAudit(deps.auditStore, req, {
+        action: "integration.discover",
+        targetType: "integration",
+        targetId: id,
+        details: { name: integration.name, provider: integration.provider, models: models.length },
+      });
+      writeJson(res, 200, { ok: true, discoveredAt, counts: { models: models.length } });
+    } catch (err: unknown) {
+      if (err instanceof ModelDiscoveryConfigError) {
+        writeJson(res, 400, { error: err.message });
+        return;
+      }
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.warn({ id, provider: integration.provider, errorMessage }, "model discovery failed");
+      writeJson(res, 502, { error: `Model discovery failed: ${errorMessage}` });
+    }
+  };
+
   // ─── Plugin discovery ─────────────────────────────────────────────────────
   router.add("GET", "/api/admin/plugins", (_req, res, _params) => {
     const descriptors = getAllProviderDescriptors();
@@ -486,6 +530,18 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.write", resourceParam: "id" });
 
   // ─── Models ───────────────────────────────────────────────────────────────
+  router.add("POST", "/api/admin/integrations/:id/models/discover", async (req, res, params) => {
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
+    if (typeof deps.integrationStore.setIntegrationDiscoveredResources !== "function") {
+      writeJson(res, 501, { error: "Integration store does not support discovery persistence" });
+      return;
+    }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    await discoverModels(req, res, id, integration);
+  }, { permission: "integration.read", resourceParam: "id" });
+
   router.add("GET", "/api/admin/integrations/:id/models", async (_req, res, params) => {
     if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
@@ -519,28 +575,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
     // ── Model discovery (e.g. Copilot OAuth or PAT) ─────────────────────
     if (descriptor && typeof descriptor.discoverModels === "function") {
-      let parsedModelConfig: unknown;
-      try {
-        parsedModelConfig = deps.pluginManager
-          ? deps.pluginManager.decryptIntegrationConfig(integration)
-          : JSON.parse(integration.configJson);
-      } catch {
-        writeJson(res, 500, { error: "Stored integration config is not valid JSON" }); return;
-      }
-      try {
-        const models = await descriptor.discoverModels(parsedModelConfig);
-        const discoveredAt = new Date().toISOString();
-        await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models, discoveredAt }));
-        recordAudit(deps.auditStore, req, { action: "integration.discover", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider, models: models.length } });
-        writeJson(res, 200, { ok: true, discoveredAt, counts: { models: models.length } });
-      } catch (err: unknown) {
-        if (err instanceof ModelDiscoveryConfigError) {
-          writeJson(res, 400, { error: err.message }); return;
-        }
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        log.warn({ id, provider: integration.provider, errorMessage }, "model discovery failed");
-        writeJson(res, 502, { error: `Model discovery failed: ${errorMessage}` });
-      }
+      await discoverModels(req, res, id, integration);
       return;
     }
     if (!descriptor || typeof descriptor.discoverResources !== "function") {

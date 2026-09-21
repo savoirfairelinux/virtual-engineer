@@ -120,13 +120,14 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     const cached = integration?.discoveredResources?.models;
     if (Array.isArray(cached) && cached.length > 0) {
       setAvailableModels(cached.map((model) => typeof model === "string" ? { id: model, name: model } : model));
+      setModelsLoading(false);
       return;
     }
 
     // Slow path: trigger discovery on the backend then read the result
     let cancelled = false;
     setModelsLoading(true);
-    api.post(`/api/admin/integrations/${integrationId}/discover`, {})
+    api.post(`/api/admin/integrations/${integrationId}/models/discover`, {})
       .then(() => api.get<{ models: AvailableModel[] }>(`/api/admin/integrations/${integrationId}/models`))
       .then((res) => {
         if (cancelled) return;
