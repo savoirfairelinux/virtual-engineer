@@ -814,7 +814,8 @@ export class ReviewOrchestrator {
 
       try {
         if (this.deps.concurrencyTracker !== undefined) {
-          pauseDeadline();
+          const lifecycleCanCancelQueue = lifecycleSignal !== undefined;
+          if (lifecycleCanCancelQueue) pauseDeadline();
           cycleLease = await this.awaitSignalAware(
             this.deps.concurrencyTracker.acquireWhenAvailable(
               project.id,
@@ -824,7 +825,7 @@ export class ReviewOrchestrator {
             deadlineController.signal,
             timeoutError,
           );
-          startDeadline();
+          if (lifecycleCanCancelQueue) startDeadline();
           await withinDeadline(this.assertReviewStillActive(taskId));
         }
         handle = await this.awaitSignalAware(
