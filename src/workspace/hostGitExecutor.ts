@@ -10,13 +10,18 @@
  */
 
 import { execFile } from "child_process";
-import { mkdtemp, readdir, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 
 /** Runs a git argv in `cwd` with an optional explicit env; resolves stdout, rejects on non-zero exit. */
 export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<string>;
+
+const DEFAULT_CLONE_MAX_ATTEMPTS = 3;
+const DEFAULT_CLONE_RETRY_DELAY_MS = 1_000;
+const DEFAULT_CLONE_TIMEOUT_MS = 5 * 60 * 1_000;
+const TRANSIENT_CLONE_ERROR = /(?:RPC failed|early EOF|invalid index-pack|index-pack failed|remote end hung up|could not resolve host|network is unreachable|connection (?:timed out|reset|closed|refused)|curl \d+.*(?:timed out|recv failure|reset))/i;
 
 const defaultGitRunner: GitRunner = (args, cwd, env, signal) =>
   new Promise<string>((resolve, reject) => {
@@ -123,6 +128,76 @@ function buildSshGitEnv(
   return { ...process.env, GIT_SSH_COMMAND: sshCmd };
 }
 
+function normalizedOption(value: number | undefined, fallback: number, minimum: number): number {
+  return value === undefined || !Number.isFinite(value)
+    ? fallback
+    : Math.max(minimum, Math.floor(value));
+}
+
+function isTransientCloneError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return TRANSIENT_CLONE_ERROR.test(message);
+}
+
+interface CloneAttemptSignal {
+  signal: AbortSignal;
+  timedOut(): boolean;
+  dispose(): void;
+}
+
+function createCloneAttemptSignal(parentSignal: AbortSignal | undefined, timeoutMs: number): CloneAttemptSignal {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const onParentAbort = (): void => {
+    controller.abort(parentSignal?.reason);
+  };
+
+  if (parentSignal?.aborted === true) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  if (!controller.signal.aborted && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error(`git clone timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: (): boolean => timedOut,
+    dispose: (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
+async function waitForCloneRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  if (delayMs === 0) {
+    signal?.throwIfAborted();
+    return;
+  }
+
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      rejectPromise(new Error("git clone retry aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolvePromise();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+  });
+}
+
 export interface HostWorkspace {
   /** Absolute path to the ephemeral working directory. */
   dir: string;
@@ -132,15 +207,27 @@ export interface HostGitExecutorOptions {
   /** Base directory under which ephemeral workspaces are created. */
   baseDir: string;
   git?: GitRunner;
+  /** Maximum number of attempts for a transient clone failure. Defaults to 3. */
+  cloneMaxAttempts?: number | undefined;
+  /** Delay between transient clone attempts in milliseconds. Defaults to 1000. */
+  cloneRetryDelayMs?: number | undefined;
+  /** Timeout for each clone attempt in milliseconds. Defaults to five minutes; 0 disables it. */
+  cloneTimeoutMs?: number | undefined;
 }
 
 export class HostGitExecutor {
   private readonly baseDir: string;
   private readonly git: GitRunner;
+  private readonly cloneMaxAttempts: number;
+  private readonly cloneRetryDelayMs: number;
+  private readonly cloneTimeoutMs: number;
 
   constructor(options: HostGitExecutorOptions) {
     this.baseDir = options.baseDir;
     this.git = options.git ?? defaultGitRunner;
+    this.cloneMaxAttempts = normalizedOption(options.cloneMaxAttempts, DEFAULT_CLONE_MAX_ATTEMPTS, 1);
+    this.cloneRetryDelayMs = normalizedOption(options.cloneRetryDelayMs, DEFAULT_CLONE_RETRY_DELAY_MS, 0);
+    this.cloneTimeoutMs = normalizedOption(options.cloneTimeoutMs, DEFAULT_CLONE_TIMEOUT_MS, 0);
   }
 
   /** Create an ephemeral working directory. */
@@ -166,7 +253,46 @@ export class HostGitExecutor {
   ): Promise<void> {
     const cloneDir = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
-    await this.git(["clone", "--branch", branch, "--single-branch", repoUrl, subPath], dir, env, signal);
+    let lastError: unknown;
+    let cloneSucceeded = false;
+
+    for (let attempt = 1; attempt <= this.cloneMaxAttempts; attempt += 1) {
+      signal?.throwIfAborted();
+      const attemptSignal = createCloneAttemptSignal(signal, this.cloneTimeoutMs);
+      try {
+        await this.git(
+          ["clone", "--branch", branch, "--single-branch", "--depth", "1", repoUrl, subPath],
+          dir,
+          env,
+          attemptSignal.signal,
+        );
+        if (signal?.aborted === true) signal.throwIfAborted();
+        if (attemptSignal.timedOut()) {
+          throw new Error(`git clone timed out after ${this.cloneTimeoutMs}ms`);
+        }
+        attemptSignal.dispose();
+        cloneSucceeded = true;
+        break;
+      } catch (err) {
+        const cloneError = attemptSignal.timedOut()
+          ? new Error(`git clone timed out after ${this.cloneTimeoutMs}ms`)
+          : err;
+        lastError = cloneError;
+        await this.resetCloneDestination(cloneDir);
+        attemptSignal.dispose();
+
+        if (signal?.aborted === true) signal.throwIfAborted();
+        if (attempt >= this.cloneMaxAttempts || !isTransientCloneError(cloneError)) {
+          throw cloneError;
+        }
+        await waitForCloneRetry(this.cloneRetryDelayMs, signal);
+      }
+    }
+
+    if (!cloneSucceeded) {
+      throw lastError instanceof Error ? lastError : new Error("git clone failed");
+    }
+
     const cleanUrl = credentialFreeUrl(repoUrl);
     if (cleanUrl !== repoUrl) {
       try {
@@ -176,6 +302,11 @@ export class HostGitExecutor {
         throw err;
       }
     }
+  }
+
+  private async resetCloneDestination(cloneDir: string): Promise<void> {
+    await rm(cloneDir, { recursive: true, force: true });
+    await mkdir(cloneDir, { recursive: true });
   }
 
   /** Run an arbitrary git command in `dir` (optionally within a sub-path). */

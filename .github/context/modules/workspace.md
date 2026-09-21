@@ -10,7 +10,7 @@ The workspace module owns two unrelated concerns: (a) the **agent runtime** — 
 
 | File | Role |
 |---|---|
-| `hostGitExecutor.ts` | All host-side Git plumbing: `createWorkspace`, `cloneRepo`, `fetchAndCheckout`, `fetchAndCherryPick`, `execGit`, `rebuildTrustedMetadata`, `destroyWorkspace`, `credentialFreeUrl`. Every `execFile` goes through `trustedGitArgs` / `trustedGitEnv` (`src/utils/gitExec.ts`). |
+| `hostGitExecutor.ts` | All host-side Git plumbing: `createWorkspace`, `cloneRepo`, `fetchAndCheckout`, `fetchAndCherryPick`, `execGit`, `rebuildTrustedMetadata`, `destroyWorkspace`, `credentialFreeUrl`. Every `execFile` goes through `trustedGitArgs` / `trustedGitEnv` (`src/utils/gitExec.ts`). Project clones are shallow (`--depth 1`) and retry transient transfer failures up to three attempts, with a five-minute per-attempt timeout and partial-destination cleanup. |
 | `openShellWorkspaceRunner.ts` | Sandbox lifecycle: create → upload → exec → download → destroy. |
 | `agentWorkerProtocol.ts` | Validates the worker's JSON result envelope at the workspace boundary (`decodeReviewWorkerOutput`). |
 | `skillSources.ts` | Parses `projects.skill_sources_json`, builds `npx skills` arguments (project-scoped), and exports the shared SSH/env-building helpers reused by both admin-side discovery and the host-side installer. |
@@ -19,7 +19,7 @@ The workspace module owns two unrelated concerns: (a) the **agent runtime** — 
 ### Sandbox lifecycle (per cycle)
 
 1. `createWorkspace()` — `HostGitExecutor.createWorkspace()` makes a host scratch dir under `WORKSPACE_BASE_DIR`; the sandbox name is `ve-<taskId>-<8 hex>`; the handle's `containerId` is `openshell:<sandboxName>`.
-2. `prepareProjectWorkspace()` / `cloneRepo()` — clones each push target **on the host** (ordered by `commitOrder`; secondary-target failures are non-fatal) and records a credential-free remote per local path in `trustedRemotes`.
+2. `prepareProjectWorkspace()` / `cloneRepo()` — clones each push target **on the host** (ordered by `commitOrder`; secondary-target failures are non-fatal), using bounded shallow-clone retries for transient network/pack failures and cleaning partial destinations between attempts. A failed root clone clears its contents but preserves the workspace directory. It records a credential-free remote per local path in `trustedRemotes`.
 3. `runAgentInDocker()` (name retained for compatibility) — resolves the policy (`resolvePolicy` → `runtimePolicyResolver`, falling back to `buildDefaultPolicyYaml()`), splits credential env vars into a temporary OpenShell provider (`splitManagedProviderEnv`, recorded in `managed_openshell_providers` **before** remote creation), creates the sandbox with ownership labels, calls `allowEgress` for the adapter's `AgentEgressSpec`, calls `installSkillSources()` (see below) to stage any configured skill sources into the host workspace dir, uploads the workspace to `/sandbox` with `noGitIgnore: true`, runs the optional post-clone script **inside** the sandbox, then execs `spec.command` with `workdir = /sandbox/<basename(dir)>`.
 4. Download — the coding flow downloads the sandbox repo path back onto the host dir, then `restoreTrustedRemotes()` rebuilds `.git` config/hooks/attributes/alternates from the recorded host-trusted remotes. `runReviewInDocker()` uploads only; nothing is downloaded back.
 5. `destroyWorkspace()` — removes the sandbox, then the temporary provider, clears the ledger row, and finally deletes the host directory.
