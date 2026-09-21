@@ -48,7 +48,15 @@ function makeProject(): ProjectRecord {
   };
 }
 
-function makeProjectMode(adapter: AgentAdapter, integration: Integration): ProjectModeDeps {
+function makeProjectMode(
+  adapter: AgentAdapter,
+  integration: Integration,
+  integrationConfig: Record<string, unknown> = {
+    aiderBackend: "openai",
+    aiderApiKey: "integration-key",
+    aiderApiBase: "https://llm.example.test/v1",
+  },
+): ProjectModeDeps {
   return {
     projectStore: {
       getProjectById: vi.fn(),
@@ -60,11 +68,7 @@ function makeProjectMode(adapter: AgentAdapter, integration: Integration): Proje
     pluginManager: {
       getConnectorForIntegration: vi.fn(() => adapter),
       getActiveIntegrationById: vi.fn(() => integration),
-      decryptIntegrationConfig: vi.fn(() => ({
-        aiderBackend: "openai",
-        aiderApiKey: "integration-key",
-        aiderApiBase: "https://llm.example.test/v1",
-      })),
+      decryptIntegrationConfig: vi.fn(() => integrationConfig),
     },
   } as unknown as ProjectModeDeps;
 }
@@ -96,5 +100,30 @@ describe("AgentRuntimeResolver", () => {
       aiderApiKey: "integration-key",
       aiderApiBase: "https://llm.example.test/v1",
     });
+  });
+
+  it("keeps stored OAuth session envelopes encrypted for the adapter", async () => {
+    const adapter = { name: "copilot" } as AgentAdapter;
+    const storedSessionToken = "veenc:v1:stored-ciphertext";
+    const integration = {
+      id: "copilot-integration",
+      provider: "copilot",
+      name: "Copilot",
+      configJson: JSON.stringify({ authMode: "oauth", sessionToken: storedSessionToken }),
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as Integration;
+    const projectMode = makeProjectMode(adapter, integration, {
+      authMode: "oauth",
+      sessionToken: "ghu_decrypted_token",
+    });
+    const resolver = new AgentRuntimeResolver({
+      getProjectMode: () => projectMode,
+    });
+
+    const runtime = await resolver.resolve(makeProject());
+
+    expect(runtime.config.encryptedSessionToken).toBe(storedSessionToken);
   });
 });

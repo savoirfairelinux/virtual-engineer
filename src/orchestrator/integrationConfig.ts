@@ -13,5 +13,10 @@ export function resolveIntegrationConfig(
   integration: Integration,
 ): Record<string, unknown> {
   return projectMode.pluginManager.decryptIntegrationConfig?.(integration)
-    ?? JSON.parse(integration.configJson) as Record<string, unknown>;
+    ?? readStoredIntegrationConfig(integration);
+}
+
+/** Read an integration's persisted configuration without materializing credentials. */
+export function readStoredIntegrationConfig(integration: Integration): Record<string, unknown> {
+  return JSON.parse(integration.configJson) as Record<string, unknown>;
 }
