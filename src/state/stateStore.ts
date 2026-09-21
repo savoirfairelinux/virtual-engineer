@@ -20,6 +20,8 @@ import type { AuditStoreApi } from "./stores/auditStore.js";
 import { createAuditStore } from "./stores/auditStore.js";
 import type { CostStoreApi } from "./stores/costStore.js";
 import { createCostStore } from "./stores/costStore.js";
+import type { ProjectStatisticsStoreApi } from "./stores/projectStatisticsStore.js";
+import { createProjectStatisticsStore } from "./stores/projectStatisticsStore.js";
 import type { GroupStoreApi } from "./stores/groupStore.js";
 import { createGroupStore } from "./stores/groupStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
@@ -51,6 +53,7 @@ type ComposedStoreApi =
   & TaskStoreApi
   & ReviewDedupStoreApi
   & CostStoreApi
+  & ProjectStatisticsStoreApi
   & IntegrationStoreApi
   & ProjectStoreApi
   & PromptStoreApi
@@ -72,6 +75,7 @@ export class SqliteStateStore {
   private readonly taskStore: TaskStoreApi;
   private readonly reviewDedupStore: ReviewDedupStoreApi;
   private readonly costStore: CostStoreApi;
+  private readonly projectStatisticsStore: ProjectStatisticsStoreApi;
   private readonly integrationStore: IntegrationStoreApi;
   private readonly projectStore: ProjectStoreApi;
   private readonly promptStore: PromptStoreApi;
@@ -103,6 +107,7 @@ export class SqliteStateStore {
     });
     this.reviewDedupStore = createReviewDedupStore({ db: this.db, raw: this.raw });
     this.costStore = createCostStore({ raw: this.raw });
+    this.projectStatisticsStore = createProjectStatisticsStore({ raw: this.raw, costStore: this.costStore });
     this.integrationStore = createIntegrationStore({ db: this.db });
     this.projectStore = createProjectStore({ db: this.db, raw: this.raw });
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
@@ -121,6 +126,7 @@ export class SqliteStateStore {
       this.taskStore,
       this.reviewDedupStore,
       this.costStore,
+      this.projectStatisticsStore,
       this.integrationStore,
       this.projectStore,
       this.promptStore,

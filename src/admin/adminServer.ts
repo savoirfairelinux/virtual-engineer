@@ -25,6 +25,7 @@ import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
+import { registerProjectStatisticsRoutes } from "./adminProjectStatisticsRoutes.js";
 import { registerRuntimePolicyRoutes } from "./adminRuntimePolicyRoutes.js";
 import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
@@ -128,7 +129,8 @@ export interface AdminProviderSummary {
 }
 
 export interface AdminServerDependencies {
-  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">;
+  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">
+    & Partial<Pick<StateStore, "getProjectStatistics">>;
   /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
   allowUnauthenticatedAdmin?: boolean | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
@@ -500,6 +502,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
     ...dependencies.projectRoutes,
+  });
+  registerProjectStatisticsRoutes(router, {
+    stateStore: dependencies.stateStore,
+    projectStore: dependencies.projectStore,
+    concurrency: dependencies.concurrency,
   });
   registerConcurrencyRoutes(router, {
     concurrency: dependencies.concurrency,

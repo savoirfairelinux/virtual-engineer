@@ -48,6 +48,7 @@ const REGISTERED_USER_RULES: PolicyRuleInput[] = [
 
 const RESOURCE_OWNER_RULES: PolicyRuleInput[] = [
   { permission: PERMISSIONS.PROJECT_READ },
+  { permission: PERMISSIONS.PROJECT_STATISTICS_READ },
   { permission: PERMISSIONS.PROJECT_WRITE },
   { permission: PERMISSIONS.PROJECT_DELETE },
   { permission: PERMISSIONS.PROJECT_OPERATE },

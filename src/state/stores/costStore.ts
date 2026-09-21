@@ -7,11 +7,12 @@ import type {
   ModelUsageEntry,
   ModelUsageProject,
   ModelUsageSummary,
+  ProjectId,
 } from "../../interfaces.js";
 
 export interface CostStoreApi {
-  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
-  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
+  getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary>;
+  getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary>;
 }
 
 interface CostStoreContext {
@@ -44,7 +45,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * columns, which the startup migration (backfillLegacyCycleCosts) backfills
    * for every pre-existing row, so no per-read recompute is needed here.
    */
-  function getCostSummary(options?: { since?: Date }): Promise<CostSummary> {
+  function getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -94,8 +95,17 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       return bucket;
     };
 
-    const periodClause = sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : "";
-    const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
+    const clauses: string[] = [];
+    const queryArgs: Array<number | string> = [];
+    if (sinceEpochSeconds !== null) {
+      clauses.push("c.created_at >= ?");
+      queryArgs.push(sinceEpochSeconds);
+    }
+    if (options?.projectId !== undefined) {
+      clauses.push("t.project_id = ?");
+      queryArgs.push(options.projectId);
+    }
+    const periodClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
 
     // SQL aggregation of recorded snapshot costs + run counts per project and workflow bucket.
     const aggregateRows = raw
@@ -116,7 +126,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
          ${periodClause}
          GROUP BY t.project_id, p.name, t.state`
       )
-      .all(...periodArgs) as Array<{
+      .all(...queryArgs) as Array<{
         projectId: string | null;
         projectName: string | null;
         taskState: string;
@@ -184,7 +194,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * globally and per project. Relies solely on cost_model_id/cost_usd, which
    * the startup migration backfills for every pre-existing row.
    */
-  function getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary> {
+  function getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -255,7 +265,17 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       }
     };
 
-    const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
+    const clauses: string[] = [];
+    const queryArgs: Array<number | string> = [];
+    if (sinceEpochSeconds !== null) {
+      clauses.push("c.created_at >= ?");
+      queryArgs.push(sinceEpochSeconds);
+    }
+    if (options?.projectId !== undefined) {
+      clauses.push("t.project_id = ?");
+      queryArgs.push(options.projectId);
+    }
+    const periodClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
 
     // SQL aggregation of recorded model snapshots + run counts per project and workflow bucket.
     const aggregateRows = raw
@@ -272,10 +292,10 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
          FROM agent_cycles c
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
-         ${sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : ""}
+        ${periodClause}
          GROUP BY t.project_id, p.name, t.state, c.cost_model_id`
       )
-      .all(...periodArgs) as Array<{
+      .all(...queryArgs) as Array<{
         projectId: string | null;
         projectName: string | null;
         taskState: string;
