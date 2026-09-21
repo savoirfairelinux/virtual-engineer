@@ -549,6 +549,19 @@ describe("Orchestrator", () => {
     expect(stateStore.transition).not.toHaveBeenCalled();
   });
 
+  it("records a fatal error when re-reading task state fails", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockRejectedValue(new Error("state store unavailable")),
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+
+    await (orchestrator as any).handleFatalError(task, new Error("workspace clone failed"));
+
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(task.taskId, "workspace clone failed");
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", expect.any(Object));
+  });
+
   it("moves merged changes through ticket closing", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({

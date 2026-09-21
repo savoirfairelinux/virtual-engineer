@@ -1067,7 +1067,16 @@ export class Orchestrator {
   private async handleFatalError(task: Task, err: unknown): Promise<void> {
     // If the task no longer exists (deleted externally while running), there is
     // nothing to persist — log and bail out.
-    const current = await this.stateStore.getTask(task.taskId).catch(() => null);
+    let current: Task | null;
+    try {
+      current = await this.stateStore.getTask(task.taskId);
+    } catch (readErr: unknown) {
+      log.error(
+        { taskId: task.taskId, err: readErr },
+        "failed to re-read task state; continuing fatal error handling",
+      );
+      current = task;
+    }
     if (!current) {
       log.warn({ taskId: task.taskId, err }, "task no longer exists; cannot record fatal error");
       return;
