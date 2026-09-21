@@ -282,7 +282,8 @@ export class HostGitExecutor {
         attemptSignal.dispose();
 
         if (signal?.aborted === true) signal.throwIfAborted();
-        if (attempt >= this.cloneMaxAttempts || !isTransientCloneError(cloneError)) {
+        const isTransientFailure = attemptSignal.timedOut() || isTransientCloneError(cloneError);
+        if (attempt >= this.cloneMaxAttempts || !isTransientFailure) {
           throw cloneError;
         }
         await waitForCloneRetry(this.cloneRetryDelayMs, signal);

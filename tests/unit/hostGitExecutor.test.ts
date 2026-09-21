@@ -141,6 +141,38 @@ describe("HostGitExecutor", () => {
     }
   });
 
+  it("retries a clone after an attempt timeout", async () => {
+    vi.useFakeTimers();
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-timeout-retry-"));
+    let attempts = 0;
+    const git: GitRunner = vi.fn(async (_args, _cwd, _env, signal) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason ?? new Error("clone aborted")), { once: true });
+        });
+      }
+      return "";
+    });
+    const exec = new HostGitExecutor({
+      baseDir: tmpdir(),
+      git,
+      cloneMaxAttempts: 2,
+      cloneRetryDelayMs: 0,
+      cloneTimeoutMs: 1_000,
+    });
+
+    try {
+      const clone = exec.cloneRepo(workspace, "https://host/repo.git", "main");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(clone).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("does not retry non-transient clone failures", async () => {
     const git: GitRunner = vi.fn(async () => {
       throw new Error("git clone: remote: Repository not found");
