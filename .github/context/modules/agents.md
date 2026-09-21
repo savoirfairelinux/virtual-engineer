@@ -13,7 +13,7 @@ The `agent_execution` capability has eight engines: **Copilot** (`copilotAdapter
 ## Runtime wiring
 
 - `src/bootstrap/runtimeBuilder.ts` discovers every active `agent_execution` adapter by integration id and returns the first as the shared runner default.
-- `src/index.ts` configures every discovered adapter with the shared `PromptStore` and `WorkspaceRunner` at startup and after integration hot-refresh. This is required when multiple active integrations use the same provider; project-bound execution still resolves its exact integration adapter through `PluginManager`.
+- `src/index.ts` configures every discovered adapter with the shared `PromptStore` and `WorkspaceRunner` at startup and after integration hot-refresh. This is required when multiple active integrations use the same provider; project-bound execution still resolves its exact integration adapter through `PluginManager`, and review passes that adapter in `ReviewWorkspaceInput` so the sandbox runner cannot fall back to the process-wide default.
 
 ## Per-agent tool authorization
 

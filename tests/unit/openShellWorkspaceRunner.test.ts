@@ -7,6 +7,7 @@ import type { HostGitExecutor } from "../../src/workspace/hostGitExecutor.js";
 import type { OpenShellClient } from "../../src/openshell/openShellClient.js";
 import type {
   AgentAdapter,
+  ExternalChangeId,
   ProjectPushTargetRecord,
   ReviewWorkspaceInput,
   TaskContext,
@@ -82,7 +83,11 @@ function fakeCodingAdapter(spec: Partial<{ env: Record<string, string>; image: s
 }
 
 /** Minimal review adapter that builds a review container spec. */
-function fakeReviewAdapter(spec: Partial<{ env: Record<string, string>; image: string; command: string[] }> = {}): AgentAdapter {
+type TestReviewAdapter = AgentAdapter & {
+  buildReviewContainerSpec: ReturnType<typeof vi.fn>;
+};
+
+function fakeReviewAdapter(spec: Partial<{ env: Record<string, string>; image: string; command: string[] }> = {}): TestReviewAdapter {
   return {
     name: "copilot",
     buildReviewContainerSpec: vi.fn().mockReturnValue({
@@ -91,7 +96,25 @@ function fakeReviewAdapter(spec: Partial<{ env: Record<string, string>; image: s
       command: spec.command ?? ["node", "/agent-worker/dist/index.js"],
       egress: { hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] },
     }),
-  } as unknown as AgentAdapter;
+  } as unknown as TestReviewAdapter;
+}
+
+function reviewInput(
+  agentAdapter: AgentAdapter,
+  overrides: Partial<ReviewWorkspaceInput> = {},
+): ReviewWorkspaceInput & { agentAdapter: AgentAdapter } {
+  return {
+    changeId: "Iabc" as ExternalChangeId,
+    reviewStrategy: "ve_direct",
+    revisionNumber: 1,
+    patchset: 1,
+    repositoryName: "repo",
+    prompt: "review this diff",
+    systemPrompt: "review",
+    agentToken: "token",
+    agentAdapter,
+    ...overrides,
+  };
 }
 
 function reviewWorkerStdout(rawOutput: string): string {
@@ -338,18 +361,15 @@ describe("OpenShellWorkspaceRunner", () => {
         stderr: "",
       }),
     } as unknown as Partial<OpenShellClient>);
+    const reviewAdapter = fakeReviewAdapter();
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      agentAdapter: fakeReviewAdapter(),
+      agentAdapter: reviewAdapter,
       resolvePolicy: ({ mode }) => (mode === "review" ? "version: 1\nprocess:\n  run_as_user: sandbox\n  run_as_group: sandbox\n" : undefined),
     });
     const abortController = new AbortController();
-    const input = {
-      changeId: "Iabc",
-      prompt: "review this diff",
-      abortSignal: abortController.signal,
-    } as unknown as ReviewWorkspaceInput;
+    const input = reviewInput(reviewAdapter, { abortSignal: abortController.signal });
     const out = await runner.runReviewInDocker(handle, input);
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
       name: "ve-t1",
@@ -377,6 +397,30 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(out.rawOutput).toBe("ok");
   });
 
+  it("uses the project-bound adapter supplied by the review input", async () => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({
+        code: 0,
+        stdout: reviewWorkerStdout("ok"),
+        stderr: "",
+      }),
+    } as unknown as Partial<OpenShellClient>);
+    const defaultAdapter = fakeReviewAdapter({ image: "default:img" });
+    const projectAdapter = fakeReviewAdapter({ image: "project:img" });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      agentAdapter: defaultAdapter,
+    });
+    const input = reviewInput(projectAdapter);
+
+    await runner.runReviewInDocker(handle, input);
+
+    expect(projectAdapter.buildReviewContainerSpec).toHaveBeenCalledWith(input);
+    expect(defaultAdapter.buildReviewContainerSpec).not.toHaveBeenCalled();
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({ from: "project:img" }));
+  });
+
   it("forwards review stderr chunks and the OpenShell exec timeout", async () => {
     const onStderrChunk = vi.fn();
     const execInSandbox = vi.fn().mockImplementation(async (input: {
@@ -385,18 +429,15 @@ describe("OpenShellWorkspaceRunner", () => {
       input.onStderrChunk?.("review-event\n");
       return { code: 0, stdout: reviewWorkerStdout("ok"), stderr: "review-event\n" };
     });
-    const runner = new OpenShellWorkspaceRunner({
+    const reviewAdapter = fakeReviewAdapter();
+    const runnerWithReviewAdapter = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
-      agentAdapter: fakeReviewAdapter(),
+      agentAdapter: reviewAdapter,
       execTimeoutSec: 3600,
     });
 
-    await runner.runReviewInDocker(
-      handle,
-      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
-      { onStderrChunk },
-    );
+    await runnerWithReviewAdapter.runReviewInDocker(handle, reviewInput(reviewAdapter), { onStderrChunk });
 
     expect(onStderrChunk).toHaveBeenCalledWith("review-event\n");
     expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
@@ -413,18 +454,16 @@ describe("OpenShellWorkspaceRunner", () => {
         stderr: "",
       }),
     } as unknown as Partial<OpenShellClient>);
+    const reviewAdapter = fakeReviewAdapter({
+      env: { REVIEW_MODE: "1", [credentialKey]: "secret" },
+    });
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      agentAdapter: fakeReviewAdapter({
-        env: { REVIEW_MODE: "1", [credentialKey]: "secret" },
-      }),
+      agentAdapter: reviewAdapter,
     });
 
-    await runner.runReviewInDocker(
-      handle,
-      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
-    );
+    await runner.runReviewInDocker(handle, reviewInput(reviewAdapter));
 
     expect(client.createProvider).toHaveBeenCalledWith({
       name: "ve-t1-agent",
@@ -445,15 +484,16 @@ describe("OpenShellWorkspaceRunner", () => {
         stderr: "timed out",
       }),
     } as unknown as Partial<OpenShellClient>);
+    const reviewAdapter = fakeReviewAdapter();
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      agentAdapter: fakeReviewAdapter(),
+      agentAdapter: reviewAdapter,
     });
 
     await expect(runner.runReviewInDocker(
       handle,
-      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+      reviewInput(reviewAdapter),
     )).rejects.toThrow(/exited with code 124.*timed out/i);
   });
 
@@ -619,15 +659,16 @@ describe("OpenShellWorkspaceRunner", () => {
 
   it("fails the review run when the spec carries an unmapped secret-looking variable", async () => {
     const client = fakeClient();
+    const reviewAdapter = fakeReviewAdapter({ env: { REVIEW_MODE: "1", VENDOR_SECRET: "leak-me" } });
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      agentAdapter: fakeReviewAdapter({ env: { REVIEW_MODE: "1", VENDOR_SECRET: "leak-me" } }),
+      agentAdapter: reviewAdapter,
     });
 
     await expect(runner.runReviewInDocker(
       handle,
-      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+      reviewInput(reviewAdapter),
     )).rejects.toThrow(/unmapped credential "VENDOR_SECRET"/);
 
     expect(client.createSandbox).not.toHaveBeenCalled();
@@ -822,17 +863,15 @@ describe("OpenShellWorkspaceRunner", () => {
         stderr: "",
       }),
     } as unknown as Partial<OpenShellClient>);
+    const reviewAdapter = fakeReviewAdapter();
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      agentAdapter: fakeReviewAdapter(),
+      agentAdapter: reviewAdapter,
       resolvePolicy: () => undefined,
     });
 
-    await runner.runReviewInDocker(
-      handle,
-      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
-    );
+    await runner.runReviewInDocker(handle, reviewInput(reviewAdapter));
 
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
       policyYaml: expect.stringContaining("run_as_user: sandbox"),
@@ -872,14 +911,13 @@ describe("OpenShellWorkspaceRunner", () => {
     const client = fakeClient({
       execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: reviewWorkerStdout("ok"), stderr: "" }),
     } as unknown as Partial<OpenShellClient>);
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, agentAdapter: fakeReviewAdapter() });
+    const reviewAdapter = fakeReviewAdapter();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, agentAdapter: reviewAdapter });
     const skillSourcesJson = '[{"source":"example-org/agent-skills","installAll":true}]';
 
-    await runner.runReviewInDocker(handle, {
-      changeId: "Iabc",
-      prompt: "review this diff",
+    await runner.runReviewInDocker(handle, reviewInput(reviewAdapter, {
       skillSourcesJson,
-    } as unknown as ReviewWorkspaceInput);
+    }));
 
     expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot", undefined);
     const installOrder = (installSkillSources as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
