@@ -52,7 +52,7 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         <Field label="Confirm password" required>
           <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
-        <Field label="Role" required hint="viewer = overview + tasks (read-only) · operator = all config incl. integrations/OAuth/webhooks · admin = adds user management + audit">
+        <Field label="Role" required hint="viewer = read-only · operator = owned and shared resources · admin = full instance access">
           <FieldSelect data-tour="user-form-role" value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
           </FieldSelect>

@@ -11,7 +11,7 @@
  * Returns 501 when no promptStore is configured.
  * Returns 404 for unknown prompt ids.
  * Returns 400 when content is missing on PUT.
- * Returns 409 when attempting to create duplicate or delete built-in.
+ * Returns 409 when attempting to modify or delete a built-in.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -19,6 +19,7 @@ import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { AdminServerDependencies } from "../../src/admin/adminServer.js";
 import type { PromptStore, Prompt, PromptType } from "../../src/interfaces.js";
 import type { Server } from "node:http";
+import { randomUUID } from "node:crypto";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -51,21 +52,12 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
       return updated;
     }),
     createPrompt: vi.fn(async (label: string, content: string, promptType: PromptType) => {
-      // Check for duplicates (case-insensitive)
-      const normalized = label.toLowerCase().replace(/\s+/g, "-");
-      for (const p of data.values()) {
-        if (p.label.toLowerCase() === label.toLowerCase()) {
-          const err = new Error("Prompt already exists");
-          (err as any).code = "DUPLICATE";
-          throw err;
-        }
-      }
       if (!label || label.trim().length === 0) {
         const err = new Error("Invalid prompt label");
         (err as any).code = "INVALID_LABEL";
         throw err;
       }
-      const id = normalized;
+      const id = `prompt-${randomUUID()}`;
       const prompt: Prompt = { id, label, content, promptType, updatedAt: new Date() };
       data.set(id, prompt);
       return prompt;
@@ -200,6 +192,7 @@ describe("Admin API — Prompt routes", () => {
 
       expect(system).toMatchObject({
         id: "system_generic_code",
+        builtin: true,
         label: "System Prompt — Generic (code)",
         content: "You are a software engineer.",
       });
@@ -293,31 +286,37 @@ describe("Admin API — Prompt routes", () => {
   // ── PUT /api/admin/prompts/:id ────────────────────────────────────────────
 
   describe("PUT /api/admin/prompts/:id", () => {
+    beforeEach(async () => {
+      await promptStore.upsertPrompt("custom-system", "Original system");
+      await promptStore.upsertPrompt("custom-instructions", "Original instructions");
+      vi.mocked(promptStore.upsertPrompt).mockClear();
+    });
+
     it("returns 200 with the updated prompt on success", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/custom-system", {
         method: "PUT",
         body: { content: "You are an expert TypeScript engineer." },
       });
 
       expect(status).toBe(200);
       const prompt = body["prompt"] as Record<string, unknown>;
-      expect(prompt["id"]).toBe("system_generic_code");
+      expect(prompt["id"]).toBe("custom-system");
       expect(prompt["content"]).toBe("You are an expert TypeScript engineer.");
     });
 
     it("persists the new content (subsequent GET returns updated value)", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/instructions_review", {
+      await fetchFromServer(server, "/api/admin/prompts/custom-instructions", {
         method: "PUT",
         body: { content: "Only write tests, never implementation." },
       });
 
-      const { body } = await fetchFromServer(server, "/api/admin/prompts/instructions_review");
+      const { body } = await fetchFromServer(server, "/api/admin/prompts/custom-instructions");
       const prompt = body["prompt"] as Record<string, unknown>;
       expect(prompt["content"]).toBe("Only write tests, never implementation.");
     });
 
     it("returns 400 when content field is missing", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/custom-system", {
         method: "PUT",
         body: {},
       });
@@ -327,7 +326,7 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("returns 400 when content is not a string", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/custom-system", {
         method: "PUT",
         body: { content: 42 },
       });
@@ -338,7 +337,7 @@ describe("Admin API — Prompt routes", () => {
 
     it("returns 400 when body is missing entirely", async () => {
       const addr = server.address() as { port: number };
-      const res = await fetch(`http://127.0.0.1:${addr.port}/api/admin/prompts/system_generic_code`, {
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/admin/prompts/custom-system`, {
         method: "PUT",
       });
 
@@ -376,7 +375,7 @@ describe("Admin API — Prompt routes", () => {
 
     it("accepts multi-line content with newlines preserved in the response", async () => {
       const multiline = "Line 1\nLine 2\n\nLine 4";
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/custom-system", {
         method: "PUT",
         body: { content: multiline },
       });
@@ -387,13 +386,13 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("calls promptStore.upsertPrompt with the correct id and content", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/instructions_review", {
+      await fetchFromServer(server, "/api/admin/prompts/custom-instructions", {
         method: "PUT",
         body: { content: "New instructions" },
       });
 
       expect(vi.mocked(promptStore.upsertPrompt)).toHaveBeenCalledWith(
-        "instructions_review",
+        "custom-instructions",
         "New instructions"
       );
     });
@@ -484,21 +483,19 @@ describe("Admin API — Prompt routes", () => {
       expect(status).toBe(400);
     });
 
-    it("returns 409 when creating a prompt with a duplicate label", async () => {
-      // First create a prompt
-      await fetchFromServer(server, "/api/admin/prompts", {
+    it("returns independent prompts when labels match", async () => {
+      const first = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
         body: { label: "Unique Name", content: "content1", promptType: "instructions" },
       });
 
-      // Try to create with the same label
       const { status, body } = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
         body: { label: "Unique Name", content: "content2", promptType: "instructions" },
       });
 
-      expect(status).toBe(409);
-      expect(body["error"]).toMatch(/already exists|duplicate/i);
+      expect(status).toBe(201);
+      expect((body["prompt"] as Prompt).id).not.toBe((first.body["prompt"] as Prompt).id);
     });
 
     it("returns 501 when promptStore is not configured", async () => {

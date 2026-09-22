@@ -309,18 +309,19 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(prompt.content).toBe("This is custom content");
     });
 
-    it("normalizes label to id (lowercase, spaces to dashes)", async () => {
+    it("generates an opaque id independent of the label", async () => {
       const prompt = await store.createPrompt("My Test Prompt", "content", "instructions");
 
-      expect(prompt.id).toMatch(/^my-test-prompt/);
+      expect(prompt.id).toMatch(/^prompt-[0-9a-f-]{36}$/);
     });
 
-    it("rejects duplicate label names with appropriate error", async () => {
-      await store.createPrompt("Test Prompt", "content1", "instructions");
+    it("creates independent prompts with the same label", async () => {
+      const first = await store.createPrompt("Test Prompt", "content1", "instructions");
+      const second = await store.createPrompt("Test Prompt", "content2", "instructions");
 
-      await expect(
-        store.createPrompt("Test Prompt", "content2", "instructions")
-      ).rejects.toThrow(/already exists|duplicate/i);
+      expect(second.id).not.toBe(first.id);
+      expect((await store.getPrompt(first.id))?.content).toBe("content1");
+      expect((await store.getPrompt(second.id))?.content).toBe("content2");
     });
 
     it("rejects invalid (empty) labels", async () => {
@@ -424,22 +425,20 @@ describe("SqliteStateStore — PromptStore", () => {
 
   // ── normalizePromptId ──────────────────────────────────────────────────────
 
-  describe("normalizePromptId (internal helper)", () => {
-    // Note: normalizePromptId is a private method; test indirectly via createPrompt
-
-    it("converts spaces to dashes when generating id from label", async () => {
+  describe("generated prompt ids", () => {
+    it("accepts spaces in the label", async () => {
       const prompt = await store.createPrompt("My Test Label", "content", "instructions");
-      expect(prompt.id).toMatch(/^my-test-label/);
+      expect(prompt.id).toMatch(/^prompt-[0-9a-f-]{36}$/);
     });
 
-    it("converts uppercase to lowercase in id", async () => {
+    it("accepts uppercase labels", async () => {
       const prompt = await store.createPrompt("UPPERCASE LABEL", "content", "instructions");
-      expect(prompt.id).toMatch(/^uppercase-label/);
+      expect(prompt.label).toBe("UPPERCASE LABEL");
     });
 
-    it("handles mixed case normalization", async () => {
+    it("preserves mixed case labels", async () => {
       const prompt = await store.createPrompt("Mixed Case Label", "content", "instructions");
-      expect(prompt.id).toMatch(/^mixed-case-label/);
+      expect(prompt.label).toBe("Mixed Case Label");
     });
 
     it("truncates very long labels to reasonable length", async () => {

@@ -252,6 +252,7 @@ export interface ApiPrompt {
   label: string;
   content: string;
   promptType: "system" | "instructions";
+  builtin?: boolean | undefined;
   ownerUserId?: string | null;
   updatedAt: string;
   usedByCount?: number;

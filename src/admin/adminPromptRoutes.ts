@@ -4,6 +4,7 @@ import { writeJson, readBody, toIsoTimestamp, requireStore } from "./adminRouteU
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
 import { canAccessResource } from "./authorization/policyEngine.js";
+import { BUILT_IN_PROMPT_IDS } from "../domain/prompts.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-prompts");
@@ -108,6 +109,10 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     }
     const existing = await deps.promptStore.getPrompt(promptId);
     if (!existing) { writeJson(res, 404, { error: "Prompt not found" }); return; }
+    if (BUILT_IN_PROMPT_IDS.has(promptId)) {
+      writeJson(res, 409, { error: "Built-in prompts are read-only. Create a private copy to customize this prompt." });
+      return;
+    }
     const body = await readBody(req);
     if (!body || typeof body["content"] !== "string") {
       writeJson(res, 400, { error: "Prompt content must be provided as a string" });
@@ -154,6 +159,7 @@ function serializePrompt(prompt: Prompt): Record<string, unknown> {
     label: prompt.label,
     content: prompt.content,
     promptType: prompt.promptType,
+    builtin: BUILT_IN_PROMPT_IDS.has(prompt.id),
     ownerUserId: prompt.ownerUserId,
     updatedAt: toIsoTimestamp(prompt.updatedAt),
   };

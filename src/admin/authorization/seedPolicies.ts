@@ -21,7 +21,6 @@ const OPERATOR_RULES: PolicyRuleInput[] = [
   { permission: PERMISSIONS.OVERVIEW_READ },
   { permission: PERMISSIONS.CONCURRENCY_READ },
   { permission: PERMISSIONS.SYSTEM_READ },
-  { permission: PERMISSIONS.SYSTEM_WRITE },
 ];
 
 /**

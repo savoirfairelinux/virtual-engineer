@@ -41,8 +41,8 @@ function isEffectivePolicyRule(rule: PolicyRule): rule is EffectivePolicyRule {
 
 /**
  * Fold a set of policy rules into an {@link EffectivePermissions}. The `admin`
- * role yields a superuser context that bypasses all rule evaluation; every other
- * role is driven entirely by the supplied `rules` (default-deny).
+ * role yields a superuser context that bypasses all rule evaluation. Other roles
+ * require grants (default-deny); viewers retain only read permissions.
  */
 export function buildEffectivePermissions(
   role: UserRole,
@@ -91,6 +91,28 @@ export function buildEffectivePermissions(
       existing.add(rule.resourceId);
     } else {
       grants.set(rule.permission, new Set([rule.resourceId]));
+    }
+  }
+
+  if (role === "viewer") {
+    const delegatedProjects = grants.get("project.owner");
+    if (delegatedProjects !== undefined) {
+      for (const permission of projectOwnerGrants) {
+        if (!permission.endsWith(".read")) continue;
+        const existing = grants.get(permission);
+        if (existing === ALL_RESOURCES) continue;
+        grants.set(permission, delegatedProjects === ALL_RESOURCES
+          ? ALL_RESOURCES
+          : new Set([...(existing ?? []), ...delegatedProjects]));
+      }
+    }
+    for (const permission of grants.keys()) {
+      if (!permission.endsWith(".read")) grants.delete(permission);
+    }
+    for (const permissions of [resourceOwnerGrants, projectOwnerGrants, registeredUserGrants]) {
+      for (const permission of permissions) {
+        if (!permission.endsWith(".read")) permissions.delete(permission);
+      }
     }
   }
 

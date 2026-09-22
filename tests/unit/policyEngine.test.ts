@@ -8,6 +8,7 @@ import {
   can,
   canAccessResource,
   hasPotentialResourceAccess,
+  serializeEffectivePermissions,
 } from "../../src/admin/authorization/policyEngine.js";
 
 let seq = 0;
@@ -54,6 +55,49 @@ describe("policyEngine — buildEffectivePermissions", () => {
     expect(perms.isSuperuser).toBe(false);
     expect(can(perms, "project.read", "p1")).toBe(false);
     expect(can(perms, "overview.read")).toBe(false);
+  });
+
+  it("bounds all viewer grants to reads, including owned and shared resources", () => {
+    const perms = buildEffectivePermissions("viewer", [
+      rule("prompt.create", null),
+      rule("prompt.write", "shared"),
+      rule("system.write", null),
+      rule("policy.manage", null),
+      systemRule("prompt.read", "resource_owner"),
+      systemRule("prompt.write", "resource_owner"),
+      systemRule("prompt.delete", "registered_users"),
+    ]);
+    const owned = { type: "prompt", id: "owned", ownerUserId: "viewer" } as const;
+    expect(canAccessResource(perms, "prompt.read", owned, "viewer")).toBe(true);
+    expect(canAccessResource(perms, "prompt.write", owned, "viewer")).toBe(false);
+    for (const permission of ["prompt.create", "prompt.write", "prompt.delete", "system.write", "policy.manage"]) {
+      expect(hasPotentialResourceAccess(perms, permission)).toBe(false);
+    }
+    expect(serializeEffectivePermissions(perms)).toEqual({
+      superuser: false,
+      grants: {},
+      resourceOwnerGrants: ["prompt.read"],
+      projectOwnerGrants: [],
+      registeredUserGrants: [],
+    });
+  });
+
+  it.each(["delegated", null])("preserves delegated viewer reads for owner scope %s", (scope) => {
+    const perms = buildEffectivePermissions("viewer", [
+      rule("project.owner", scope),
+      rule("project.read", "also-readable"),
+      systemRule("project.read", "project_owners"),
+      systemRule("task.read", "project_owners"),
+      systemRule("task.operate", "project_owners"),
+    ]);
+    expect(can(perms, "project.read", "delegated")).toBe(true);
+    expect(can(perms, "project.read", "also-readable")).toBe(true);
+    expect(can(perms, "project.read", "other")).toBe(scope === null);
+    expect(canAccessResource(perms, "task.read", {
+      type: "task", id: "task", projectId: "delegated", ownerUserId: "another-user",
+    }, "viewer")).toBe(true);
+    expect(hasPotentialResourceAccess(perms, "task.operate")).toBe(false);
+    expect(hasPotentialResourceAccess(perms, "project.owner")).toBe(false);
   });
 
   it("a null-resource rule grants the permission on all resources", () => {

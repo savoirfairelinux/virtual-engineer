@@ -7,6 +7,8 @@
 - New agents cannot be created through the admin API without both references. Each ID must resolve to an existing `prompts` row with the matching role, and updates cannot clear either reference.
 - Runtime resolution is fail-closed: agents missing either prompt, referencing a missing prompt, or crossing the `system` / `instructions` roles do not receive a generic or integration-specific fallback.
 - Fresh databases seed exactly five built-ins: `system_generic_code`, `instructions_generic_code`, `instructions_feedback_code`, `system_review`, and `instructions_review`. Provider-specific aliases and alias override files are not seeded or migrated.
+- Built-ins remain shared NULL-owner templates, not per-user copies. The admin API rejects their modification/deletion; existing startup override files remain supported for compatibility. Creating a private copy uses normal `createPrompt` with the caller as owner and never repoints existing agents automatically.
+- `createPrompt` generates opaque `prompt-<UUID>` ids independent of labels, allowing the same label within or across accounts. Existing ids and references are preserved without a schema migration. Internal `upsertPrompt` retains its existing startup/fixture behavior; admin edits only reach it for non-built-in ids.
 - Startup preserves unknown prompt rows, normalizes unsupported stored roles to `instructions`, and derives referenced roles from existing agent and project-override references. A prompt referenced in both roles is cloned for the instructions side and those references are repointed without changing content; prompt hydration also defensively maps any unsupported role to `instructions`, and obsolete `user_*_review.md` files are ignored.
 
 ## Resource Ownership
@@ -16,6 +18,12 @@
 - Ownership foreign keys use SQLite `NO ACTION`: a user that still owns resources cannot be deleted until those resources are deleted or reassigned. `deleteUser` wraps session/binding/user removal in one transaction and the admin API maps the FK conflict to 409, so a failed deletion performs no partial cleanup and cannot turn private rows into legacy-public rows.
 - Tasks do not duplicate ownership. `tasks.project_id` identifies the parent project, and all `task.*` authorization resolves against that project's ownership and policy scope. OAuth app policy resource IDs use the normalized composite key `provider|baseUrl`; the table primary key remains `(provider, base_url)`.
 - `createProject`, `createAgent`, `createPrompt`, `upsertIntegration`, and `upsertOAuthApp` accept an optional owner for legacy/internal callers. Store hydration normalizes persisted owners to `string | null`, and update paths preserve the existing owner.
+
+## User Roles and Policies
+
+- `updateUser` changes the role and replaces direct built-in `Operator`/`Viewer` bindings in one transaction when the role changes. Custom direct bindings and group memberships are preserved; admin accounts need no default policy binding. Changing only account availability does not reset policy choices.
+- Effective permissions impose a read-only ceiling on `viewer`, including resource ownership and explicit user/group grants. Delegated project/task reads remain available, but mutation and access delegation do not. Self-service password changes and logout remain authenticated operations.
+- The seeded `Operator` policy no longer grants `system.write`. Administrators retain full access; an operator needs an explicit policy grant to change instance settings. Built-in policy rules are refreshed at startup.
 
 ## Project Integration Bindings
 

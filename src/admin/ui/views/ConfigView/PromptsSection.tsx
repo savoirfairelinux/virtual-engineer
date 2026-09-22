@@ -9,14 +9,6 @@ import type { ConfigSectionProps } from "./index.tsx";
 
 type PromptFilter = "all" | "system" | "instructions";
 
-const BUILTIN_PROMPT_IDS = new Set([
-  "system_generic_code",
-  "instructions_generic_code",
-  "instructions_feedback_code",
-  "system_review",
-  "instructions_review",
-]);
-
 function formatPromptType(promptType: ApiPrompt["promptType"]): string {
   return promptType === "system" ? "System Prompt" : "Instructions Prompt";
 }
@@ -24,7 +16,7 @@ function formatPromptType(promptType: ApiPrompt["promptType"]): string {
 export function PromptsSection({ prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const { can } = useCurrentUser();
   const canCreate = can("prompt.create");
-  const routeId = route.section === "prompts" && (route.mode === "detail" || route.mode === "edit") ? route.id : null;
+  const routeId = route.section === "prompts" && (route.mode === "detail" || route.mode === "edit" || route.mode === "copy") ? route.id : null;
   const routePrompt = routeId ? prompts.find((prompt) => prompt.id === routeId) : undefined;
   const [filter, setFilter] = useState<PromptFilter>("all");
   const filteredPrompts = filter === "all" ? prompts : prompts.filter((p) => p.promptType === filter);
@@ -51,25 +43,30 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
     if (!routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
     return (
       <PromptFormModal
+        key={`detail:${routePrompt.id}`}
         prompt={routePrompt}
         readOnly
-        onEdit={can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null) ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
+        onEdit={!routePrompt.builtin && can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null) ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
+        onCopy={canCreate ? () => navigate({ section: "prompts", mode: "copy", id: routePrompt.id }) : undefined}
         onClose={() => navigate({ section: "prompts", mode: "list" })}
         onSaved={handleSaved}
       />
     );
   }
 
-  if (route.mode === "create" || route.mode === "edit") {
-    if (route.mode === "edit" && !routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
-    const canUseForm = route.mode === "create"
+  if (route.mode === "create" || route.mode === "edit" || route.mode === "copy") {
+    if (route.mode !== "create" && !routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
+    const canUseForm = route.mode === "create" || route.mode === "copy"
       ? canCreate
-      : routePrompt !== undefined && can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null);
+      : routePrompt !== undefined && !routePrompt.builtin && can("prompt.write", routePrompt.id, routePrompt.ownerUserId ?? null);
     return (
       <PromptFormModal
+        key={`${route.mode}:${routeId ?? "new"}`}
         prompt={route.mode === "edit" ? routePrompt : undefined}
+        sourcePrompt={route.mode === "copy" ? routePrompt : undefined}
+        onCopy={route.mode === "edit" && routePrompt && canCreate ? () => navigate({ section: "prompts", mode: "copy", id: routePrompt.id }) : undefined}
         readOnly={!canUseForm}
-        onClose={() => navigate(route.mode === "edit" && routeId
+        onClose={() => navigate(route.mode !== "create" && routeId
           ? { section: "prompts", mode: "detail", id: routeId }
           : { section: "prompts", mode: "list" })}
         onSaved={handleSaved}
@@ -148,7 +145,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-ghost)", minWidth: "70px", textAlign: "right" }}>
               {p.content.length.toLocaleString()} ch
             </span>
-            {can("prompt.delete", p.id, p.ownerUserId ?? null) && !BUILTIN_PROMPT_IDS.has(p.id) && (
+            {can("prompt.delete", p.id, p.ownerUserId ?? null) && !p.builtin && (
               <button
                 className="iconbtn"
                 title="Delete"

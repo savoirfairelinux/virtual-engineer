@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import type { ApiPrompt } from "../../types.ts";
+import { Icon } from "../../components/Icon.tsx";
 
 const PROMPT_TYPE_LABELS = {
   system: "System Prompt",
@@ -25,18 +26,21 @@ const PROMPT_TYPE_EXAMPLES = {
 
 interface Props {
   prompt?: ApiPrompt | undefined;
+  sourcePrompt?: ApiPrompt | undefined;
   /** When true (viewer role), the form is read-only — no save button, disabled inputs. */
   readOnly?: boolean | undefined;
   onEdit?: (() => void) | undefined;
+  onCopy?: (() => void) | undefined;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: Props) {
+export function PromptFormModal({ prompt, sourcePrompt, readOnly, onEdit, onCopy, onClose, onSaved }: Props) {
   const isEdit = !!prompt;
-  const [label, setLabel] = useState(prompt?.label ?? "");
-  const [content, setContent] = useState(prompt?.content ?? "");
-  const [promptType, setPromptType] = useState<"system" | "instructions">(prompt?.promptType ?? "instructions");
+  const initialPrompt = prompt ?? sourcePrompt;
+  const [label, setLabel] = useState(initialPrompt?.label ?? "");
+  const [content, setContent] = useState(initialPrompt?.content ?? "");
+  const [promptType, setPromptType] = useState<"system" | "instructions">(initialPrompt?.promptType ?? "instructions");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,7 +70,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
       width={700}
     >
       <FormRow>
-        <Field label="Label" required hint="Short name used to generate the prompt ID">
+        <Field label="Label" required>
           <FieldInput
             data-tour="prompt-form-label"
             value={label}
@@ -103,6 +107,9 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>
+          {readOnly && onCopy && (
+            <button className="btn primary" onClick={onCopy}><Icon name="copy" size={14} /> Create private copy</button>
+          )}
           {readOnly && onEdit && (
             <button className="btn primary" onClick={onEdit}>Edit prompt</button>
           )}

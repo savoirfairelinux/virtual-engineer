@@ -1397,7 +1397,7 @@ export interface PromptStore {
   getPrompts(): Promise<Prompt[]>;
   getPrompt(id: string): Promise<Prompt | null>;
   upsertPrompt(id: string, content: string): Promise<Prompt>;
-  /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad input (400). */
+  /** Create a prompt with an opaque id. Labels may be reused; empty labels are rejected. */
   createPrompt(label: string, content: string, promptType: PromptType, ownerUserId?: string | null): Promise<Prompt>;
   /** Delete a prompt. Rejects if not found (404) or if it is built in (403). */
   deletePrompt(id: string): Promise<void>;

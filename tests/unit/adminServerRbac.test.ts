@@ -435,6 +435,109 @@ describe("adminServer PBAC project scoping", () => {
     return { headers: { authorization: `Bearer ${token}` } };
   }
 
+  it("keeps built-in prompts read-only even for administrators", async () => {
+    const admin = await setupAdmin();
+    const original = await store.getPrompt("system_generic_code");
+    const response = await fetch(`${baseUrl}/api/admin/prompts/system_generic_code`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ content: "global replacement" }),
+    });
+    expect(response.status).toBe(409);
+    expect((await store.getPrompt("system_generic_code"))?.content).toBe(original?.content);
+  });
+
+  it("creates private independent copies of a shared template with the same label", async () => {
+    const admin = await setupAdmin();
+    const owner = await createUserAndLogin(admin, "copy-owner", "operator");
+    const peer = await createUserAndLogin(admin, "copy-peer", "operator");
+    const template = await store.getPrompt("system_generic_code");
+    const copies: Array<{ id: string; ownerUserId: string }> = [];
+    for (const session of [owner, peer]) {
+      const response = await fetch(`${baseUrl}/api/admin/prompts`, {
+        method: "POST",
+        headers: { ...authed(session.token).headers, "content-type": "application/json" },
+        body: JSON.stringify({ label: template!.label, content: template!.content, promptType: "system" }),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json() as { prompt: { id: string; ownerUserId: string } };
+      expect(body.prompt.ownerUserId).toBe(session.user.id);
+      copies.push(body.prompt);
+    }
+    expect(copies[0]!.id).not.toBe(copies[1]!.id);
+    const update = await fetch(`${baseUrl}/api/admin/prompts/${copies[0]!.id}`, {
+      method: "PUT",
+      headers: { ...authed(owner.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ content: "private customization" }),
+    });
+    expect(update.status).toBe(200);
+    expect((await store.getPrompt(copies[1]!.id))?.content).toBe(template!.content);
+    expect((await store.getPrompt(template!.id))?.content).toBe(template!.content);
+    expect((await fetch(`${baseUrl}/api/admin/prompts/${copies[0]!.id}`, authed(peer.token))).status).toBe(403);
+  });
+
+  it("makes demoted viewers read-only despite ownership and explicit policy grants", async () => {
+    const admin = await setupAdmin();
+    const operator = await createUserAndLogin(admin, "demoted-owner", "operator");
+    const prompt = await store.createPrompt("Owned before demotion", "original", "instructions", operator.user.id);
+    const policy = await store.createPolicy({ name: "Explicit write grant" });
+    await store.setPolicyRules(policy.id, [{ permission: "prompt.write", resourceId: prompt.id }]);
+    await store.createBinding({ policyId: policy.id, principalType: "user", principalId: operator.user.id });
+    const demotion = await fetch(`${baseUrl}/api/admin/users/${operator.user.id}`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ role: "viewer" }),
+    });
+    expect(demotion.status).toBe(200);
+    expect((await fetch(`${baseUrl}/api/admin/prompts/${prompt.id}`, authed(operator.token))).status).toBe(200);
+    for (const [method, path, body] of [
+      ["PUT", `/api/admin/prompts/${prompt.id}`, { content: "changed" }],
+      ["POST", "/api/admin/prompts", { label: "New prompt", content: "new", promptType: "instructions" }],
+      ["DELETE", `/api/admin/prompts/${prompt.id}`, {}],
+      ["PUT", "/api/admin/settings", { maxAgentCycles: 2 }],
+    ] as const) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { ...authed(operator.token).headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, `${method} ${path}`).toBe(403);
+    }
+    expect((await store.getPrompt(prompt.id))?.content).toBe("original");
+    const bindings = await store.listBindingsForPrincipal("user", operator.user.id);
+    expect(bindings.some(binding => binding.policyId === "builtin:operator")).toBe(false);
+    expect(bindings.some(binding => binding.policyId === "builtin:viewer")).toBe(true);
+    expect(bindings.some(binding => binding.policyId === policy.id)).toBe(true);
+  });
+
+  it("grants the operator creation bundle when promoting a viewer", async () => {
+    const admin = await setupAdmin();
+    const viewer = await createUserAndLogin(admin, "promoted-viewer", "viewer");
+    const promotion = await fetch(`${baseUrl}/api/admin/users/${viewer.user.id}`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ role: "operator" }),
+    });
+    expect(promotion.status).toBe(200);
+    const create = await fetch(`${baseUrl}/api/admin/prompts`, {
+      method: "POST",
+      headers: { ...authed(viewer.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ label: "After promotion", content: "new", promptType: "instructions" }),
+    });
+    expect(create.status).toBe(201);
+  });
+
+  it("denies global settings writes to the default operator", async () => {
+    const admin = await setupAdmin();
+    const operator = await createUserAndLogin(admin, "settings-operator", "operator");
+    const response = await fetch(`${baseUrl}/api/admin/settings`, {
+      method: "PUT",
+      headers: { ...authed(operator.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ maxAgentCycles: 2 }),
+    });
+    expect(response.status).toBe(403);
+  });
+
   it("isolates owned prompts and allows scoped group sharing", async () => {
     const admin = await setupAdmin();
     const owner = await createUserAndLogin(admin, "prompt-owner", "operator");
@@ -919,10 +1022,10 @@ describe("adminServer PBAC project scoping", () => {
     expect(sharedBody.apps).toEqual([expect.objectContaining({ baseUrl: created.app.baseUrl })]);
   });
 
-  it("lets project owners and delegated owner groups read project tasks", async () => {
+  it.each(["operator", "viewer"])("lets delegated %s groups read tasks with role-bounded delegation", async (role) => {
     const admin = await setupAdmin();
     const owner = await createUserAndLogin(admin, "task-owner", "operator");
-    const delegate = await createUserAndLogin(admin, "task-delegate", "viewer");
+    const delegate = await createUserAndLogin(admin, "task-delegate", role);
     const agent = await store.createAgent({
       name: "Task owner agent",
       type: "coding",
@@ -1005,7 +1108,7 @@ describe("adminServer PBAC project scoping", () => {
         body: JSON.stringify({ permissions: ["project.read", "task.read"] }),
       }
     );
-    expect(redelegate.status).toBe(200);
+    expect(redelegate.status).toBe(role === "viewer" ? 403 : 200);
 
     const revoke = await fetch(
       `${baseUrl}/api/admin/projects/${project.id}/access/groups/${group.id}`,
