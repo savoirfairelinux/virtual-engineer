@@ -157,21 +157,3 @@ export function decryptToken(encrypted: string, adminAuthSecret: string | undefi
 
   return decipher.update(ciphertext).toString("utf8") + decipher.final("utf8");
 }
-
-/**
- * Returns true if `value` was produced by `encryptToken` — either a `plain:`-prefixed
- * token (no secret configured) or a valid AES-256-GCM ciphertext for the current secret.
- *
- * Use this guard to prevent double-encrypting a credential that is already stored
- * encrypted (e.g. when a `PUT` round-trips an unchanged password field).
- */
-export function isEncryptedToken(value: string, adminAuthSecret: string | undefined): boolean {
-  if (isLegacyPlainToken(value) || isVersionedEncryptedToken(value)) return true;
-  if (!adminAuthSecret) return false;
-  try {
-    decryptToken(value, adminAuthSecret);
-    return true;
-  } catch {
-    return false;
-  }
-}
