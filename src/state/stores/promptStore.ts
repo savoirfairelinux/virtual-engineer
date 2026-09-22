@@ -1,10 +1,12 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "path";
 import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { Prompt, PromptType } from "../../interfaces.js";
 import { prompts } from "../schema.js";
 import * as schema from "../schema.js";
+import { BUILT_IN_PROMPT_IDS } from "../../domain/prompts.js";
 
 export interface PromptStoreApi {
   getPrompts(): Promise<Prompt[]>;
@@ -19,14 +21,6 @@ interface PromptStoreContext {
   db: BetterSQLite3Database<typeof schema>;
   dbDir: string;
 }
-
-const BUILT_IN_PROMPT_IDS = new Set([
-  "system_generic_code",
-  "instructions_generic_code",
-  "instructions_feedback_code",
-  "system_review",
-  "instructions_review",
-]);
 
 const BUILT_IN_SYSTEM_PROMPT_IDS = new Set([
   "system_generic_code",
@@ -49,16 +43,6 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
       ownerUserId: row.ownerUserId,
       updatedAt: row.updatedAt,
     };
-  }
-
-  function normalizePromptId(label: string): string {
-    return label
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9_-]/g, "")
-      .replace(/^-+|-+$/g, "")
-      .substring(0, 64);
   }
 
   function defaultPromptLabel(id: string): string {
@@ -193,16 +177,8 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
     promptType: PromptType,
     ownerUserId?: string | null
   ): Promise<Prompt> {
-    const id = normalizePromptId(label);
-
-    if (!id || !/^[a-z][a-z0-9_-]{0,63}$/.test(id)) {
-      throw new Error(`Invalid prompt id derived from label: "${id}"`);
-    }
-
-    const existing = await getPrompt(id);
-    if (existing) {
-      throw new Error(`Prompt with id "${id}" already exists`);
-    }
+    if (!label.trim()) throw new Error("Prompt label must not be empty");
+    const id = `prompt-${randomUUID()}`;
 
     const now = new Date();
     await db.insert(prompts).values({

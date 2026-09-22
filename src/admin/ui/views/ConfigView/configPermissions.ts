@@ -37,7 +37,7 @@ export function canAccessConfigRoute(can: Can, hasPermission: HasPermission, rou
   if (route.section === "runtime-policies") return can("policy.manage");
 
   const resourceType = route.section.slice(0, -1);
-  return route.mode === "create"
+  return route.mode === "create" || route.mode === "copy"
     ? can(`${resourceType}.create`)
     : hasPermission(`${resourceType}.write`);
 }

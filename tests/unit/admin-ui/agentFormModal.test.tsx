@@ -60,6 +60,32 @@ describe("AgentFormModal model discovery", () => {
     vi.unstubAllGlobals();
   });
 
+  it("distinguishes duplicate labels in every prompt selector", () => {
+    render(<AgentFormModal
+      integrations={[]}
+      plugins={[]}
+      prompts={prompts.flatMap(prompt => [
+        { ...prompt, builtin: true },
+        { ...prompt, id: `${prompt.id}-copy-one` },
+        { ...prompt, id: `${prompt.id}-copy-two` },
+      ])}
+      onClose={vi.fn()}
+      onSaved={vi.fn()}
+    />);
+    for (const [field, type, label] of [
+      ["System Prompt", "system", "System"],
+      ["Instructions Prompt", "instructions", "Instructions"],
+      ["Feedback Instructions Prompt", "instructions", "Instructions"],
+    ]) {
+      const select = screen.getByRole("combobox", { name: new RegExp(`^${field}`) }) as HTMLSelectElement;
+      expect(Array.from(select.options).slice(1).map(option => [option.value, option.text])).toEqual([
+        [type, `${label} (built-in)`],
+        [`${type}-copy-one`, `${label} (${type}-copy-one)`],
+        [`${type}-copy-two`, `${label} (${type}-copy-two)`],
+      ]);
+    }
+  });
+
   it("loads Copilot models through the model discovery endpoint", async () => {
     const requestedPaths: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {

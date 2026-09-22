@@ -7,6 +7,7 @@ import {
 
 describe("Configuration routing", () => {
   it.each<[string, ConfigRoute]>([
+    ["#config/prompts/system_review/copy", { section: "prompts", mode: "copy", id: "system_review" }],
     ["#config/integrations", { section: "integrations", mode: "list" }],
     ["#config/integrations/new", { section: "integrations", mode: "create" }],
     ["#config/integrations/github%20primary", {
@@ -40,6 +41,7 @@ describe("Configuration routing", () => {
   });
 
   it.each<ConfigRoute>([
+    { section: "prompts", mode: "copy", id: "prompt/with spaces" },
     { section: "projects", mode: "list" },
     { section: "projects", mode: "create" },
     { section: "projects", mode: "detail", id: "project/with spaces" },

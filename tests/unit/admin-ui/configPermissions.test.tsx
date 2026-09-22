@@ -12,6 +12,7 @@ import { canViewProjectStatistics } from "../../../src/admin/ui/views/ConfigView
 import type { ConfigSectionId } from "../../../src/admin/ui/views/ConfigView/configRouting.js";
 import type { ApiAgent, ApiIntegration, ApiMe, ApiProject, ApiPrompt } from "../../../src/admin/ui/types.js";
 import { api } from "../../../src/admin/ui/api.js";
+import { Icon } from "../../../src/admin/ui/components/Icon.js";
 
 const integration: ApiIntegration = {
   id: "integration-1",
@@ -78,7 +79,7 @@ const baseProps: ConfigViewData = {
   onRefresh: vi.fn(),
 };
 
-function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>) {
+function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>, data: Partial<ConfigViewData> = {}) {
   window.history.replaceState({}, "", hash);
   const user: ApiMe = {
     id: "limited-user",
@@ -93,7 +94,7 @@ function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>) 
       canOperate: false,
       can: makeCan(user),
     }}>
-      <ConfigView {...baseProps} />
+      <ConfigView {...baseProps} {...data} />
     </CurrentUserProvider>,
   );
 }
@@ -101,6 +102,87 @@ function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>) 
 describe("Configuration PBAC", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("creates a private editable copy without mutating the built-in template", async () => {
+    const template: ApiPrompt = { ...prompt, id: "system_generic_code", label: "Default system", promptType: "system", builtin: true };
+    const post = vi.spyOn(api, "post").mockResolvedValue({ prompt: { ...template, id: "private-copy" } });
+    const put = vi.spyOn(api, "put");
+    renderWithGrants("#config/prompts/system_generic_code", {
+      "prompt.read": "*", "prompt.create": "*", "prompt.write": "*",
+    }, { prompts: [template] });
+    expect(screen.queryByRole("button", { name: "Edit prompt" })).toBeNull();
+    const icon = screen.getByRole("button", { name: "Create private copy" }).querySelector("path")?.getAttribute("d");
+    const fallback = render(<Icon name="dot" />);
+    expect(icon).toBeTruthy();
+    expect(icon).not.toBe(fallback.container.querySelector("path")?.getAttribute("d"));
+    fallback.unmount();
+    fireEvent.click(screen.getByRole("button", { name: "Create private copy" }));
+    await screen.findByRole("button", { name: "Create prompt" });
+    expect(post).not.toHaveBeenCalled();
+    const label = screen.getByDisplayValue(template.label) as HTMLInputElement;
+    expect(label.readOnly).toBe(false);
+    fireEvent.change(screen.getByDisplayValue(template.content), { target: { value: "Private content" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create prompt" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/api/admin/prompts", {
+      label: template.label, content: "Private content", promptType: "system",
+    }));
+    expect(put).not.toHaveBeenCalled();
+    expect(template.content).toBe("Instructions");
+  });
+
+  it("guards edited private copies on navigation and unload, then clears on save", async () => {
+    const guardRef: { current: (() => boolean) | null } = { current: null };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.spyOn(api, "post").mockResolvedValue({ prompt: { ...prompt, id: "new-copy" } });
+    renderWithGrants("#config/prompts/custom-prompt/copy", {
+      "prompt.read": "*", "prompt.create": "*",
+    }, { onNavigationGuardChange: guard => { guardRef.current = guard; } });
+    expect(guardRef.current?.()).toBe(true);
+    fireEvent.change(screen.getByDisplayValue(prompt.content), { target: { value: "Unsaved copy" } });
+    expect(guardRef.current?.()).toBe(false);
+    expect(confirm).toHaveBeenCalledWith("Discard unsaved changes?");
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(window.location.hash).toBe("#config/prompts/custom-prompt/copy");
+    expect(screen.getByDisplayValue("Unsaved copy")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Create prompt" }));
+    await screen.findByRole("heading", { name: "Prompts" });
+    confirm.mockClear();
+    expect(guardRef.current?.()).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes homonymous prompts in the list", () => {
+    renderWithGrants("#config/prompts", { "prompt.read": "*" }, {
+      prompts: [
+        { ...prompt, id: "system_generic_code", builtin: true },
+        { ...prompt, id: "private-one" },
+        { ...prompt, id: "private-two" },
+      ],
+    });
+    for (const suffix of ["built-in", "private-one", "private-two"]) {
+      expect(screen.getByLabelText(`Open prompt Custom prompt (${suffix})`)).toBeDefined();
+    }
+  });
+
+  it("keeps direct built-in edit routes read-only even with prompt.write", () => {
+    renderWithGrants("#config/prompts/system_generic_code/edit", {
+      "prompt.read": "*", "prompt.write": "*",
+    }, { prompts: [{ ...prompt, id: "system_generic_code", builtin: true }] });
+    expect((screen.getByDisplayValue(prompt.content) as HTMLTextAreaElement).readOnly).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create private copy" })).toBeNull();
+  });
+
+  it("does not offer private copies without prompt.create", () => {
+    renderWithGrants("#config/prompts/system_generic_code", { "prompt.read": "*" }, {
+      prompts: [{ ...prompt, id: "system_generic_code", builtin: true }],
+    });
+    expect(screen.queryByRole("button", { name: "Create private copy" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit prompt" })).toBeNull();
   });
 
   it("uses the statistics permission for project statistics deep links", () => {
