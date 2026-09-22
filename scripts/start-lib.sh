@@ -43,6 +43,15 @@ oidc_mode() {
   return 1
 }
 
+normalize_review_diff_tmpfs_size() {
+  local value="${1:-2g}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*[mg]$ ]]; then
+    printf 'REVIEW_DIFF_TMPFS_SIZE must be a positive integer followed by m or g (for example 512m or 2g).\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+
 normalize_openshell_compute_driver() {
   local value="${1:-}"
   case "$value" in

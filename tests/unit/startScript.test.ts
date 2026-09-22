@@ -168,6 +168,21 @@ describe("install.sh bootstrap", () => {
 
 describe("start.sh helpers", () => {
   it.each([
+    { value: "", expected: "2g" },
+    { value: "512m", expected: "512m" },
+    { value: "4g", expected: "4g" },
+  ])("resolves a bounded review diff tmpfs size: '$value'", ({ value, expected }) => {
+    expect(runHelper('normalize_review_diff_tmpfs_size "$1"', [value])).toBe(expected);
+  });
+
+  it.each(["0", "0m", "0g", "-1g", "unlimited", "2.5g", "2g,exec", "100%"])(
+    "rejects an invalid review diff tmpfs size: %s",
+    (value) => {
+      expect(() => runHelper('normalize_review_diff_tmpfs_size "$1"', [value])).toThrow();
+    },
+  );
+
+  it.each([
     { clusterReady: "true", noNewPrivileges: "true", expected: "yes" },
     { clusterReady: "false", noNewPrivileges: "false", expected: "yes" },
     { clusterReady: "false", noNewPrivileges: "true", expected: "no" },
@@ -573,6 +588,16 @@ describe("start.sh helpers", () => {
 });
 
 describe("OpenShell deployment contract", () => {
+  it("keeps review diffs in a configurable size-limited tmpfs", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}")');
+    expect(script).toContain('--tmpfs "/tmp/ve-review-diffs:rw,size=${REVIEW_DIFF_TMPFS_SIZE}"');
+    expect(script.indexOf("REVIEW_DIFF_TMPFS_SIZE=$("))
+      .toBeLessThan(script.indexOf('ensure_dir "$DATA_DIR"'));
+    expect(script).toContain('run_config_hash "$ROOT_DIR/.env" "${DOCKER_RUN_ARGS[@]}"');
+  });
+
   it("excludes runtime data from Docker build contexts", () => {
     const dockerignore = readFileSync(".dockerignore", "utf8");
 

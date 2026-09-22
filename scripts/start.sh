@@ -72,6 +72,8 @@ done
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 OPENSHELL_GW_LOCAL_PORT="${OPENSHELL_GW_LOCAL_PORT:-30808}"
+REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}") \
+  || error "Invalid review diff tmpfs size."
 
 # ─── Ensure a directory exists and is owned by the current user ───────────────
 ensure_dir() {
@@ -776,7 +778,7 @@ DOCKER_RUN_ARGS=(
   -v /etc/localtime:/etc/localtime:ro
   -v "$DATA_DIR:/app/data:Z"
   -v "$HOME/.config/gh:/ve-gh:ro"
-  --tmpfs /tmp/ve-review-diffs:rw,size=512m
+  --tmpfs "/tmp/ve-review-diffs:rw,size=${REVIEW_DIFF_TMPFS_SIZE}"
   "${SSH_AGENT_ARGS[@]}"
   "${OPENSHELL_GATEWAY_ARGS[@]}"
 )

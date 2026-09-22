@@ -68,6 +68,23 @@ These are read directly from `process.env` and are **not** part of `AppConfig`:
 | `OPENSHELL_OIDC_CLIENT_SECRET` | — | `src/index.ts` | Presence enables the OpenShell client-credentials re-login path. |
 | `SSH_AUTH_SOCK` | — | `src/admin/adminIntegrationRoutes.ts`, `src/admin/skillSourceDiscovery.ts` | Host-side SSH agent for admin-side discovery/validation only; never forwarded into a sandbox. |
 
+### Docker launcher
+
+`scripts/start.sh` reads `.env` without overriding existing environment variables.
+These launcher settings are not part of `AppConfig`:
+
+| Var | Default | Notes |
+|---|---|---|
+| `REVIEW_DIFF_TMPFS_SIZE` | `2g` | Size limit for the orchestrator's `/tmp/ve-review-diffs` tmpfs, shared by concurrent Gerrit diff fetches. Accepts a positive integer followed by `m` (MiB) or `g` (GiB); empty uses the default, zero and malformed values fail before startup side effects. |
+
+This remains RAM-backed storage (potentially swapped), not a disk quota. Size it
+for available memory and concurrent reviews; Git shallow fetches can still be
+large. Review diff directories are cleaned after success or failure. Set, for
+example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun `./scripts/start.sh` while
+no tasks are active. The mount option participates in the existing run-config
+hash, so changing it recreates the orchestrator container. This setting does not
+change OpenShell sandbox limits or Kubernetes deployment storage.
+
 ## Boot-time validation
 
 `getConfig()` parses `process.env` once and throws on invalid combinations, listing all offending fields. Tests call `resetConfig()` to invalidate the singleton cache between cases.
