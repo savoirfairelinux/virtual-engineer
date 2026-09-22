@@ -12,6 +12,49 @@ import { Drawer } from "../../../src/admin/ui/components/Drawer.js";
 import { RowCard } from "../../../src/admin/ui/components/RowCard.js";
 import { Toggle } from "../../../src/admin/ui/components/Toggle.js";
 
+const GENERATED_PUBLIC_KEY = "ssh-ed25519 AAAATEST virtual-engineer-gerrit";
+
+function renderGeneratedSshIntegration(): void {
+  render(createElement(IntegrationFormModal, {
+    integration: {
+      id: "gerrit-1",
+      provider: "gerrit",
+      name: "Primary Gerrit",
+      enabled: true,
+      capabilities: ["source_control"],
+      domainCapabilities: ["source_control"],
+      config: {
+        sshPrivateKeyEnc: "********",
+        sshPublicKey: GENERATED_PUBLIC_KEY,
+      },
+    },
+    plugins: [{
+      provider: "gerrit",
+      name: "Gerrit",
+      capabilities: ["source_control"],
+      domainCapabilities: ["source_control"],
+      requiredFields: [],
+      agentConfigFields: [],
+      supportsSshAuth: true,
+    }],
+    onClose: vi.fn(),
+    onSaved: vi.fn(),
+    onDirtyChange: vi.fn(),
+  }));
+}
+
+function replaceProperty(target: object, propertyKey: PropertyKey, value: unknown): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, propertyKey);
+  Object.defineProperty(target, propertyKey, { configurable: true, value });
+  return () => {
+    if (descriptor) {
+      Object.defineProperty(target, propertyKey, descriptor);
+    } else {
+      Reflect.deleteProperty(target, propertyKey);
+    }
+  };
+}
+
 describe("ConfigPageSurface", () => {
   it("renders modal content as an inline form page", () => {
     const html = renderToStaticMarkup(createElement(
@@ -119,55 +162,149 @@ describe("ConfigPageSurface", () => {
   });
 
   it("copies a generated SSH key without the Clipboard API", async () => {
-    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
     const execCommand = vi.fn(() => true);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const restoreClipboard = replaceProperty(navigator, "clipboard", undefined);
+    const restoreExecCommand = replaceProperty(document, "execCommand", execCommand);
+
+    try {
+      renderGeneratedSshIntegration();
+
+      const copyButton = screen.getByRole("button", { name: "Copy" });
+      const focus = vi.spyOn(copyButton, "focus");
+      copyButton.focus();
+      fireEvent.click(copyButton);
+
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(await screen.findByRole("button", { name: "Copied!" })).toBeDefined();
+      expect(focus).toHaveBeenCalledTimes(2);
+    } finally {
+      restoreClipboard();
+      restoreExecCommand();
+    }
+  });
+
+  it("falls back when the Clipboard API rejects the SSH key copy", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard denied"));
+    const execCommand = vi.fn(() => true);
+    const restoreClipboard = replaceProperty(navigator, "clipboard", { writeText });
+    const restoreExecCommand = replaceProperty(document, "execCommand", execCommand);
+
+    try {
+      renderGeneratedSshIntegration();
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+      expect(await screen.findByRole("button", { name: "Copied!" })).toBeDefined();
+      expect(writeText).toHaveBeenCalledWith(GENERATED_PUBLIC_KEY);
+      expect(execCommand).toHaveBeenCalledWith("copy");
+    } finally {
+      restoreClipboard();
+      restoreExecCommand();
+    }
+  });
+
+  it("replaces SSH copy success with an error when a retry fails", async () => {
+    const writeText = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Clipboard denied"));
+    const execCommand = vi.fn(() => false);
+    const restoreClipboard = replaceProperty(navigator, "clipboard", { writeText });
+    const restoreExecCommand = replaceProperty(document, "execCommand", execCommand);
+
+    try {
+      renderGeneratedSshIntegration();
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Copied!" }));
+
+      expect((await screen.findByRole("alert")).textContent).toContain("Copy failed");
+      expect(screen.getByRole("button", { name: "Copy" })).toBeDefined();
+      expect(screen.queryByRole("button", { name: "Copied!" })).toBeNull();
+    } finally {
+      restoreClipboard();
+      restoreExecCommand();
+    }
+  });
+
+  it("clears a stale SSH copy error after regenerating the key", async () => {
+    const restoreClipboard = replaceProperty(navigator, "clipboard", undefined);
+    const restoreExecCommand = replaceProperty(document, "execCommand", vi.fn(() => false));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      sshPrivateKeyEnc: "encrypted-new-key",
+      sshPublicKey: "ssh-ed25519 AAAANEW virtual-engineer-gerrit",
+    }), { status: 200 })));
+
+    try {
+      renderGeneratedSshIntegration();
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Copy failed");
+
+      fireEvent.click(screen.getByRole("button", { name: "Regenerate key" }));
+
+      expect(await screen.findByDisplayValue("ssh-ed25519 AAAANEW virtual-engineer-gerrit")).toBeDefined();
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      restoreClipboard();
+      restoreExecCommand();
+    }
+  });
+
+  it("copies an OAuth device code without the Clipboard API", async () => {
+    const execCommand = vi.fn(() => true);
+    const restoreClipboard = replaceProperty(navigator, "clipboard", undefined);
+    const restoreExecCommand = replaceProperty(document, "execCommand", execCommand);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      userCode: "ABCD-EFGH",
+      verificationUri: "https://github.com/login/device",
+      deviceCode: "device-code",
+    }), { status: 200 })));
 
     try {
       render(createElement(IntegrationFormModal, {
         integration: {
-          id: "gerrit-1",
-          provider: "gerrit",
-          name: "Primary Gerrit",
+          id: "copilot-1",
+          provider: "copilot",
+          name: "GitHub Copilot",
           enabled: true,
-          capabilities: ["source_control"],
-          domainCapabilities: ["source_control"],
-          config: {
-            sshPrivateKeyEnc: "********",
-            sshPublicKey: "ssh-ed25519 AAAATEST virtual-engineer-gerrit",
-          },
+          capabilities: ["agent_execution"],
+          domainCapabilities: ["agent_execution"],
         },
         plugins: [{
-          provider: "gerrit",
-          name: "Gerrit",
-          capabilities: ["source_control"],
-          domainCapabilities: ["source_control"],
+          provider: "copilot",
+          name: "GitHub Copilot",
+          capabilities: ["agent_execution"],
+          domainCapabilities: ["agent_execution"],
           requiredFields: [],
           agentConfigFields: [],
-          supportsSshAuth: true,
+          oauth: {
+            mode: "device",
+            tokenField: "token",
+            providerName: "GitHub",
+            heading: "GitHub device authorization",
+            connectLabel: "Connect GitHub",
+            reconnectLabel: "Reconnect GitHub",
+            pendingLabel: "Authorization pending",
+            startPath: "/api/admin/oauth/start",
+            completePath: "/api/admin/oauth/complete",
+          },
         }],
         onClose: vi.fn(),
         onSaved: vi.fn(),
         onDirtyChange: vi.fn(),
       }));
 
+      fireEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+      expect(await screen.findByText("ABCD-EFGH")).toBeDefined();
       fireEvent.click(screen.getByRole("button", { name: "Copy" }));
 
       expect(execCommand).toHaveBeenCalledWith("copy");
-      expect(await screen.findByRole("button", { name: "Copied!" })).toBeDefined();
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeDefined();
     } finally {
-      if (clipboardDescriptor) {
-        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      } else {
-        Reflect.deleteProperty(navigator, "clipboard");
-      }
-      if (execCommandDescriptor) {
-        Object.defineProperty(document, "execCommand", execCommandDescriptor);
-      } else {
-        Reflect.deleteProperty(document, "execCommand");
-      }
+      vi.unstubAllGlobals();
+      restoreClipboard();
+      restoreExecCommand();
     }
   });
 

@@ -31,6 +31,9 @@ const CAPABILITY_LABEL: Record<string, string> = {
 };
 
 function copyTextWithExecCommand(text: string): void {
+  const previouslyFocusedElement = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
@@ -47,6 +50,9 @@ function copyTextWithExecCommand(text: string): void {
     }
   } finally {
     textarea.remove();
+    if (previouslyFocusedElement?.isConnected) {
+      previouslyFocusedElement.focus();
+    }
   }
 }
 
@@ -429,6 +435,8 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
   }, [mode]);
 
   const handleModeChange = (m: SshAuthMode) => {
+    setCopied(false);
+    setCopyError(null);
     setMode(m);
     if (m !== "generated") {
       onConfigChange("sshPrivateKeyEnc", "");
@@ -440,6 +448,8 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
   };
 
   const handleGenerate = async () => {
+    setCopied(false);
+    setCopyError(null);
     setGenerating(true);
     setGenError(null);
     try {
