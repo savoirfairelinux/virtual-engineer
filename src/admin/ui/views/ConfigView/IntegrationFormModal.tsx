@@ -460,6 +460,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {
+      setCopied(false);
       setCopyError("Copy failed. Select the public key and copy it manually.");
     });
   };
