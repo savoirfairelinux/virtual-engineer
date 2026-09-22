@@ -122,6 +122,49 @@ describe("AgentFormModal model discovery", () => {
     ]);
   });
 
+  it("uses each Copilot model's reasoning efforts and defaults unsupported models", () => {
+    render(<AgentFormModal
+      integrations={[{
+        ...cachedCopilotIntegration,
+        discoveredResources: {
+          models: [
+            { id: "reasoning", name: "Reasoning", supportedReasoningEfforts: ["low", "high"] },
+            { id: "no-reasoning", name: "No reasoning" },
+          ],
+        },
+      }]}
+      plugins={[{
+        ...copilotPlugin,
+        agentConfigFields: [{
+          key: "reasoningEffort", label: "Reasoning Effort", type: "select", required: false,
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High" },
+          ],
+        }],
+      }]}
+      prompts={prompts}
+      onClose={vi.fn()}
+      onSaved={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Provider settings/ }));
+    const effort = screen.getByLabelText("Reasoning Effort") as HTMLSelectElement;
+    expect(Array.from(effort.options).map(option => option.value)).toEqual([""]);
+
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "reasoning" } });
+    expect(Array.from(effort.options).map(option => option.value)).toEqual(["", "low", "high"]);
+    fireEvent.change(effort, { target: { value: "high" } });
+    expect(effort.value).toBe("high");
+
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "no-reasoning" } });
+    expect(Array.from(effort.options).map(option => option.value)).toEqual([""]);
+    expect(effort.value).toBe("");
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "reasoning" } });
+    expect(effort.value).toBe("");
+  });
+
   it("enables cached models after switching away from a pending discovery", async () => {
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
       const path = String(input);
@@ -152,5 +195,49 @@ describe("AgentFormModal model discovery", () => {
       expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
     });
     expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it.each([
+    { efforts: ["low", "high"], expected: "high" },
+    { efforts: ["low"], expected: undefined },
+    { efforts: [], expected: undefined },
+  ])("saves only supported reasoning from existing agent settings: $efforts", async ({ efforts, expected }) => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+    render(<AgentFormModal
+      agent={{
+        id: "agent-1", name: "Reviewer", type: "review", integrationId: "copilot-cached",
+        enabled: true, maxConcurrent: 1, model: "model", reviewStrategy: "ve_direct",
+        systemPromptId: "system", instructionsPromptId: "instructions", feedbackInstructionsPromptId: null,
+        modelConfig: { model: "model", providerOptions: { reasoningEffort: "high", otherOption: "keep" } },
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      }}
+      integrations={[{
+        ...cachedCopilotIntegration,
+        discoveredResources: { models: [{ id: "model", name: "Model", supportedReasoningEfforts: efforts }] },
+      }]}
+      plugins={[{
+        ...copilotPlugin,
+        agentConfigFields: [{
+          key: "reasoningEffort", label: "Reasoning Effort", type: "select", required: false,
+          options: [{ value: "low", label: "Low" }, { value: "high", label: "High" }],
+        }],
+      }]}
+      prompts={prompts}
+      onClose={vi.fn()}
+      onSaved={onSaved}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agents/agent-1", expect.objectContaining({
+      method: "PUT",
+      body: expect.any(String),
+    }));
+    const request = (fetchMock.mock.calls as unknown[][])[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as { modelConfig: { providerOptions: Record<string, unknown> } };
+    expect(body.modelConfig.providerOptions["reasoningEffort"]).toBe(expected);
+    expect(body.modelConfig.providerOptions["otherOption"]).toBe("keep");
   });
 });

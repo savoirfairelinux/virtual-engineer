@@ -231,7 +231,27 @@ async function runSession(
 
   try {
     await initializeCopilotClient(client);
-    const session = await client.createSession(buildCopilotSessionConfig(options));
+    const config = buildCopilotSessionConfig(options);
+    if (config.reasoningEffort !== undefined) {
+      let supportedEfforts: readonly string[] = [];
+      try {
+        const models = await client.listModels();
+        supportedEfforts = models.find((model) => model.id === config.model)?.supportedReasoningEfforts ?? [];
+      } catch {
+        emitEvent('session.warning', {
+          message: 'Could not discover model reasoning capabilities; using provider default.',
+        });
+      }
+      if (!supportedEfforts.includes(config.reasoningEffort)) {
+        emitEvent('session.warning', {
+          message: 'Requested reasoning effort is not advertised for this model; using provider default.',
+          model: config.model,
+          requestedEffort: config.reasoningEffort,
+        });
+        delete config.reasoningEffort;
+      }
+    }
+    const session = await client.createSession(config);
     return { session, client, localCliServer };
   } catch (err) {
     await client.stop().catch(() => { /* ignore */ });

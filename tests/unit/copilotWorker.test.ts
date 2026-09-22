@@ -5,6 +5,7 @@ import type { ChildProcess } from "child_process";
 
 const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
+  listModels: vi.fn(),
   clientStart: vi.fn(),
   clientGetAuthStatus: vi.fn(),
   clientStop: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../../agent-worker/node_modules/@github/copilot-sdk/dist/index.js", () 
   CopilotClient: vi.fn(function CopilotClient() {
     return {
       createSession: mocks.createSession,
+      listModels: mocks.listModels,
       start: mocks.clientStart,
       getAuthStatus: mocks.clientGetAuthStatus,
       stop: mocks.clientStop,
@@ -101,6 +103,7 @@ describe("runCopilotAgent", () => {
     session = makeFakeSession();
     mocks.spawn.mockReturnValue(child);
     mocks.createSession.mockResolvedValue(session);
+    mocks.listModels.mockResolvedValue([{ id: "gpt-4.1", supportedReasoningEfforts: ["low", "high"] }]);
     mocks.clientStart.mockResolvedValue(undefined);
     mocks.clientGetAuthStatus.mockResolvedValue({ isAuthenticated: true });
     mocks.clientStop.mockResolvedValue(undefined);
@@ -239,10 +242,55 @@ describe("runCopilotAgent", () => {
     expect(session.sendAndWait).toHaveBeenCalledWith({ prompt: "Review the patch" }, 1_000);
     const sessionOptions = mocks.createSession.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(sessionOptions["reasoningEffort"]).toBeUndefined();
+    expect(mocks.listModels).not.toHaveBeenCalled();
     expect(sessionOptions["skillDirectories"]).toBeUndefined();
     expect(sessionOptions["enableConfigDiscovery"]).toBe(true);
     expect(mocks.emitEvent).toHaveBeenCalledWith("session.start", expect.objectContaining({
       mode: "review",
+    }));
+    await run.cleanup();
+  });
+
+  it.each(["codegen", "review"] as const)("defaults unsupported reasoning for %s sessions", async (mode) => {
+    process.env["COPILOT_REASONING_EFFORT"] = "high";
+    mocks.listModels.mockResolvedValue([
+      { id: "savoirfairelinux/DeepInfra/deepseek-ai%2FDeepSeek-V4.1-Flash" },
+      { id: "other", supportedReasoningEfforts: ["high"] },
+    ]);
+
+    const run = await runCopilotAgent("Run the task", makeOptions({
+      mode,
+      model: "savoirfairelinux/DeepInfra/deepseek-ai%2FDeepSeek-V4.1-Flash",
+    }));
+
+    expect(mocks.listModels).toHaveBeenCalledOnce();
+    expect(mocks.createSession.mock.calls[0]?.[0]).not.toHaveProperty("reasoningEffort");
+    await run.cleanup();
+  });
+
+  it.each([
+    { models: [] },
+    { models: [{ id: "gpt-4.1", supportedReasoningEfforts: [] }] },
+    { models: [{ id: "gpt-4.1", supportedReasoningEfforts: ["low"] }] },
+  ])("defaults reasoning when the requested level is not advertised: $models", async ({ models }) => {
+    process.env["COPILOT_REASONING_EFFORT"] = "high";
+    mocks.listModels.mockResolvedValue(models);
+
+    const run = await runCopilotAgent("Run the task", makeOptions());
+
+    expect(mocks.createSession.mock.calls[0]?.[0]).not.toHaveProperty("reasoningEffort");
+    await run.cleanup();
+  });
+
+  it("uses provider defaults if model capability discovery fails", async () => {
+    process.env["COPILOT_REASONING_EFFORT"] = "high";
+    mocks.listModels.mockRejectedValue(new Error("Models unavailable"));
+
+    const run = await runCopilotAgent("Run the task", makeOptions());
+
+    expect(mocks.createSession.mock.calls[0]?.[0]).not.toHaveProperty("reasoningEffort");
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.warning", expect.objectContaining({
+      message: expect.stringContaining("provider default"),
     }));
     await run.cleanup();
   });

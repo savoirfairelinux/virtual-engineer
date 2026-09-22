@@ -91,7 +91,12 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   );
   const selectedIntegration = agentIntegrations.find((integration) => integration.id === form.integrationId);
   const selectedPlugin = plugins.find((plugin) => plugin.provider === selectedIntegration?.provider);
-  const agentConfigFields = selectedPlugin?.agentConfigFields ?? [];
+  const supportedReasoningEfforts = availableModels.find((model) => model.id === form.model)?.supportedReasoningEfforts ?? [];
+  const agentConfigFields = (selectedPlugin?.agentConfigFields ?? []).map((field) =>
+    selectedIntegration?.provider === "copilot" && field.key === "reasoningEffort"
+      ? { ...field, options: (field.options ?? []).filter((option) => supportedReasoningEfforts.includes(option.value)) }
+      : field
+  );
   const reviewStrategies = form.type === "review" ? selectedPlugin?.reviewStrategies ?? [] : [];
   const nativeReview = form.reviewStrategy === "copilot_native";
 
@@ -146,7 +151,17 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   }, [form.integrationId, nativeReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k: keyof AgentForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setForm((prev) => ({ ...prev, [k]: e.target.value }));
+    const value = e.target.value;
+    setForm((prev) => {
+      const providerOptions = { ...prev.providerOptions };
+      if (k === "model" && selectedProvider === "copilot") {
+        const efforts = availableModels.find((model) => model.id === value)?.supportedReasoningEfforts ?? [];
+        if (!efforts.includes(providerOptions["reasoningEffort"] ?? "")) {
+          delete providerOptions["reasoningEffort"];
+        }
+      }
+      return { ...prev, [k]: value, providerOptions };
+    });
   };
 
   const setIntegration = (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -203,6 +218,10 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
         form.providerOptions,
         existingProviderOptions,
       );
+      if (selectedProvider === "copilot"
+        && !supportedReasoningEfforts.includes(String(providerOptions["reasoningEffort"] ?? ""))) {
+        delete providerOptions["reasoningEffort"];
+      }
       const toolAuthorization = serializeToolAuthorization(toolAuth, selectedIntegration?.provider);
       if (toolAuthorization !== undefined) {
         providerOptions["toolAuthorization"] = toolAuthorization;
@@ -345,7 +364,9 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
                 {agentConfigFields.map((field) => {
                   if (nativeReview && field.key === "reasoningEffort") return null;
                   if (field.dependsOn && form.providerOptions[field.dependsOn.field] !== field.dependsOn.value) return null;
-                  const value = form.providerOptions[field.key] ?? "";
+                  const rawValue = form.providerOptions[field.key] ?? "";
+                  const value = selectedProvider === "copilot" && field.key === "reasoningEffort"
+                    && !supportedReasoningEfforts.includes(rawValue) ? "" : rawValue;
                   return field.type === "select" ? (
                     <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
                       <FieldSelect value={value} onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}>
