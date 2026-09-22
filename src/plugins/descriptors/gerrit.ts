@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { promises as fs, constants as fsConstants } from "node:fs";
 import type { ProviderDescriptor } from "../registry.js";
-import type { Integration } from "../../interfaces.js";
 import {
   GerritSshConnector,
   listRepositoriesViaSsh,
@@ -43,32 +42,6 @@ export const gerritConfigSchema = sshConnectionConfigSchema.extend({
   /** Git author email used when the agent creates commits. */
   gitAuthorEmail: z.string().min(1).default("ve@virtual-engineer.local"),
 });
-
-export type GerritPluginConfig = z.infer<typeof gerritConfigSchema>;
-
-/**
- * Parse a Gerrit integration's stored JSON config through the Zod schema so
- * that defaults (sshPort, …) are applied and required fields
- * (sshHost, sshUser) are validated in one step.  Empty strings are removed
- * before parsing so that Zod `.default()` values take effect even when DB
- * rows store `""`.
- */
-export function parseGerritConfig(integration: Integration): GerritPluginConfig | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(integration.configJson);
-  } catch {
-    return null;
-  }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
-  const n = raw as Record<string, unknown>;
-  for (const k of ["sshKnownHostsPath", "sshPrivateKeyEnc", "sshPublicKey", "sshAgentPublicKey"] as const) {
-    if ((n[k] as string | undefined)?.trim() === "") delete n[k];
-  }
-  if ((n["sshPort"] as string | undefined) === "") delete n["sshPort"];
-  const result = gerritConfigSchema.safeParse(n);
-  return result.success ? result.data : null;
-}
 
 /**
  * Build the SSH connection args from a (possibly pre-processed) config object.
