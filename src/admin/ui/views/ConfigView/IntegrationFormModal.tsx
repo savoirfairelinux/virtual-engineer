@@ -16,6 +16,12 @@ interface Props {
 
 type Config = Record<string, string>;
 
+interface IntegrationFormSnapshot {
+  provider: string;
+  name: string;
+  config: Config;
+}
+
 const CAPABILITY_COLORS: Record<string, { bg: string; color: string }> = {
   issue_tracking:  { bg: "var(--info-soft)",   color: "var(--info)" },
   code_review:     { bg: "var(--warn-soft)",   color: "var(--warn)" },
@@ -627,6 +633,8 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const currentFormRef = useRef<IntegrationFormSnapshot>({ provider: selectedType, name, config });
+  currentFormRef.current = { provider: selectedType, name, config };
 
   const plugin = plugins.find((p) => p.provider === selectedType);
 
@@ -687,27 +695,47 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
     onDirtyChange(name.trim().length > 0);
   };
 
-  const handleTest = async (): Promise<boolean> => {
+  const testConnection = async (snapshot: IntegrationFormSnapshot): Promise<boolean> => {
     setTesting(true);
     setTestResult(null);
     setTestLogs([]);
     setError(null);
+    const formChanged = () => {
+      const current = currentFormRef.current;
+      return current.provider !== snapshot.provider || current.name !== snapshot.name || current.config !== snapshot.config;
+    };
+    const reportChangedForm = () => {
+      setTestLogs([]);
+      setTestResult("Configuration changed during testing. Test again before adding the integration.");
+    };
     try {
-      const payload = { provider: selectedType, name: name || "test", config };
+      const payload = { provider: snapshot.provider, name: snapshot.name || "test", config: snapshot.config };
       const body = integration ? { ...payload, integrationId: integration.id } : payload;
       const res = await api.post<{ success: boolean; message?: string; error?: string; logs?: string[] }>(
         "/api/admin/integrations/test",
         body
       );
+      if (formChanged()) {
+        reportChangedForm();
+        return false;
+      }
       setTestLogs(res.logs ?? []);
       setTestResult(res.success ? (res.message ?? "Connection successful") : (res.error ?? "Test failed"));
       return res.success;
     } catch (e) {
+      if (formChanged()) {
+        reportChangedForm();
+        return false;
+      }
       setTestResult(e instanceof Error ? `Error: ${e.message}` : "Test failed");
       return false;
     } finally {
       setTesting(false);
     }
+  };
+
+  const handleTest = async (): Promise<void> => {
+    await testConnection({ provider: selectedType, name, config });
   };
 
   const handleSave = async () => {
@@ -718,8 +746,9 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
       if (isEdit) {
         await api.put(`/api/admin/integrations/${integration!.id}`, { name, config });
       } else {
-        if (!(await handleTest())) return;
-        await api.post("/api/admin/integrations", { provider: selectedType, name, config });
+        const snapshot = { provider: selectedType, name, config };
+        if (!(await testConnection(snapshot))) return;
+        await api.post("/api/admin/integrations", snapshot);
       }
       onSaved();
     } catch (e) {

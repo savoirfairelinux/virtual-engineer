@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigPageSurface } from "../../../src/admin/ui/views/ConfigView/ConfigPageSurface.js";
@@ -221,6 +221,38 @@ describe("ConfigPageSurface", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
 
       expect(await screen.findByText("Authentication failed")).toBeDefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(onSaved).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not discard edits made while testing a new integration", async () => {
+    let resolveTest: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = input.toString();
+      if (path !== "/api/admin/integrations/test") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      return new Promise<Response>((resolve) => {
+        resolveTest = resolve;
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const onSaved = await openNewGitHubIntegration();
+      fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+      fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "Updated GitHub" } });
+      await act(async () => {
+        resolveTest?.(new Response(JSON.stringify({ success: true }), { status: 200 }));
+      });
+
+      expect(await screen.findByText("Configuration changed during testing. Test again before adding the integration.")).toBeDefined();
+      expect(screen.getByDisplayValue("Updated GitHub")).toBeDefined();
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(onSaved).not.toHaveBeenCalled();
     } finally {
