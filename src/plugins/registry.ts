@@ -291,9 +291,9 @@ export interface ProviderDescriptor {
   testConnection?: (config: unknown) => Promise<DescriptorConnectionTestResult>;
   /**
    * Optional model-discovery hook. When defined, the admin
-   * `POST /api/admin/integrations/:id/discover` endpoint delegates to it
-   * (instead of the generic resource-discovery path) to fetch the available
-   * agent models for the integration's parsed config.
+    * `POST /api/admin/integrations/:id/models/discover` endpoint delegates to
+    * it to fetch the available agent models for the integration's parsed
+    * config. The generic discovery route also delegates here for compatibility.
    */
   discoverModels?: (config: unknown) => Promise<Array<{ id: string; name: string }>>;
   /**

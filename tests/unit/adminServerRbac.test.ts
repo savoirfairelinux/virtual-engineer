@@ -529,6 +529,14 @@ describe("adminServer PBAC project scoping", () => {
     expect(peerIntegrationBody.integrations.some((candidate) => candidate.id === integration.id)).toBe(false);
     expect((await fetch(`${baseUrl}/api/admin/agents/${agent.id}`, authed(peer.token))).status).toBe(403);
     expect((await fetch(`${baseUrl}/api/admin/integrations/${integration.id}`, authed(peer.token))).status).toBe(403);
+    expect((await fetch(
+      `${baseUrl}/api/admin/integrations/${integration.id}/models/discover`,
+      { ...authed(peer.token), method: "POST" },
+    )).status).toBe(403);
+    expect((await fetch(
+      `${baseUrl}/api/admin/integrations/${integration.id}/discover`,
+      { ...authed(peer.token), method: "POST" },
+    )).status).toBe(403);
 
     const group = await store.createGroup({ name: "Resource readers" });
     await store.addUserToGroup(group.id, peer.user.id);
@@ -545,6 +553,14 @@ describe("adminServer PBAC project scoping", () => {
 
     expect((await fetch(`${baseUrl}/api/admin/agents/${agent.id}`, authed(peer.token))).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/admin/integrations/${integration.id}`, authed(peer.token))).status).toBe(200);
+    expect((await fetch(
+      `${baseUrl}/api/admin/integrations/${integration.id}/models/discover`,
+      { ...authed(peer.token), method: "POST" },
+    )).status).toBe(400);
+    expect((await fetch(
+      `${baseUrl}/api/admin/integrations/${integration.id}/discover`,
+      { ...authed(peer.token), method: "POST" },
+    )).status).toBe(403);
   });
 
   it("does not let integration.create overwrite another owner's integration id", async () => {

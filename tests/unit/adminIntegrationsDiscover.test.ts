@@ -399,6 +399,32 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("Copilot model refresh is available through the read-scoped model endpoint", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-models",
+      provider: "copilot",
+      name: "Copilot models",
+      configJson: JSON.stringify({
+        authMode: "pat",
+        token: encryptToken("github_pat_models", TEST_ADMIN_AUTH_SECRET),
+      }),
+      enabled: false,
+    });
+    vi.mocked(fetchAvailableModelsWithPat).mockResolvedValueOnce([
+      { id: "gpt-4o", name: "GPT-4o", vendor: "OpenAI", version: "gpt-4o", category: "versatile" },
+    ]);
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-models/models/discover");
+    expect(status).toBe(200);
+    expect(body["counts"]).toEqual({ models: 1 });
+
+    const models = await getJson(baseUrl, "/api/admin/integrations/int-copilot-models/models");
+    expect(models.status).toBe(200);
+    expect(models.body["models"]).toEqual([
+      expect.objectContaining({ id: "gpt-4o", name: "GPT-4o" }),
+    ]);
+  });
+
   it("Copilot OAuth mode: discover resolves models from the decrypted session token", async () => {
     await store.upsertIntegration({
       id: "int-copilot-oauth",
