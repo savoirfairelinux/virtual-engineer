@@ -3,7 +3,6 @@ import {
   decryptManagedCredential,
   encryptToken,
   decryptToken,
-  isEncryptedToken,
   StoredCredentialDecryptionError,
 } from "../../src/utils/encryption.js";
 
@@ -87,37 +86,5 @@ describe("encryption", () => {
     const longToken = "ghu_" + "x".repeat(1000);
     const encrypted = encryptToken(longToken, SECRET);
     expect(decryptToken(encrypted, SECRET)).toBe(longToken);
-  });
-});
-
-describe("isEncryptedToken", () => {
-  it("returns true for a marked AES-encrypted value without decrypting it", () => {
-    const encrypted = encryptToken("ghp_test", SECRET);
-    expect(isEncryptedToken(encrypted, SECRET)).toBe(true);
-    expect(isEncryptedToken(encrypted, "wrong-secret")).toBe(true);
-    expect(isEncryptedToken(encrypted, undefined)).toBe(true);
-  });
-
-  it("returns true only for decryptable unprefixed AES ciphertext", () => {
-    const encrypted = encryptToken("ghp_test", SECRET).replace(/^veenc:v1:/, "");
-
-    expect(isEncryptedToken(encrypted, SECRET)).toBe(true);
-    expect(isEncryptedToken(encrypted, "wrong-secret")).toBe(false);
-    expect(isEncryptedToken(encrypted, undefined)).toBe(false);
-  });
-
-  it("returns true for a plain:-prefixed value (no-secret path)", () => {
-    const plain = `plain:${Buffer.from("ghp_test", "utf8").toString("base64")}`;
-    expect(plain.startsWith("plain:")).toBe(true);
-    expect(isEncryptedToken(plain, SECRET)).toBe(true);
-    expect(isEncryptedToken(plain, undefined)).toBe(true);
-  });
-
-  it("returns false for a raw PAT (not encrypted)", () => {
-    expect(isEncryptedToken("ghp_rawtoken123", SECRET)).toBe(false);
-  });
-
-  it("returns false for an empty string", () => {
-    expect(isEncryptedToken("", SECRET)).toBe(false);
   });
 });

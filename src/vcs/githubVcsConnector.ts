@@ -210,8 +210,3 @@ interface GitHubPrShape {
   state: string;
   merged?: boolean;
 }
-
-/** Convenience factory matching the GitLab/Gerrit naming convention. */
-export function createGitHubVcsConnector(config: GitHubVcsConnectorConfig): GitHubVcsConnector {
-  return new GitHubVcsConnector(config);
-}
