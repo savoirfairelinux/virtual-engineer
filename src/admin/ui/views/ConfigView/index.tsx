@@ -16,7 +16,6 @@ import { IntegrationsSection }  from "./IntegrationsSection.tsx";
 import { AgentsSection }        from "./AgentsSection.tsx";
 import { ProjectsSection }      from "./ProjectsSection.tsx";
 import { PromptsSection }       from "./PromptsSection.tsx";
-import { OAuthSection }         from "./OAuthSection.tsx";
 import { SystemSection }        from "./SystemSection.tsx";
 import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
@@ -30,7 +29,6 @@ import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 const CONFIG_NAV = [
   { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid" },
   { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server" },
-  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link" },
   { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
   { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
@@ -53,7 +51,7 @@ const CONFIG_GROUPS: ReadonlyArray<{
   {
     id: "setup",
     label: "Setup & workflow",
-    sections: ["integrations", "oauth", "agents", "projects", "prompts"],
+    sections: ["integrations", "agents", "projects", "prompts"],
   },
   {
     id: "runtime",
@@ -100,8 +98,8 @@ export function ConfigView(props: ConfigViewData) {
   const { can, user } = useCurrentUser();
   const hasPermission = useMemo(() => makeHasPermission(user), [user]);
   const visibleNav = CONFIG_NAV.filter((item) => canAccessConfigSection(hasPermission, item.id));
-  const visibleNavById = useMemo(
-    () => new Map(visibleNav.map((item) => [item.id, item] as const)),
+  const visibleNavById = useMemo<ReadonlyMap<ConfigSectionId, ConfigNavItem>>(
+    () => new Map<ConfigSectionId, ConfigNavItem>(visibleNav.map((item) => [item.id, item])),
     [visibleNav],
   );
   const visibleGroups = useMemo(() => CONFIG_GROUPS.map((group) => ({
@@ -223,9 +221,9 @@ export function ConfigView(props: ConfigViewData) {
   }, [isDirty]);
 
   const effectiveRoute = useMemo<ConfigRoute>(() => {
-    if (canAccessConfigRoute(can, hasPermission, route)) return route;
+    if (visibleNavById.has(route.section) && canAccessConfigRoute(can, hasPermission, route)) return route;
     return { section: visibleNav[0]?.id ?? "overview", mode: "list" };
-  }, [can, hasPermission, route, visibleNav]);
+  }, [can, hasPermission, route, visibleNav, visibleNavById]);
 
   const effectiveSec = effectiveRoute.section;
 
@@ -310,7 +308,6 @@ export function ConfigView(props: ConfigViewData) {
     <>
       {effectiveSec === "overview"     && <ConfigOverview {...props} />}
       {effectiveSec === "integrations" && <IntegrationsSection {...routedProps} />}
-      {effectiveSec === "oauth"        && <OAuthSection {...routedProps} />}
       {effectiveSec === "agents"       && <AgentsSection {...routedProps} />}
       {effectiveSec === "projects"     && <ProjectsSection {...routedProps} />}
       {effectiveSec === "prompts"      && <PromptsSection {...routedProps} />}

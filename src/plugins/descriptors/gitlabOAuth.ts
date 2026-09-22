@@ -395,12 +395,12 @@ export async function resolveGitLabOAuthConfig(
   }
 
   if (!context.oAuthAppStore) {
-    throw new Error(`No GitLab OAuth app is configured for ${baseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.`);
+    throw new Error(`No GitLab OAuth app is configured for ${baseUrl}. Ask an administrator to register one with POST /api/admin/oauth-apps.`);
   }
 
   const app = await context.oAuthAppStore.getOAuthApp("gitlab", baseUrl);
   if (!app) {
-    throw new Error(`No GitLab OAuth app is configured for ${baseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.`);
+    throw new Error(`No GitLab OAuth app is configured for ${baseUrl}. Ask an administrator to register one with POST /api/admin/oauth-apps.`);
   }
 
   return {

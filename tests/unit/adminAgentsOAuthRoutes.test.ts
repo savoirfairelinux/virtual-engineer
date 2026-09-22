@@ -415,6 +415,26 @@ describe("Admin API — Copilot OAuth routes", () => {
     vi.unstubAllGlobals();
   });
 
+  it("directs missing GitLab OAuth app setup to the admin API", async () => {
+    server = createAdminServer(makeDeps(store));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const result = await rest(server, "/api/admin/plugins/gitlab/oauth/device-code", {
+      method: "POST",
+      body: {
+        config: {
+          baseUrl: "https://gitlab.example.com",
+          authMode: "oauth",
+        },
+      },
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({
+      error: "No GitLab OAuth app is configured for https://gitlab.example.com. Ask an administrator to register one with POST /api/admin/oauth-apps.",
+    });
+  });
+
   it("returns 404 when resolving OAuth config for a missing integration", async () => {
     const createOAuthHandler = vi.fn(() => ({
       kind: "redirect" as const,

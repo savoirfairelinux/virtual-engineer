@@ -143,6 +143,34 @@ describe("Configuration navigation guard", () => {
     expect(within(navigation).getByRole("button", { name: /Projects/, current: "page" })).toBeDefined();
   });
 
+  it("does not expose the standalone OAuth apps page", async () => {
+    window.history.replaceState({}, "", "#config/oauth");
+    render(
+      <CurrentUserProvider value={{
+        user: admin,
+        isAdmin: true,
+        canOperate: true,
+        can: makeCan(admin),
+      }}>
+        <ConfigView
+          integrations={[]}
+          plugins={[]}
+          agents={[]}
+          projects={[]}
+          prompts={[]}
+          oauthApps={[]}
+          config={null}
+          status={null}
+          onRefresh={vi.fn()}
+        />
+      </CurrentUserProvider>,
+    );
+
+    const navigation = screen.getByRole("complementary", { name: "Configuration sections" });
+    expect(within(navigation).queryByRole("button", { name: /OAuth Apps/ })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Overview" })).toBeDefined();
+  });
+
   it("restores the current hash when direct dirty navigation is rejected", async () => {
     render(
       <CurrentUserProvider value={{

@@ -238,7 +238,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const normalizedBaseUrl = normalizeGitLabBaseUrl(baseUrl);
     const app = await deps.oAuthAppStore.getOAuthApp(provider, normalizedBaseUrl);
     if (!app) {
-      writeJson(res, 404, { error: `No OAuth app is configured for ${provider}:${normalizedBaseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.` });
+      writeJson(res, 404, { error: `No OAuth app is configured for ${provider}:${normalizedBaseUrl}. Ask an administrator to register one with POST /api/admin/oauth-apps.` });
       return;
     }
     const perms = getEffectivePermissions(req);
