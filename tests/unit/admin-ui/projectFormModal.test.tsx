@@ -46,6 +46,29 @@ describe("ProjectFormModal repository integration resolution", () => {
     vi.restoreAllMocks();
   });
 
+  it("renders the add-project form when crypto.randomUUID is unavailable", () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", {
+      getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+      subtle: originalCrypto.subtle,
+    } as Crypto);
+
+    try {
+      render(
+        <ProjectFormModal
+          agents={[codingAgent]}
+          integrations={[]}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByText("Additional Skills")).toBeTruthy();
+    } finally {
+      vi.stubGlobal("crypto", originalCrypto);
+    }
+  });
+
   it("fills an empty push target from a unique repository match", async () => {
     const integration = gerritIntegration("gerrit-1", "Primary Gerrit");
     const fetchMock = vi.fn(async (input: string | URL | Request) => {

@@ -267,9 +267,9 @@ export async function fetchAvailableModelsWithPat(
   } else {
     const req = createRequire(import.meta.url);
     const sdk = req("@github/copilot-sdk") as {
-      CopilotClient: new (opts: { githubToken: string }) => SdkCopilotClientLike;
+      CopilotClient: new (opts: { gitHubToken: string }) => SdkCopilotClientLike;
     };
-    client = new sdk.CopilotClient({ githubToken: pat });
+    client = new sdk.CopilotClient({ gitHubToken: pat });
   }
 
   let models: SdkModelInfo[];

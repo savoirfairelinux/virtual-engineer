@@ -1,5 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchAvailableModels, exchangeForSessionToken } from "../../src/agents/copilotModelsService.js";
+
+const copilotSdkMocks = vi.hoisted(() => ({
+  constructor: vi.fn(),
+  start: vi.fn(async () => {}),
+  stop: vi.fn(async () => {}),
+  listModels: vi.fn(async () => []),
+}));
+
+vi.mock("node:module", () => ({
+  createRequire: () => () => ({
+    CopilotClient: class {
+      constructor(options: unknown) {
+        copilotSdkMocks.constructor(options);
+      }
+
+      start(): Promise<void> {
+        return copilotSdkMocks.start();
+      }
+
+      stop(): Promise<void> {
+        return copilotSdkMocks.stop();
+      }
+
+      listModels() {
+        return copilotSdkMocks.listModels();
+      }
+    },
+  }),
+}));
+
+import { fetchAvailableModels, exchangeForSessionToken, fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
 
 const COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token";
 const COPILOT_MODELS_URL = "https://api.githubcopilot.com/models";
@@ -203,5 +233,15 @@ describe("fetchAvailableModels", () => {
     }]);
     const models = await fetchAvailableModels("token", { fetch: mockFetch });
     expect(models[0]!.supportedReasoningEfforts).toEqual(["none", "low", "medium", "high", "xhigh"]);
+  });
+});
+
+describe("fetchAvailableModelsWithPat", () => {
+  it("passes the PAT through the SDK gitHubToken option", async () => {
+    await fetchAvailableModelsWithPat("github_pat_test");
+
+    expect(copilotSdkMocks.constructor).toHaveBeenCalledWith({
+      gitHubToken: "github_pat_test",
+    });
   });
 });
