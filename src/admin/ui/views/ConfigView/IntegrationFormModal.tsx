@@ -30,6 +30,40 @@ const CAPABILITY_LABEL: Record<string, string> = {
   agent_execution: "Agent",
 };
 
+function copyTextWithExecCommand(text: string): void {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.focus();
+    textarea.select();
+    if (typeof document.execCommand !== "function" || !document.execCommand("copy")) {
+      throw new Error("Copy command was rejected");
+    }
+  } finally {
+    textarea.remove();
+  }
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    const clipboard = navigator.clipboard;
+    if (typeof clipboard?.writeText === "function") {
+      await clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Clipboard API can be exposed but denied outside a secure context.
+  }
+
+  copyTextWithExecCommand(text);
+}
+
 function CapabilityBadge({ capability }: { capability: string }) {
   const c = CAPABILITY_COLORS[capability] ?? CAPABILITY_COLORS["agent_execution"]!;
   const label = CAPABILITY_LABEL[capability] ?? capability;
@@ -371,6 +405,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   // Load agent keys when switching to agent mode.
   // The cleanup function sets a `cancelled` flag so that state setters are not
@@ -420,9 +455,12 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
 
   const handleCopy = () => {
     if (!pubKey) return;
-    void navigator.clipboard.writeText(pubKey).then(() => {
+    setCopyError(null);
+    void copyText(pubKey).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      setCopyError("Copy failed. Select the public key and copy it manually.");
     });
   };
 
@@ -527,6 +565,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
               <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
                 Add this public key to your {providerName} account: <strong>Settings → SSH Keys</strong>
               </div>
+              {copyError && <span role="alert" style={{ fontSize: "12px", color: "var(--danger)" }}>{copyError}</span>}
               <button
                 type="button"
                 className="btn sm ghost"
@@ -581,9 +620,11 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
   const plugin = plugins.find((p) => p.provider === selectedType);
 
   const handleCopyUserCode = useCallback((code: string) => {
-    void navigator.clipboard.writeText(code).then(() => {
+    void copyText(code).then(() => {
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 2000);
+    }).catch(() => {
+      setCopiedCode(false);
     });
   }, []);
 

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigPageSurface } from "../../../src/admin/ui/views/ConfigView/ConfigPageSurface.js";
@@ -116,6 +116,59 @@ describe("ConfigPageSurface", () => {
     await user.click(within(screen.getByRole("status")).getByRole("button", { name: "Clear search" }));
     expect(screen.getByRole("button", { name: /GitHub/ })).toBeDefined();
     expect(screen.getByRole("button", { name: /Redmine/ })).toBeDefined();
+  });
+
+  it("copies a generated SSH key without the Clipboard API", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+
+    try {
+      render(createElement(IntegrationFormModal, {
+        integration: {
+          id: "gerrit-1",
+          provider: "gerrit",
+          name: "Primary Gerrit",
+          enabled: true,
+          capabilities: ["source_control"],
+          domainCapabilities: ["source_control"],
+          config: {
+            sshPrivateKeyEnc: "********",
+            sshPublicKey: "ssh-ed25519 AAAATEST virtual-engineer-gerrit",
+          },
+        },
+        plugins: [{
+          provider: "gerrit",
+          name: "Gerrit",
+          capabilities: ["source_control"],
+          domainCapabilities: ["source_control"],
+          requiredFields: [],
+          agentConfigFields: [],
+          supportsSshAuth: true,
+        }],
+        onClose: vi.fn(),
+        onSaved: vi.fn(),
+        onDirtyChange: vi.fn(),
+      }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(await screen.findByRole("button", { name: "Copied!" })).toBeDefined();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+      if (execCommandDescriptor) {
+        Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+    }
   });
 
   it("keeps row actions beside an explicitly labelled open button", async () => {
