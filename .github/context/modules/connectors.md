@@ -97,13 +97,15 @@ Methods used by the orchestrator:
 
 ### `PluginIntegrationStreamEventsManager` — [src/connectors/integrationStreamEvents.ts](../../../src/connectors/integrationStreamEvents.ts)
 
-- Generic host-side wrapper that groups active integrations by provider, discovers which descriptors expose `capabilities.code_review.streamEvents`, and delegates reconciliation/status to the provider-specific manager for each integration.
+- Generic host-side wrapper that groups demanded active integrations by provider, discovers which descriptors expose `capabilities.code_review.streamEvents`, and delegates reconciliation, targeted backfill, and status to the provider-specific manager for each integration.
 - Keeps stream support descriptor-driven instead of hard-coding Gerrit in `src/index.ts`, so future integrations can opt into the same live event-stream lifecycle.
 
 ### `GerritStreamEventsManager` — [src/connectors/gerritStreamEvents.ts](../../../src/connectors/gerritStreamEvents.ts)
 
 - Gerrit-specific stream manager used by the generic `integrationStreamEvents` wrapper when the `gerrit` descriptor exposes `streamEvents`.
-- Host-side runtime listener that spawns `ssh ... gerrit stream-events` once per active Gerrit integration.
+- Host-side runtime listener that spawns `ssh ... gerrit stream-events` once per active Gerrit integration demanded by an enabled review project or a non-terminal task with an external change. A coding project with no pushed change does not open a listener.
+- Runs the capped assignment backfill on first connection and on explicit project-change requests. Repeat requests share one in-flight query, requests received while connecting wait for the first stdout byte, and no backfill request restarts the SSH process.
+- Cancels pending reconnect timers as soon as demand disappears, resets reconnect attempts when connection configuration changes, and bounds shutdown draining so stalled provider work cannot block process exit indefinitely.
 - Routes `change-merged` / `change-abandoned` into the orchestrator and `patchset-created` / `reviewer-added` / `comment-added` into both feedback checks and, when `reviewerAccountId` is configured, the review trigger.
 - Applies the same CI/vote classification as SSH polling, including `ci-failure-*` IDs for actionable failure events.
 - Maintains in-memory connection state (`connected`, `reconnecting`, last event, reconnect count, last error) for the admin dashboard.

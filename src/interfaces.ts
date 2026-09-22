@@ -108,6 +108,11 @@ export interface ProjectTicketSourceRecord {
   createdAt: Date;
 }
 
+export interface EventStreamDemand {
+  requiredIntegrationIds: string[];
+  reviewIntegrationIds: string[];
+}
+
 /**
  * A project's choice to use an integration for a specific domain capability,
  * with per-binding configuration (e.g. `{ ticketProjectKey }` for
@@ -1624,6 +1629,9 @@ export interface StateStore {
 
   /** Return whether an enabled coding project has active ticket and push integrations. */
   hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds: readonly string[]): Promise<boolean>;
+
+  /** Return active integrations currently required by stream-backed projects or tasks. */
+  getEventStreamDemand(): Promise<EventStreamDemand>;
 
   /** Look up ALL VE projects whose repo inclusion list contains this repoKey for the given integration. */
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;

@@ -92,7 +92,8 @@ function countBackfillQueries(spy: { mock: { calls: unknown[][] } }): number {
 
 function createManager(
   children: FakeChildProcess[],
-  sshQueryFn?: (args: string[], config: Record<string, unknown>) => Promise<string>
+  sshQueryFn?: (args: string[], config: Record<string, unknown>) => Promise<string>,
+  options?: { maxReconnectAttempts?: number },
 ) {
   const orchestrator: GerritStreamOrchestrator = {
     triggerFeedbackForChange: vi.fn(async () => {}),
@@ -114,6 +115,7 @@ function createManager(
     orchestrator,
     getReviewTrigger: () => reviewTrigger,
     reconnectDelayMs: 50,
+    ...(options?.maxReconnectAttempts !== undefined ? { maxReconnectAttempts: options.maxReconnectAttempts } : {}),
     spawnProcess: spawnProcess as typeof import("node:child_process").spawn,
     ...(sshQueryFn !== undefined ? { sshQueryFn: sshQueryFn as SshQueryFnType } : {}),
   });
@@ -170,6 +172,24 @@ describe("GerritStreamEventsManager", () => {
       expect.arrayContaining(["BatchMode=yes", expect.stringMatching(/^ConnectTimeout=/)]),
       expect.anything()
     );
+  });
+
+  it("does not restart an exhausted stream until it is removed from demand", async () => {
+    const first = new FakeChildProcess();
+    const second = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([first, second], undefined, { maxReconnectAttempts: 1 });
+    const integration = makeIntegration("gerrit-a");
+
+    await manager.reconcile([integration]);
+    first.emit("close", 1, null);
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "error" }));
+
+    await manager.reconcile([integration]);
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+
+    await manager.reconcile([]);
+    await manager.reconcile([integration]);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
   });
 
   it("logs every JSON event payload at info level when it arrives", async () => {
@@ -378,6 +398,98 @@ describe("GerritStreamEventsManager", () => {
     expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
       state: "connecting",
       reconnectCount: 1,
+    }));
+  });
+
+  it("cancels a pending reconnect when demand is removed", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const secondChild = new FakeChildProcess();
+    const staleChild = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([firstChild, secondChild, staleChild]);
+    const integration = makeIntegration("gerrit-a");
+
+    await manager.reconcile([integration]);
+    firstChild.emit("close", 255, null);
+    await manager.reconcile([]);
+    await manager.reconcile([integration]);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets reconnect count after stream configuration changes", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const reconnectChild = new FakeChildProcess();
+    const refreshedChild = new FakeChildProcess();
+    const { manager } = createManager([firstChild, reconnectChild, refreshedChild]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    firstChild.emit("close", 255, null);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ reconnectCount: 1 }));
+
+    await manager.reconcile([makeIntegration("gerrit-a", {
+      configJson: JSON.stringify({ sshHost: "other.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+    })]);
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      state: "connecting",
+      reconnectCount: 0,
+    }));
+  });
+
+  it("bounds shutdown waiting when stream work does not settle", async () => {
+    vi.useFakeTimers();
+
+    const sshQuery = vi.fn(() => new Promise<string>(() => {}));
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.stdout.write("x");
+    await Promise.resolve();
+    expect(sshQuery).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    const stopPromise = manager.stopAll().then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(stopped).toBe(true);
+    await stopPromise;
+  });
+
+  it("ignores first stdout received after shutdown", async () => {
+    const sshQuery = makeSshReviewerQueryFn([], ["Istale"]);
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    await manager.stopAll();
+    child.stdout.write("x");
+    await flushAsyncWork();
+
+    expect(sshQuery).not.toHaveBeenCalled();
+  });
+
+  it("refreshes integration metadata while reconnecting", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const { manager } = createManager([firstChild]);
+
+    await manager.reconcile([makeIntegration("gerrit-a", { name: "Old name" })]);
+    firstChild.emit("close", 255, null);
+    await manager.reconcile([makeIntegration("gerrit-a", { name: "New name" })]);
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      integrationName: "New name",
+      state: "reconnecting",
     }));
   });
 
@@ -709,6 +821,79 @@ describe("GerritStreamEventsManager", () => {
       await flushAsyncWork();
 
       expect(countBackfillQueries(sshQuery)).toBe(1);
+    });
+
+    it("replays backfill on request without restarting the SSH stream", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
+      const child = new FakeChildProcess();
+      const { manager, spawnProcess } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.stdout.write("x");
+      await flushAsyncWork();
+
+      await manager.requestBackfill(["gerrit-a"]);
+
+      expect(countBackfillQueries(sshQuery)).toBe(2);
+      expect(spawnProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("coalesces a requested backfill while the stream is still connecting", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
+      const child = new FakeChildProcess();
+      const { manager, spawnProcess } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      await manager.requestBackfill(["gerrit-a"]);
+      expect(countBackfillQueries(sshQuery)).toBe(0);
+
+      child.stdout.write("x");
+      await flushAsyncWork();
+
+      expect(countBackfillQueries(sshQuery)).toBe(1);
+      expect(spawnProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("runs initial backfill again after the Gerrit stream configuration changes", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
+      const first = new FakeChildProcess();
+      const second = new FakeChildProcess();
+      const { manager, spawnProcess } = createManager([first, second], sshQuery);
+      const integration = makeIntegration("gerrit-a");
+
+      await manager.reconcile([integration]);
+      first.stdout.write("x");
+      await flushAsyncWork();
+
+      await manager.reconcile([makeIntegration("gerrit-a", {
+        configJson: JSON.stringify({ sshHost: "other.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+      })]);
+      second.stdout.write("x");
+      await flushAsyncWork();
+
+      expect(countBackfillQueries(sshQuery)).toBe(2);
+      expect(spawnProcess).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not dispatch backfilled changes after the integration is removed", async () => {
+      let finishQuery: ((value: string) => void) | undefined;
+      const sshQuery = vi.fn(() => new Promise<string>((resolve) => {
+        finishQuery = resolve;
+      }));
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.stdout.write("x");
+      await flushAsyncWork();
+      await manager.reconcile([]);
+      finishQuery?.([
+        JSON.stringify({ id: "Istale", number: 1 }),
+        JSON.stringify({ type: "stats", rowCount: 1 }),
+      ].join("\n"));
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
     });
 
     it("caps backfill at 20 changes and logs a warning when more are returned", async () => {

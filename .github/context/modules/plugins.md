@@ -91,7 +91,7 @@ New work reaches VE through three intake mechanisms, declared per capability via
 |---|---|---|
 | **polling** | `PollingLoop` periodically queries provider APIs (`pollProjectTickets()` for issue_tracking, `pollReviewProjects()` for code_review — skipped when the integration `integrationHasStreamEvents`). | `src/orchestrator/pollingLoop.ts` |
 | **webhook** | The provider POSTs events to the per-integration webhook receiver; HMAC secret (`configJson.webhookSecret`) authenticates. | `src/webhooks/` + `PROVIDER_HANDLERS` in `src/webhooks/handlers/index.ts` |
-| **stream** | VE holds a long-lived connection (Gerrit `ssh gerrit stream-events`), one listener per active integration. | `descriptor.capabilities.code_review.streamEvents` + `src/connectors/integrationStreamEvents.ts` |
+| **stream** | VE holds a long-lived connection (Gerrit `ssh gerrit stream-events`), one listener per active integration currently demanded by an enabled review project or a non-terminal task with an external change. | `descriptor.capabilities.code_review.streamEvents` + `src/connectors/integrationStreamEvents.ts` |
 
 Per-provider intake:
 
@@ -110,7 +110,7 @@ The dashboard also collects only visible descriptor fields when testing, saving,
 
 ## Hot refresh
 
-`PluginManager.onPluginChange()` is wired in [src/index.ts](../../../src/index.ts). Integration changes trigger `refreshRuntimeDependencies()`, which updates the workspace runner, orchestrator, polling loop, review trigger, generic integration stream managers, and admin runtime summaries in place.
+`PluginManager.onPluginChange()` is wired in [src/index.ts](../../../src/index.ts). Integration changes trigger `refreshRuntimeDependencies()`, which updates the workspace runner, orchestrator, polling loop, review trigger, generic integration stream managers, and admin runtime summaries in place. Stream reconciliation intersects active integrations with `ProjectStoreApi.getEventStreamDemand()`, is serialized/coalesced across hot refresh and task transitions, and stops listeners after their final project/task consumer disappears. Project changes also request a targeted assignment backfill after reconciliation; provider managers may satisfy it on the existing connection or defer it until that connection is ready.
 
 ## Connection testing
 

@@ -27,6 +27,16 @@ adds VE idempotently on revision events, while initial open-change backfill is
 disabled. Mode changes are execution-affecting and are rejected while the
 project has active tasks.
 
+`ProjectStoreApi.getEventStreamDemand()` is an on-demand aggregate over existing
+project bindings, tasks, push targets, and per-repository changes; it adds no
+schema or migration. Enabled review projects request their `code_review`
+integration immediately. Coding push targets request a stream only while a
+non-terminal task has a persisted, non-`NO_CHANGE`, non-`ORPHANED` external
+change, and non-terminal review
+tasks retain their project's review integration even when that project is
+disabled. The result separately identifies enabled review-project integrations
+so runtime project changes can request a targeted assignment backfill.
+
 ## Project statistics
 
 `getProjectStatistics(projectId, options?)` is an on-demand `StateStore` aggregate;

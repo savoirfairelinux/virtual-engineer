@@ -33,6 +33,7 @@ export interface IntegrationEventStreamDependencies {
 
 export interface IntegrationEventStreamManager {
   reconcile(integrations: Integration[]): Promise<void>;
+  requestBackfill?(integrationIds: readonly string[]): Promise<void>;
   getStatus(integrationId: string): IntegrationEventStreamStatus | null;
   listStatuses(): IntegrationEventStreamStatus[];
   stopAll(): Promise<void>;
@@ -86,6 +87,14 @@ export class PluginIntegrationStreamEventsManager implements IntegrationEventStr
       }
       await manager.reconcile(streamIntegrations);
     }
+  }
+
+  /** Ask provider managers to rescan existing assignments for selected integrations. */
+  async requestBackfill(integrationIds: readonly string[]): Promise<void> {
+    const requests = [...this.managers.values()].flatMap((manager) =>
+      manager.requestBackfill ? [manager.requestBackfill(integrationIds)] : []
+    );
+    await Promise.all(requests);
   }
 
   /** Return the stream status for a given integration, delegating across all type managers. */

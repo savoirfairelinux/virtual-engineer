@@ -5,6 +5,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentId,
   DomainCapability,
+  EventStreamDemand,
   ProjectId,
   ProjectIntegrationBindingRecord,
   ProjectPushTargetRecord,
@@ -83,6 +84,7 @@ export interface ProjectStoreApi {
     input: { integrationId: string; ticketProjectKey: string }
   ): Promise<ProjectTicketSourceRecord>;
   getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null>;
+  getEventStreamDemand(): Promise<EventStreamDemand>;
   hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds: readonly string[]): Promise<boolean>;
   findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null>;
   addProjectPushTarget(
@@ -649,6 +651,73 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
+  function getEventStreamDemand(): Promise<EventStreamDemand> {
+    try {
+      const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
+      const rows = raw.prepare(
+        `SELECT integration_id, MAX(review_project) AS review_project
+         FROM (
+           SELECT binding.integration_id, 1 AS review_project
+           FROM projects project
+           JOIN project_integration_bindings binding
+             ON binding.project_id = project.id
+            AND binding.capability = 'code_review'
+           WHERE project.enabled = 1
+             AND project.type = 'review'
+
+           UNION ALL
+
+           SELECT change.integration_id, 0 AS review_project
+           FROM tasks task
+           JOIN change_per_repository change ON change.task_id = task.task_id
+           WHERE task.task_type = 'code-gen'
+             AND task.state NOT IN (${terminalPlaceholders})
+             AND change.change_id <> ''
+             AND change.status NOT IN ('NO_CHANGE', 'ORPHANED')
+
+           UNION ALL
+
+           SELECT binding.integration_id, 0 AS review_project
+           FROM tasks task
+           JOIN project_integration_bindings binding
+             ON binding.project_id = task.project_id
+            AND binding.capability = 'code_review'
+           WHERE task.task_type = 'code-review'
+             AND task.state NOT IN (${terminalPlaceholders})
+
+           UNION ALL
+
+           SELECT target.integration_id, 0 AS review_project
+           FROM tasks task
+           JOIN project_push_targets target ON target.project_id = task.project_id
+           WHERE task.task_type = 'code-gen'
+             AND task.gerrit_change_id IS NOT NULL
+             AND task.state NOT IN (${terminalPlaceholders})
+             AND NOT EXISTS (
+               SELECT 1
+               FROM change_per_repository change
+               WHERE change.task_id = task.task_id
+                 AND change.integration_id <> ''
+             )
+         ) demand
+         WHERE integration_id <> ''
+         GROUP BY integration_id
+         ORDER BY integration_id`
+      ).all(...TERMINAL_STATES, ...TERMINAL_STATES, ...TERMINAL_STATES) as Array<{
+        integration_id: string;
+        review_project: number;
+      }>;
+      return Promise.resolve({
+        requiredIntegrationIds: rows.map((row) => row.integration_id),
+        reviewIntegrationIds: rows
+          .filter((row) => row.review_project === 1)
+          .map((row) => row.integration_id),
+      });
+    } catch (err: unknown) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+    }
+  }
+
   function hasEnabledCodingProjectWithActiveIntegrations(
     activeIntegrationIds: readonly string[]
   ): Promise<boolean> {
@@ -942,6 +1011,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     setProjectEnabled,
     setProjectTicketSource,
     getProjectTicketSource,
+    getEventStreamDemand,
     hasEnabledCodingProjectWithActiveIntegrations,
     findProjectByTicketSource,
     addProjectPushTarget,

@@ -99,6 +99,11 @@ async function importRuntime(
     };
     /** Active tasks returned by stateStore.getActiveTasks at boot. */
     activeTasks?: Task[];
+    /** Persisted event-stream demand returned by the project store. */
+    eventStreamDemand?: {
+      requiredIntegrationIds: string[];
+      reviewIntegrationIds: string[];
+    };
     /** Agent rows returned by stateStore.listAgents. */
     agentRecords?: AgentRecord[];
     /**
@@ -216,6 +221,7 @@ async function importRuntime(
   const CopilotAdapter = vi.fn().mockImplementation(function () { return envAgent; });
   const integrationStreamEventsInstance = {
     reconcile: vi.fn().mockResolvedValue(undefined),
+    requestBackfill: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
     getStatus: vi.fn().mockReturnValue(null),
     listStatuses: vi.fn().mockReturnValue([]),
@@ -310,6 +316,10 @@ async function importRuntime(
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
         : null
     ),
+    getEventStreamDemand: vi.fn(async () => options.eventStreamDemand ?? {
+      requiredIntegrationIds: [],
+      reviewIntegrationIds: [],
+    }),
     getActiveTasks: vi.fn(async (): Promise<Task[]> => options.activeTasks ?? []),
     reconcileOrphanedActiveTasks: vi.fn(async () => 0),
     listAgents: vi.fn(async (filter?: { type?: string; enabled?: boolean }) => {
@@ -596,7 +606,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.pluginManagerInstance.reloadIntegration).not.toHaveBeenCalled();
   });
 
-  it("starts one Gerrit stream-events listener per active Gerrit integration", async () => {
+  it("starts Gerrit stream-events only for demanded active integrations", async () => {
     const gerritA = makeIntegration({
       id: "gerrit-a",
       provider: "gerrit",
@@ -615,11 +625,116 @@ describe("runtime bootstrap provider selection", () => {
         activeIntegrationLists: {
           gerrit: [gerritA, gerritB],
         },
+        eventStreamDemand: {
+          requiredIntegrationIds: ["gerrit-a"],
+          reviewIntegrationIds: ["gerrit-a"],
+        },
       }
     );
 
     expect(runtime.PluginIntegrationStreamEventsManager).toHaveBeenCalledTimes(1);
-    expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledWith([gerritA, gerritB]);
+    expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledWith([gerritA]);
+  });
+
+  it("does not start stream-events for an unused active Gerrit integration", async () => {
+    const gerrit = makeIntegration({
+      id: "gerrit-unused",
+      provider: "gerrit",
+      configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve", sshPort: 29418 }),
+    });
+
+    const runtime = await importRuntime({}, {}, {
+      activeIntegrationLists: { gerrit: [gerrit] },
+    });
+
+    expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledWith([]);
+  });
+
+  it("reconciles stream demand after task transitions", async () => {
+    const gerrit = makeIntegration({ id: "gerrit-task", provider: "gerrit" });
+    const runtime = await importRuntime({}, {}, {
+      activeIntegrationLists: { gerrit: [gerrit] },
+    });
+    runtime.integrationStreamEventsInstance.reconcile.mockClear();
+    runtime.stateStore.getEventStreamDemand.mockResolvedValue({
+      requiredIntegrationIds: ["gerrit-task"],
+      reviewIntegrationIds: [],
+    });
+    const transitionCallback = runtime.stateStore.onTaskTransition.mock.calls.at(-1)?.[0] as
+      ((task: Task) => void) | undefined;
+
+    vi.useFakeTimers();
+    try {
+      transitionCallback?.({ taskId: "task-1", state: "IN_REVIEW" } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenLastCalledWith([gerrit]);
+
+      runtime.stateStore.getEventStreamDemand.mockResolvedValue({
+        requiredIntegrationIds: [],
+        reviewIntegrationIds: [],
+      });
+      transitionCallback?.({ taskId: "task-1", state: "MERGED" } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenLastCalledWith([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reruns pending stream demand after an overlapping reconcile fails", async () => {
+    const gerrit = makeIntegration({ id: "gerrit-task", provider: "gerrit" });
+    const runtime = await importRuntime({}, {}, {
+      activeIntegrationLists: { gerrit: [gerrit] },
+    });
+    runtime.stateStore.getEventStreamDemand.mockResolvedValue({
+      requiredIntegrationIds: ["gerrit-task"],
+      reviewIntegrationIds: [],
+    });
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    runtime.integrationStreamEventsInstance.reconcile.mockReset();
+    runtime.integrationStreamEventsInstance.reconcile
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockResolvedValue(undefined);
+    const transitionCallback = runtime.stateStore.onTaskTransition.mock.calls.at(-1)?.[0] as
+      ((task: Task) => void) | undefined;
+
+    vi.useFakeTimers();
+    try {
+      transitionCallback?.({ taskId: "task-1", state: "IN_REVIEW" } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_000);
+      transitionCallback?.({ taskId: "task-2", state: "IN_REVIEW" } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_000);
+      rejectFirst?.(new Error("reconcile failed"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledTimes(2);
+      expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenLastCalledWith([gerrit]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requests review backfill after a project change", async () => {
+    const gerrit = makeIntegration({ id: "gerrit-review", provider: "gerrit" });
+    const runtime = await importRuntime({}, {}, {
+      configOverrides: { adminApiEnabled: true },
+      activeIntegrationLists: { gerrit: [gerrit] },
+      eventStreamDemand: {
+        requiredIntegrationIds: ["gerrit-review"],
+        reviewIntegrationIds: ["gerrit-review"],
+      },
+    });
+    const firstCreateAdminServerCall = runtime.createAdminServer.mock.calls[0] as unknown[] | undefined;
+    const adminDeps = firstCreateAdminServerCall?.[0] as {
+      onProjectChange?: () => void;
+    } | undefined;
+
+    adminDeps?.onProjectChange?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(runtime.integrationStreamEventsInstance.requestBackfill).toHaveBeenCalledWith(["gerrit-review"]);
   });
 
   it("resolves generated-key SSH material into the stream-events integration config", async () => {
@@ -640,6 +755,10 @@ describe("runtime bootstrap provider selection", () => {
       {
         activeIntegrationLists: {
           gerrit: [gerritGenerated],
+        },
+        eventStreamDemand: {
+          requiredIntegrationIds: ["gerrit-generated-key"],
+          reviewIntegrationIds: ["gerrit-generated-key"],
         },
       }
     );

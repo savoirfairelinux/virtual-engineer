@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
+  makeExternalChangeId,
   makeAgentId,
   makeProjectId,
   makeTaskId,
@@ -665,6 +666,100 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     await expect(store.hasEnabledCodingProjectWithActiveIntegrations(["ticket-active", "unrelated"])).resolves.toBe(false);
     await expect(store.hasEnabledCodingProjectWithActiveIntegrations(["push-active"])).resolves.toBe(false);
     await expect(store.hasEnabledCodingProjectWithActiveIntegrations([])).resolves.toBe(false);
+  });
+
+  it("derives event-stream demand from review projects and active changes", async () => {
+    const codingAgent = await makeAgent(store);
+    const reviewAgent = await makeAgent(store, { name: "Review Agent", type: "review" });
+    const coding = await store.createProject({ name: "Coding", type: "coding", agentId: codingAgent.id, enabled: true });
+    const review = await store.createProject({ name: "Review", type: "review", agentId: reviewAgent.id, enabled: true });
+    const disabledReview = await store.createProject({ name: "Disabled Review", type: "review", agentId: reviewAgent.id, enabled: false });
+    await makeIntegration(store, "gerrit-coding", "gerrit");
+    await makeIntegration(store, "gerrit-review", "gerrit");
+    await makeIntegration(store, "gerrit-disabled-review", "gerrit");
+    await store.replaceProjectPushTargets(coding.id, [
+      { integrationId: "gerrit-coding", repoKey: "main", cloneUrl: "ssh://x/main", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+    ]);
+    await store.setProjectReviewConfig(review.id, "gerrit-review", ["repo/review"]);
+    await store.setProjectReviewConfig(disabledReview.id, "gerrit-disabled-review", ["repo/disabled"]);
+
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    const codingTaskId = makeTaskId("coding-stream-task");
+    await store.createTask(codingTaskId, makeTicketId("coding-stream-ticket"), undefined, undefined, undefined, undefined, undefined, undefined, coding.id);
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.updateExternalChangeId(codingTaskId, makeExternalChangeId("Ilegacy"), 1);
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-coding", "gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.saveChangePerRepository(
+      codingTaskId,
+      "main",
+      "",
+      null,
+      "NO_CHANGE",
+      "gerrit-coding",
+      "gerrit",
+    );
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.saveChangePerRepository(
+      codingTaskId,
+      "main",
+      "Iorphaned",
+      null,
+      "ORPHANED",
+      "gerrit-coding",
+      "gerrit",
+    );
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.saveChangePerRepository(
+      codingTaskId,
+      "main",
+      "Icoding",
+      null,
+      "OPEN",
+      "gerrit-coding",
+      "gerrit",
+    );
+    const reviewTaskId = makeTaskId("review-stream-task");
+    await store.createReviewTask({
+      taskId: reviewTaskId,
+      ticketId: makeTicketId("review-stream-ticket"),
+      subject: "Review subject",
+      changeId: makeExternalChangeId("Ireview"),
+      patchset: 1,
+      projectId: disabledReview.id,
+    });
+
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-coding", "gerrit-disabled-review", "gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.abandonTask(codingTaskId);
+    await store.abandonTask(reviewTaskId);
+
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
   });
 
   it("round-trips reviewer emails", async () => {
