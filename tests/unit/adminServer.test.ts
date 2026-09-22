@@ -1154,6 +1154,16 @@ describe("createAdminServer", () => {
           updatedAt: "2026-05-20T09:05:00.000Z",
         },
       });
+
+      const missingResolveResponse = await fetch(`${baseUrl}/api/admin/oauth-apps/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "gitlab", baseUrl: "https://missing.example.com/" }),
+      });
+      expect(missingResolveResponse.status).toBe(404);
+      await expect(missingResolveResponse.json()).resolves.toEqual({
+        error: "No OAuth app is configured for gitlab:https://missing.example.com. Ask an administrator to register one with POST /api/admin/oauth-apps.",
+      });
     } finally {
       await closeServer(server);
     }
