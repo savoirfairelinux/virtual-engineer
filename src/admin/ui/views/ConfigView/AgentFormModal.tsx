@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
+import { promptLabel } from "./promptLabel.ts";
 import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, ReviewStrategy } from "../../types.ts";
 import {
   loadToolAuthorization,
@@ -302,7 +303,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
             <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")} disabled={nativeReview}>
               <option value="">— select a prompt —</option>
               {systemPrompts.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
+                <option key={p.id} value={p.id}>{promptLabel(p, prompts)}</option>
               ))}
             </FieldSelect>
           </Field>
@@ -311,7 +312,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
             <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
               <option value="">— select a prompt —</option>
               {instructionsPrompts.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
+                <option key={p.id} value={p.id}>{promptLabel(p, prompts)}</option>
               ))}
             </FieldSelect>
           </Field>
@@ -320,7 +321,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
             <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
               <option value="">— none —</option>
               {instructionsPrompts.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
+                <option key={p.id} value={p.id}>{promptLabel(p, prompts)}</option>
               ))}
             </FieldSelect>
           </Field>}

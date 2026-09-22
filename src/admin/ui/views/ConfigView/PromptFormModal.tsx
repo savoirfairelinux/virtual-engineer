@@ -108,7 +108,7 @@ export function PromptFormModal({ prompt, sourcePrompt, readOnly, onEdit, onCopy
         <FormActions>
           <button className="btn ghost" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>
           {readOnly && onCopy && (
-            <button className="btn primary" onClick={onCopy}><Icon name="copy" size={14} /> Create private copy</button>
+            <button className="btn primary" onClick={onCopy}><Icon name="layers" size={14} /> Create private copy</button>
           )}
           {readOnly && onEdit && (
             <button className="btn primary" onClick={onEdit}>Edit prompt</button>

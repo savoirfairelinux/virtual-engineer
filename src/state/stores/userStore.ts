@@ -180,37 +180,43 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     return rows.map((row) => rowToUser(row));
   }
 
-  async function updateUser(
+  function updateUser(
     id: string,
     partial: { role?: UserRole; enabled?: boolean }
   ): Promise<AdminUser | null> {
-    const existing = await getUserById(id);
-    if (!existing) return null;
     const update: Record<string, unknown> = { updatedAt: new Date() };
     if (partial.role !== undefined) update["role"] = partial.role;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
-    db.transaction((tx) => {
-      tx.update(users).set(update).where(eq(users.id, id)).run();
-      if (partial.role !== undefined && partial.role !== existing.role) {
-        const defaults = tx.select().from(policies)
-          .where(and(eq(policies.builtin, 1), inArray(policies.name, ["Operator", "Viewer"]))).all();
-        for (const policy of defaults) {
-          tx.delete(policyBindings).where(and(
-            eq(policyBindings.principalType, "user"),
-            eq(policyBindings.principalId, id),
-            eq(policyBindings.policyId, policy.id),
-          )).run();
+    try {
+      const updated = db.transaction((tx) => {
+        const existing = tx.select().from(users).where(eq(users.id, id)).get();
+        if (!existing) return null;
+        tx.update(users).set(update).where(eq(users.id, id)).run();
+        if (partial.role !== undefined && partial.role !== existing.role) {
+          const defaults = tx.select().from(policies)
+            .where(and(eq(policies.builtin, 1), inArray(policies.name, ["Operator", "Viewer"]))).all();
+          for (const policy of defaults) {
+            tx.delete(policyBindings).where(and(
+              eq(policyBindings.principalType, "user"),
+              eq(policyBindings.principalId, id),
+              eq(policyBindings.policyId, policy.id),
+            )).run();
+          }
+          const name = partial.role === "operator" ? "Operator" : partial.role === "viewer" ? "Viewer" : null;
+          const policy = defaults.find(candidate => candidate.name === name);
+          if (policy) {
+            tx.insert(policyBindings).values({
+              id: randomUUID(), policyId: policy.id, principalType: "user", principalId: id, createdAt: new Date(),
+            }).run();
+          }
         }
-        const name = partial.role === "operator" ? "Operator" : partial.role === "viewer" ? "Viewer" : null;
-        const policy = defaults.find(candidate => candidate.name === name);
-        if (policy) {
-          tx.insert(policyBindings).values({
-            id: randomUUID(), policyId: policy.id, principalType: "user", principalId: id, createdAt: new Date(),
-          }).run();
-        }
-      }
-    });
-    return getUserById(id);
+        const row = tx.select().from(users).where(eq(users.id, id)).get();
+        return row ? rowToUser(row) : null;
+      }, { behavior: "immediate" });
+      return Promise.resolve(updated);
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   async function updateUserPassword(id: string, passwordHash: string): Promise<boolean> {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { randomUUID } from "crypto";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
+import { bindDefaultPolicyForRole } from "../../src/admin/authorization/seedPolicies.js";
 
 function tempDbPath(): string {
   return tempDatabasePath("ve-users");
@@ -85,6 +86,26 @@ describe("userStore — users", () => {
     expect(updated?.enabled).toBe(false);
 
     expect(await store.updateUser("missing", { role: "admin" })).toBeNull();
+  });
+
+  it.each(["operator", "admin"] as const)("keeps concurrent role updates consistent when ending as %s", async (finalRole) => {
+    const user = await makeUser(store, { role: "operator" });
+    await bindDefaultPolicyForRole(store, user.id, "operator");
+    const custom = await store.createPolicy({ name: "Preserved custom policy" });
+    await store.createBinding({ policyId: custom.id, principalType: "user", principalId: user.id });
+
+    const [first, second] = await Promise.all([
+      store.updateUser(user.id, { role: "viewer" }),
+      store.updateUser(user.id, { role: finalRole }),
+    ]);
+
+    expect((await store.getUserById(user.id))?.role).toBe(finalRole);
+    const bindings = await store.listBindingsForPrincipal("user", user.id);
+    expect(bindings.map(binding => binding.policyId).sort()).toEqual(
+      [custom.id, ...(finalRole === "operator" ? ["builtin:operator"] : [])].sort(),
+    );
+    expect(first?.role).toBe("viewer");
+    expect(second?.role).toBe(finalRole);
   });
 
   it("updateUserPassword replaces the hash and reports existence", async () => {

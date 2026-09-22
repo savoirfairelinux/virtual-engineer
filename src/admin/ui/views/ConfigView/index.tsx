@@ -226,6 +226,7 @@ export function ConfigView(props: ConfigViewData) {
   }, [can, hasPermission, route, visibleNav, visibleNavById]);
 
   const effectiveSec = effectiveRoute.section;
+  const isFormRoute = ["create", "edit", "copy", "password"].includes(effectiveRoute.mode);
 
   useEffect(() => {
     onSectionChange?.(effectiveSec);
@@ -349,14 +350,14 @@ export function ConfigView(props: ConfigViewData) {
           className="config-content fade-up"
           onChangeCapture={(event) => {
             if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
-            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setDirty(true);
+            if (isFormRoute) setDirty(true);
           }}
           onInputCapture={(event) => {
             if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
-            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setDirty(true);
+            if (isFormRoute) setDirty(true);
           }}
           onClickCapture={(event) => {
-            if (effectiveRoute.mode !== "create" && effectiveRoute.mode !== "edit" && effectiveRoute.mode !== "password") return;
+            if (!isFormRoute) return;
             const target = event.target;
             if (target instanceof Element && target.closest("[data-config-dirty]")) setDirty(true);
           }}

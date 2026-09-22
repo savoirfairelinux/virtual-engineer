@@ -4,6 +4,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import { PromptFormModal } from "./PromptFormModal.tsx";
+import { promptLabel } from "./promptLabel.ts";
 import type { ApiPrompt } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
@@ -120,7 +121,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
           </div>
         )}
         {filteredPrompts.map((p) => (
-          <RowCard key={p.id} ariaLabel={`Open prompt ${p.label}`} onClick={() => navigate({ section: "prompts", mode: "detail", id: p.id })}>
+          <RowCard key={p.id} ariaLabel={`Open prompt ${promptLabel(p, prompts)}`} onClick={() => navigate({ section: "prompts", mode: "detail", id: p.id })}>
             <span
               style={{
                 width: 34, height: 34, borderRadius: "8px",
@@ -132,7 +133,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span className="mono" style={{ fontSize: "13px", fontWeight: 600 }}>{p.label}</span>
+                <span className="mono" style={{ fontSize: "13px", fontWeight: 600, overflowWrap: "anywhere" }}>{promptLabel(p, prompts)}</span>
                 <span style={{ fontSize: "11px", color: "var(--text-faint)", textTransform: "capitalize" }}>
                   {formatPromptType(p.promptType)}
                 </span>

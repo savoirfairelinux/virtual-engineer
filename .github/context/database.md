@@ -21,7 +21,7 @@
 
 ## User Roles and Policies
 
-- `updateUser` changes the role and replaces direct built-in `Operator`/`Viewer` bindings in one transaction when the role changes. Custom direct bindings and group memberships are preserved; admin accounts need no default policy binding. Changing only account availability does not reset policy choices.
+- `updateUser` reads the current user, changes the role, replaces direct built-in `Operator`/`Viewer` bindings when needed, and captures its result in one immediate transaction. Concurrent changes cannot compare against a stale pre-transaction role or return another update's result. Custom direct bindings and group memberships are preserved; admin accounts need no default policy binding. Changing only account availability does not reset policy choices.
 - Effective permissions impose a read-only ceiling on `viewer`, including resource ownership and explicit user/group grants. Delegated project/task reads remain available, but mutation and access delegation do not. Self-service password changes and logout remain authenticated operations.
 - The seeded `Operator` policy no longer grants `system.write`. Administrators retain full access; an operator needs an explicit policy grant to change instance settings. Built-in policy rules are refreshed at startup.
 
