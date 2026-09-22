@@ -401,6 +401,98 @@ describe("GerritStreamEventsManager", () => {
     }));
   });
 
+  it("cancels a pending reconnect when demand is removed", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const secondChild = new FakeChildProcess();
+    const staleChild = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([firstChild, secondChild, staleChild]);
+    const integration = makeIntegration("gerrit-a");
+
+    await manager.reconcile([integration]);
+    firstChild.emit("close", 255, null);
+    await manager.reconcile([]);
+    await manager.reconcile([integration]);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets reconnect count after stream configuration changes", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const reconnectChild = new FakeChildProcess();
+    const refreshedChild = new FakeChildProcess();
+    const { manager } = createManager([firstChild, reconnectChild, refreshedChild]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    firstChild.emit("close", 255, null);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ reconnectCount: 1 }));
+
+    await manager.reconcile([makeIntegration("gerrit-a", {
+      configJson: JSON.stringify({ sshHost: "other.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+    })]);
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      state: "connecting",
+      reconnectCount: 0,
+    }));
+  });
+
+  it("bounds shutdown waiting when stream work does not settle", async () => {
+    vi.useFakeTimers();
+
+    const sshQuery = vi.fn(() => new Promise<string>(() => {}));
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.stdout.write("x");
+    await Promise.resolve();
+    expect(sshQuery).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    const stopPromise = manager.stopAll().then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(stopped).toBe(true);
+    await stopPromise;
+  });
+
+  it("ignores first stdout received after shutdown", async () => {
+    const sshQuery = makeSshReviewerQueryFn([], ["Istale"]);
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    await manager.stopAll();
+    child.stdout.write("x");
+    await flushAsyncWork();
+
+    expect(sshQuery).not.toHaveBeenCalled();
+  });
+
+  it("refreshes integration metadata while reconnecting", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const { manager } = createManager([firstChild]);
+
+    await manager.reconcile([makeIntegration("gerrit-a", { name: "Old name" })]);
+    firstChild.emit("close", 255, null);
+    await manager.reconcile([makeIntegration("gerrit-a", { name: "New name" })]);
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      integrationName: "New name",
+      state: "reconnecting",
+    }));
+  });
+
   // ── reviewer-added ──────────────────────────────────────────────────────────
 
   it("reviewer-added: triggers review when VE itself is added as reviewer", async () => {

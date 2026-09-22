@@ -718,6 +718,20 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     await store.saveChangePerRepository(
       codingTaskId,
       "main",
+      "Iorphaned",
+      null,
+      "ORPHANED",
+      "gerrit-coding",
+      "gerrit",
+    );
+    await expect(store.getEventStreamDemand()).resolves.toEqual({
+      requiredIntegrationIds: ["gerrit-review"],
+      reviewIntegrationIds: ["gerrit-review"],
+    });
+
+    await store.saveChangePerRepository(
+      codingTaskId,
+      "main",
       "Icoding",
       null,
       "OPEN",

@@ -673,7 +673,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
            WHERE task.task_type = 'code-gen'
              AND task.state NOT IN (${terminalPlaceholders})
              AND change.change_id <> ''
-             AND change.status <> 'NO_CHANGE'
+             AND change.status NOT IN ('NO_CHANGE', 'ORPHANED')
 
            UNION ALL
 

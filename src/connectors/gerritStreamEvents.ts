@@ -22,6 +22,7 @@ type SshQueryFn = (args: string[], config: GerritStreamConfig) => Promise<string
 const log = getLogger("gerrit-stream-events");
 const DEFAULT_RECONNECT_DELAY_MS = 2_000;
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
+const DEFAULT_STOP_DRAIN_TIMEOUT_MS = 1_000;
 
 type GerritEventType =
   | "change-merged"
@@ -53,7 +54,6 @@ interface GerritStreamHandle {
   child: ChildProcessWithoutNullStreams;
   stdoutBuffer: string;
   stderrBuffer: string;
-  reconnectTimer: ReturnType<typeof setTimeout> | null;
   stopRequested: boolean;
   /** True once the first byte of stdout data has been received (SSH handshake complete). */
   hasReceivedData: boolean;
@@ -64,6 +64,7 @@ interface GerritStreamHandle {
 export interface GerritStreamEventsManagerOptions extends IntegrationEventStreamDependencies {
   reconnectDelayMs?: number;
   maxReconnectAttempts?: number;
+  stopDrainTimeoutMs?: number;
   spawnProcess?: typeof spawn;
   /** Injectable SSH query function — used by tests to avoid real SSH calls. */
   sshQueryFn?: SshQueryFn;
@@ -79,14 +80,20 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   private readonly pendingBackfillIntegrations = new Set<string>();
   private readonly backfillPromises = new Map<string, Promise<void>>();
   private readonly exhaustedIntegrations = new Map<string, GerritStreamConfig>();
+  private readonly pendingReconnects = new Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    config: GerritStreamConfig;
+  }>();
   private readonly reconnectDelayMs: number;
   private readonly maxReconnectAttempts: number;
+  private readonly stopDrainTimeoutMs: number;
   private readonly spawnProcess: typeof spawn;
   private readonly sshQueryFn: SshQueryFn;
 
   constructor(private readonly options: GerritStreamEventsManagerOptions) {
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
+    this.stopDrainTimeoutMs = options.stopDrainTimeoutMs ?? DEFAULT_STOP_DRAIN_TIMEOUT_MS;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.sshQueryFn = options.sshQueryFn ?? defaultSshQuery;
   }
@@ -101,6 +108,14 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     for (const integrationId of [...this.exhaustedIntegrations.keys()]) {
       if (!this.desiredIntegrations.has(integrationId)) {
         this.exhaustedIntegrations.delete(integrationId);
+      }
+    }
+
+    for (const integrationId of [...this.pendingReconnects.keys()]) {
+      if (!this.desiredIntegrations.has(integrationId)) {
+        this.stopHandle(integrationId, { removeStatus: true });
+        this.backfilledIntegrations.delete(integrationId);
+        this.pendingBackfillIntegrations.delete(integrationId);
       }
     }
 
@@ -131,6 +146,12 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         continue;
       }
 
+      const currentStatus = this.statuses.get(integration.id);
+      if (currentStatus) {
+        currentStatus.integrationName = integration.name;
+        currentStatus.integrationType = integration.provider;
+      }
+
       const exhaustedConfig = this.exhaustedIntegrations.get(integration.id);
       if (exhaustedConfig) {
         if (sameConfig(exhaustedConfig, parsed.config)) continue;
@@ -138,16 +159,23 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         this.backfilledIntegrations.delete(integration.id);
       }
 
+      const pendingReconnect = this.pendingReconnects.get(integration.id);
+      if (pendingReconnect) {
+        if (sameConfig(pendingReconnect.config, parsed.config)) continue;
+        this.cancelReconnect(integration.id);
+        this.backfilledIntegrations.delete(integration.id);
+      }
+
       const existing = this.handles.get(integration.id);
       if (!existing) {
-        this.startHandle(integration, parsed.config, this.statuses.get(integration.id)?.reconnectCount ?? 0);
+        this.startHandle(integration, parsed.config, 0);
         continue;
       }
 
       if (!sameConfig(existing.config, parsed.config)) {
         this.backfilledIntegrations.delete(integration.id);
         this.stopHandle(integration.id);
-        this.startHandle(integration, parsed.config, this.statuses.get(integration.id)?.reconnectCount ?? 0);
+        this.startHandle(integration, parsed.config, 0);
         continue;
       }
 
@@ -190,7 +218,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   }
 
   /** Terminate all active stream-events SSH processes and clear state. */
-  stopAll(): Promise<void> {
+  async stopAll(): Promise<void> {
     this.desiredIntegrations.clear();
     this.backfilledIntegrations.clear();
     this.pendingBackfillIntegrations.clear();
@@ -199,10 +227,29 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       ...[...this.handles.values()].map((handle) => handle.processingChain),
       ...this.backfillPromises.values(),
     ];
+    this.backfillPromises.clear();
+    for (const integrationId of [...this.pendingReconnects.keys()]) {
+      this.cancelReconnect(integrationId);
+    }
     for (const integrationId of [...this.handles.keys()]) {
       this.stopHandle(integrationId, { removeStatus: true });
     }
-    return Promise.allSettled(pendingWork).then(() => undefined);
+    if (pendingWork.length === 0) return;
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      Promise.allSettled(pendingWork).then(() => "settled" as const),
+      new Promise<"timeout">((resolve) => {
+        timeout = setTimeout(() => resolve("timeout"), this.stopDrainTimeoutMs);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (result === "timeout") {
+      log.warn(
+        { pendingWorkCount: pendingWork.length, timeoutMs: this.stopDrainTimeoutMs },
+        "Gerrit stream-events shutdown drain timed out"
+      );
+    }
   }
 
   /** Spawn a new SSH `gerrit stream-events` process for an integration and register its event handlers. */
@@ -234,7 +281,6 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       child,
       stdoutBuffer: "",
       stderrBuffer: "",
-      reconnectTimer: null,
       stopRequested: false,
       hasReceivedData: false,
       processingChain: Promise.resolve(),
@@ -328,8 +374,10 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       "Gerrit stream-events disconnected; scheduling reconnect"
     );
 
-    handle.reconnectTimer = setTimeout(() => {
-      handle.reconnectTimer = null;
+    const timer = setTimeout(() => {
+      const pendingReconnect = this.pendingReconnects.get(integrationId);
+      if (pendingReconnect?.timer !== timer) return;
+      this.pendingReconnects.delete(integrationId);
       const nextIntegration = this.desiredIntegrations.get(integrationId);
       if (!nextIntegration) {
         return;
@@ -345,17 +393,22 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       }
       this.startHandle(nextIntegration, parsed.config, status.reconnectCount);
     }, this.reconnectDelayMs);
+    this.pendingReconnects.set(integrationId, { timer, config: handle.config });
+  }
+
+  private cancelReconnect(integrationId: string): void {
+    const pendingReconnect = this.pendingReconnects.get(integrationId);
+    if (!pendingReconnect) return;
+    clearTimeout(pendingReconnect.timer);
+    this.pendingReconnects.delete(integrationId);
   }
 
   /** Kill the SSH process for an integration and optionally remove its status entry. */
   private stopHandle(integrationId: string, options?: { removeStatus?: boolean }): void {
+    this.cancelReconnect(integrationId);
     const handle = this.handles.get(integrationId);
     if (handle) {
       handle.stopRequested = true;
-      if (handle.reconnectTimer) {
-        clearTimeout(handle.reconnectTimer);
-        handle.reconnectTimer = null;
-      }
       this.handles.delete(integrationId);
       handle.child.kill("SIGTERM");
     }
@@ -465,6 +518,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
   /** Append incoming stdout chunk to the line buffer and dispatch complete lines. */
   private consumeStdout(handle: GerritStreamHandle, chunk: string): void {
+    if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
+      return;
+    }
     if (!handle.hasReceivedData) {
       handle.hasReceivedData = true;
       const status = this.statuses.get(handle.integration.id);

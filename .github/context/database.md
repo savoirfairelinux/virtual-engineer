@@ -31,7 +31,8 @@ project has active tasks.
 project bindings, tasks, push targets, and per-repository changes; it adds no
 schema or migration. Enabled review projects request their `code_review`
 integration immediately. Coding push targets request a stream only while a
-non-terminal task has a persisted external change, and non-terminal review
+non-terminal task has a persisted, non-`NO_CHANGE`, non-`ORPHANED` external
+change, and non-terminal review
 tasks retain their project's review integration even when that project is
 disabled. The result separately identifies enabled review-project integrations
 so runtime project changes can request a targeted assignment backfill.
