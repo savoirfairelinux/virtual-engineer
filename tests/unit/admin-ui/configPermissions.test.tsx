@@ -230,7 +230,6 @@ describe("Configuration PBAC", () => {
   it.each<[ConfigSectionId, string]>([
     ["overview", "overview.read"],
     ["integrations", "integration.read"],
-    ["oauth", "oauth.read"],
     ["agents", "agent.read"],
     ["projects", "project.read"],
     ["prompts", "prompt.read"],
@@ -250,6 +249,17 @@ describe("Configuration PBAC", () => {
 
     expect(canAccessConfigSection(hasPermission, section)).toBe(true);
     expect(canViewConfiguration(hasPermission)).toBe(true);
+  });
+
+  it("does not expose Configuration for standalone OAuth permissions", () => {
+    const user: ApiMe = {
+      id: "oauth-reader",
+      username: "oauth-reader",
+      role: "viewer",
+      capabilities: { superuser: false, grants: { "oauth.read": "*" } },
+    };
+
+    expect(canViewConfiguration(makeHasPermission(user))).toBe(false);
   });
 
   it("shows Projects for a user with only scoped project read grants", () => {
@@ -315,7 +325,7 @@ describe("Configuration PBAC", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
-  it("gates agent, prompt, OAuth, and System mutations by exact permission", () => {
+  it("gates agent, prompt, and System mutations by exact permission", () => {
     const { unmount: unmountAgent } = renderWithGrants("#config/agents", {
       "agent.read": "*",
       "agent.create": "*",
@@ -334,13 +344,6 @@ describe("Configuration PBAC", () => {
     expect(screen.getByRole("button", { name: "New prompt" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     unmountPrompt();
-
-    const { unmount: unmountOAuth } = renderWithGrants("#config/oauth", {
-      "oauth.read": "*",
-      "oauth.create": "*",
-    });
-    expect(screen.getByRole("button", { name: "Register app" })).toBeDefined();
-    unmountOAuth();
 
     renderWithGrants("#config/system", { "system.read": "*" });
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();

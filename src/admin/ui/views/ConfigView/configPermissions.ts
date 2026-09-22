@@ -19,7 +19,9 @@ export const CONFIG_SECTION_PERMISSIONS: Record<ConfigSectionId, string> = {
   system: "system.read",
 };
 
-export const CONFIG_PERMISSIONS = [...new Set(Object.values(CONFIG_SECTION_PERMISSIONS))];
+export const CONFIG_PERMISSIONS = [
+  ...new Set(Object.values(CONFIG_SECTION_PERMISSIONS).filter((permission) => permission !== "oauth.read")),
+];
 
 export function canAccessConfigSection(hasPermission: HasPermission, section: ConfigSectionId): boolean {
   return hasPermission(CONFIG_SECTION_PERMISSIONS[section]);
