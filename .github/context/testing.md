@@ -49,6 +49,8 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 
 ## Conventions
 
+- Worker result transport tests (`workerResult`) cover delayed writes, large success/failure envelopes through actual Node process pipes, credential-filtered error events, write failure, and the 15-minute review budget.
+
 - Prompt/access regressions cover duplicate labels with opaque ids, private copies across users, immutable built-ins through the admin API, viewer read-only ceilings with ownership/explicit grants, preserved delegated reads, role-default rebinding, concurrent role updates and their returned snapshots, and operator settings restrictions. Configuration UI tests cover copy-route round-trips, prefilled private copies, copy navigation/unload guards and save cleanup, homonymous prompt list/selector labels, a non-fallback copy icon, create permission gating, and direct built-in edit routes.
 
 - OpenShell denial tests cover both OCSF shorthand and key-value log formats; runner tests inject `getSandboxLogs` and assert task/project-attributed persistence on success and setup failure without requiring a live gateway. Overlapping snapshots must persist each raw event line once, preserve a later same-payload line with a distinct timestamp, and retry sink failures.

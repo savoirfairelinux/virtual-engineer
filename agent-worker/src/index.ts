@@ -32,6 +32,7 @@ import {
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
 import { loadWorkerPrompts } from './promptLoader.js';
+import { runWorker } from './workerResult.js';
 import type { WorkerPrompts } from './promptLoader.js';
 import { parseToolList } from './networkGuard.js';
 import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
@@ -237,7 +238,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
     systemPromptSource: PROMPTS.systemPromptSource,
   });
 
-  const agent = await runAgent(PROMPTS.userPrompt, 9 * 60 * 1000, 'review');
+  const agent = await runAgent(PROMPTS.userPrompt, 15 * 60 * 1000, 'review');
   try {
     let rawOutput = agent.content ?? '';
     if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
@@ -599,25 +600,7 @@ async function main(): Promise<AgentResult> {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-main()
-  .then((result) => {
-    process.stdout.write(JSON.stringify(result) + '\n');
-    process.exit(0);
-  })
-  .catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    const stack = err instanceof Error ? (err.stack ?? msg) : msg;
-    process.stdout.write(
-      JSON.stringify({
-        status: 'failed',
-        modifiedFiles: [],
-        summary: `Agent worker error: ${msg}`,
-        agentLogs: stack,
-        metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, error: msg },
-      } satisfies AgentResult) + '\n',
-    );
-    process.exit(0); // always exit 0 so the host can read stdout
-  });
+void runWorker(main, { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL });
 
 // Suppress unused import warning: AgentLogEvent is used by AgentResult (transitive)
 export type { AgentLogEvent };
