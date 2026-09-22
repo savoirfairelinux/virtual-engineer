@@ -687,7 +687,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
     onDirtyChange(name.trim().length > 0);
   };
 
-  const handleTest = async () => {
+  const handleTest = async (): Promise<boolean> => {
     setTesting(true);
     setTestResult(null);
     setTestLogs([]);
@@ -701,8 +701,10 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
       );
       setTestLogs(res.logs ?? []);
       setTestResult(res.success ? (res.message ?? "Connection successful") : (res.error ?? "Test failed"));
+      return res.success;
     } catch (e) {
       setTestResult(e instanceof Error ? `Error: ${e.message}` : "Test failed");
+      return false;
     } finally {
       setTesting(false);
     }
@@ -716,6 +718,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
       if (isEdit) {
         await api.put(`/api/admin/integrations/${integration!.id}`, { name, config });
       } else {
+        if (!(await handleTest())) return;
         await api.post("/api/admin/integrations", { provider: selectedType, name, config });
       }
       onSaved();
@@ -760,8 +763,8 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
           </button>
           <span className="spacer" />
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
+          <button className="btn primary" onClick={handleSave} disabled={saving || testing}>
+            {testing && !isEdit ? "Testing…" : saving ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
           </button>
         </div>
       }
