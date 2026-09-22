@@ -42,6 +42,7 @@ describe("PluginIntegrationStreamEventsManager", () => {
     }]);
     const streamManager: IntegrationEventStreamManager = {
       reconcile: vi.fn(async () => undefined),
+      requestBackfill: vi.fn(async () => undefined),
       getStatus: vi.fn((integrationId: string) =>
         integrationId === "gitlab-stream"
           ? listStatuses()[0] ?? null
@@ -93,8 +94,44 @@ describe("PluginIntegrationStreamEventsManager", () => {
       }),
     ]);
 
+    await manager.requestBackfill(["gitlab-stream"]);
+    expect(streamManager.requestBackfill).toHaveBeenCalledWith(["gitlab-stream"]);
+
     await manager.reconcile([]);
 
     expect(streamManager.stopAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores backfill requests for provider managers that do not support them", async () => {
+    registerBuiltinPlugins();
+    const original = getProviderDescriptor("gitlab");
+    if (!original) throw new Error("expected builtin gitlab descriptor");
+    const legacyManager = {
+      reconcile: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => null),
+      listStatuses: vi.fn(() => []),
+      stopAll: vi.fn(async () => undefined),
+    } as IntegrationEventStreamManager;
+    registerPlugin({
+      ...original,
+      capabilities: {
+        ...original.capabilities,
+        code_review: {
+          ...original.capabilities.code_review,
+          streamEvents: { createManager: () => legacyManager },
+        },
+      },
+    } satisfies ProviderDescriptor);
+    const manager = new PluginIntegrationStreamEventsManager({
+      orchestrator: {
+        triggerFeedbackForChange: vi.fn(async () => undefined),
+        markChangeMerged: vi.fn(async () => undefined),
+        markChangeAbandoned: vi.fn(async () => undefined),
+      },
+      getReviewTrigger: () => undefined,
+    });
+    await manager.reconcile([makeIntegration("gitlab", "gitlab-stream")]);
+
+    await expect(manager.requestBackfill(["gitlab-stream"])).resolves.toBeUndefined();
   });
 });

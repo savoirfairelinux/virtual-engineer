@@ -76,6 +76,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   private readonly statuses = new Map<string, GerritStreamStatus>();
   private readonly desiredIntegrations = new Map<string, Integration>();
   private readonly backfilledIntegrations = new Set<string>();
+  private readonly pendingBackfillIntegrations = new Set<string>();
+  private readonly backfillPromises = new Map<string, Promise<void>>();
+  private readonly exhaustedIntegrations = new Map<string, GerritStreamConfig>();
   private readonly reconnectDelayMs: number;
   private readonly maxReconnectAttempts: number;
   private readonly spawnProcess: typeof spawn;
@@ -95,10 +98,17 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       this.desiredIntegrations.set(integration.id, integration);
     }
 
+    for (const integrationId of [...this.exhaustedIntegrations.keys()]) {
+      if (!this.desiredIntegrations.has(integrationId)) {
+        this.exhaustedIntegrations.delete(integrationId);
+      }
+    }
+
     for (const integrationId of [...this.handles.keys()]) {
       if (!this.desiredIntegrations.has(integrationId)) {
         this.stopHandle(integrationId, { removeStatus: true });
         this.backfilledIntegrations.delete(integrationId);
+        this.pendingBackfillIntegrations.delete(integrationId);
       }
     }
 
@@ -106,6 +116,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       const parsed = parseGerritStreamConfig(integration);
       if (!parsed.success) {
         this.stopHandle(integration.id);
+        this.pendingBackfillIntegrations.delete(integration.id);
         this.statuses.set(integration.id, {
           integrationId: integration.id,
           integrationName: integration.name,
@@ -120,6 +131,13 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         continue;
       }
 
+      const exhaustedConfig = this.exhaustedIntegrations.get(integration.id);
+      if (exhaustedConfig) {
+        if (sameConfig(exhaustedConfig, parsed.config)) continue;
+        this.exhaustedIntegrations.delete(integration.id);
+        this.backfilledIntegrations.delete(integration.id);
+      }
+
       const existing = this.handles.get(integration.id);
       if (!existing) {
         this.startHandle(integration, parsed.config, this.statuses.get(integration.id)?.reconnectCount ?? 0);
@@ -127,6 +145,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       }
 
       if (!sameConfig(existing.config, parsed.config)) {
+        this.backfilledIntegrations.delete(integration.id);
         this.stopHandle(integration.id);
         this.startHandle(integration, parsed.config, this.statuses.get(integration.id)?.reconnectCount ?? 0);
         continue;
@@ -140,6 +159,21 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       }
     }
     return Promise.resolve();
+  }
+
+  /** Re-run assignment discovery for selected live integrations without restarting SSH. */
+  async requestBackfill(integrationIds: readonly string[]): Promise<void> {
+    const requests: Promise<void>[] = [];
+    for (const integrationId of new Set(integrationIds)) {
+      if (!this.desiredIntegrations.has(integrationId)) continue;
+      const handle = this.handles.get(integrationId);
+      if (!handle?.hasReceivedData) {
+        this.pendingBackfillIntegrations.add(integrationId);
+        continue;
+      }
+      requests.push(this.runBackfillCoalesced(handle));
+    }
+    await Promise.all(requests);
   }
 
   /** Return a snapshot of the current stream status for a single integration, or null if unknown. */
@@ -159,10 +193,16 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   stopAll(): Promise<void> {
     this.desiredIntegrations.clear();
     this.backfilledIntegrations.clear();
+    this.pendingBackfillIntegrations.clear();
+    this.exhaustedIntegrations.clear();
+    const pendingWork = [
+      ...[...this.handles.values()].map((handle) => handle.processingChain),
+      ...this.backfillPromises.values(),
+    ];
     for (const integrationId of [...this.handles.keys()]) {
       this.stopHandle(integrationId, { removeStatus: true });
     }
-    return Promise.resolve();
+    return Promise.allSettled(pendingWork).then(() => undefined);
   }
 
   /** Spawn a new SSH `gerrit stream-events` process for an integration and register its event handlers. */
@@ -272,6 +312,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
     if (status.reconnectCount >= this.maxReconnectAttempts) {
       status.state = "error";
+      this.exhaustedIntegrations.set(integrationId, handle.config);
       this.desiredIntegrations.delete(integrationId);
       log.error(
         { integrationId, reconnectCount: status.reconnectCount, maxReconnectAttempts: this.maxReconnectAttempts },
@@ -367,6 +408,10 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       return;
     }
 
+    if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
+      return;
+    }
+
     if (changeIds.length === 0) {
       log.info(
         { integrationId: handle.integration.id, sshUser: handle.config.sshUser },
@@ -389,6 +434,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     }
 
     for (const changeId of capped) {
+      if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
+        return;
+      }
       try {
         await reviewTrigger.triggerReviewForChange(handle.integration.id, changeId, {
           triggerCause: "backfill",
@@ -400,6 +448,19 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         );
       }
     }
+  }
+
+  /** Share one in-flight backfill per integration across concurrent requests. */
+  private runBackfillCoalesced(handle: GerritStreamHandle): Promise<void> {
+    const integrationId = handle.integration.id;
+    const existing = this.backfillPromises.get(integrationId);
+    if (existing) return existing;
+
+    const promise = this.runBackfill(handle).finally(() => {
+      this.backfillPromises.delete(integrationId);
+    });
+    this.backfillPromises.set(integrationId, promise);
+    return promise;
   }
 
   /** Append incoming stdout chunk to the line buffer and dispatch complete lines. */
@@ -415,9 +476,13 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         { integrationId: handle.integration.id, integrationName: handle.integration.name, sshHost: handle.config.sshHost, sshPort: handle.config.sshPort },
         "Gerrit stream-events connected — listening for events"
       );
-      if (!this.backfilledIntegrations.has(handle.integration.id)) {
+      const initialBackfill = !this.backfilledIntegrations.has(handle.integration.id);
+      const requestedBackfill = this.pendingBackfillIntegrations.delete(handle.integration.id);
+      if (initialBackfill) {
         this.backfilledIntegrations.add(handle.integration.id);
-        void this.runBackfill(handle);
+      }
+      if (initialBackfill || requestedBackfill) {
+        void this.runBackfillCoalesced(handle);
       }
     }
     handle.stdoutBuffer += chunk;
@@ -452,6 +517,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
   /** Parse and dispatch a single JSON line received from `gerrit stream-events`. */
   private async processStreamLine(handle: GerritStreamHandle, line: string): Promise<void> {
+    if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
+      return;
+    }
     let payload: unknown;
     try {
       payload = JSON.parse(line) as unknown;
