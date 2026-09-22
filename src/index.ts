@@ -46,6 +46,7 @@ const SHUTDOWN_TIMEOUT_MS = 5_000;
  * `pollingIsRequired()` re-check instead of querying the DB per transition.
  */
 const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
+const STREAM_RECONCILE_DEBOUNCE_MS = 1_000;
 
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
@@ -237,9 +238,10 @@ async function main(): Promise<void> {
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
   });
+  let shuttingDown = false;
 
   /**
-   * Return the active integrations with their `configJson` augmented by the
+   * Return the demanded active integrations with their `configJson` augmented by the
    * SSH key-resolution extras (`_resolvedSshKeyPath` / `_agentPubKeyPath`) that
    * `preprocessConfig` produces. The stream-events listeners parse `configJson`
    * directly, so without this a generated-key (encrypted) or agent-identity
@@ -247,8 +249,12 @@ async function main(): Promise<void> {
    * fall back to plain SSH agent mode — matching the review/clone paths that
    * already run `preprocessConfig`.
    */
-  function resolveStreamIntegrations(): Integration[] {
-    return pluginManager.getActiveIntegrations().map((integration) => {
+  async function resolveStreamIntegrations(): Promise<Integration[]> {
+    const demand = await stateStore.getEventStreamDemand();
+    const requiredIntegrationIds = new Set(demand.requiredIntegrationIds);
+    return pluginManager.getActiveIntegrations()
+      .filter((integration) => requiredIntegrationIds.has(integration.id))
+      .map((integration): Integration => {
       let extras: Record<string, unknown>;
       try {
         extras = pluginManager.resolveConfigRuntimeExtras(integration);
@@ -264,7 +270,57 @@ async function main(): Promise<void> {
     });
   }
 
-  await integrationStreamEvents.reconcile(resolveStreamIntegrations());
+  let streamReconcilePending = false;
+  let streamReconcilePromise: Promise<void> | null = null;
+  let streamReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function reconcileIntegrationStreams(): Promise<void> {
+    if (shuttingDown) return Promise.resolve();
+    streamReconcilePending = true;
+    if (streamReconcilePromise) return streamReconcilePromise;
+
+    streamReconcilePromise = (async (): Promise<void> => {
+      while (streamReconcilePending && !shuttingDown) {
+        streamReconcilePending = false;
+        await integrationStreamEvents.reconcile(await resolveStreamIntegrations());
+      }
+    })().finally(() => {
+      streamReconcilePromise = null;
+      if (streamReconcilePending && !shuttingDown) {
+        reconcileIntegrationStreams().catch((err: unknown) => {
+          log.error({ err }, "pending integration stream reconcile failed");
+        });
+      }
+    });
+    return streamReconcilePromise;
+  }
+
+  function scheduleStreamReconcile(): void {
+    if (shuttingDown || streamReconcileTimer) return;
+    streamReconcileTimer = setTimeout(() => {
+      streamReconcileTimer = null;
+      reconcileIntegrationStreams().catch((err: unknown) => {
+        log.error({ err }, "integration stream reconcile failed");
+      });
+    }, STREAM_RECONCILE_DEBOUNCE_MS);
+  }
+
+  stateStore.onTaskTransition(() => {
+    scheduleStreamReconcile();
+  });
+
+  await reconcileIntegrationStreams();
+
+  async function requestReviewStreamBackfill(): Promise<void> {
+    if (shuttingDown) return;
+    const demand = await stateStore.getEventStreamDemand();
+    const activeIntegrationIds = new Set(
+      pluginManager.getActiveIntegrations().map((integration) => integration.id)
+    );
+    await integrationStreamEvents.requestBackfill(
+      demand.reviewIntegrationIds.filter((integrationId) => activeIntegrationIds.has(integrationId))
+    );
+  }
 
   const adminRuntimeConfig = {
     nodeEnv: config.nodeEnv,
@@ -304,7 +360,7 @@ async function main(): Promise<void> {
       concurrencyTracker,
       taskLifecycleCoordinator,
     );
-    await integrationStreamEvents.reconcile(resolveStreamIntegrations());
+    await reconcileIntegrationStreams();
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
   }
@@ -432,7 +488,9 @@ async function main(): Promise<void> {
         orchestrator.invalidateVcsConnector(id);
       },
       onProjectChange: () => {
-        refreshRuntimeDependencies().catch((err: unknown) => {
+        refreshRuntimeDependencies()
+          .then(() => requestReviewStreamBackfill())
+          .catch((err: unknown) => {
           log.error({ err }, "hot-reload of runtime dependencies failed");
         });
       },
@@ -505,8 +563,6 @@ async function main(): Promise<void> {
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
-  let shuttingDown = false;
-
   /** Stop all subsystems and exit cleanly on SIGINT or SIGTERM. */
   async function shutdown(signal: string): Promise<void> {
     if (shuttingDown) {
@@ -519,11 +575,18 @@ async function main(): Promise<void> {
       clearTimeout(pollingReconcileTimer);
       pollingReconcileTimer = null;
     }
+    if (streamReconcileTimer) {
+      clearTimeout(streamReconcileTimer);
+      streamReconcileTimer = null;
+    }
     pollingLoop.stop();
     runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
 
+    await streamReconcilePromise?.catch((err: unknown) => {
+      log.error({ err }, "integration stream reconcile failed during shutdown");
+    });
     await integrationStreamEvents.stopAll();
 
     try {
