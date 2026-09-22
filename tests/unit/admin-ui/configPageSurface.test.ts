@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigPageSurface } from "../../../src/admin/ui/views/ConfigView/ConfigPageSurface.js";
@@ -41,6 +41,26 @@ function renderGeneratedSshIntegration(): void {
     onSaved: vi.fn(),
     onDirtyChange: vi.fn(),
   }));
+}
+
+async function openNewGitHubIntegration(onSaved = vi.fn()): Promise<ReturnType<typeof vi.fn>> {
+  render(createElement(IntegrationFormModal, {
+    plugins: [{
+      provider: "github",
+      name: "GitHub",
+      capabilities: [],
+      domainCapabilities: ["issue_tracking"],
+      requiredFields: [],
+      agentConfigFields: [],
+    }],
+    onClose: vi.fn(),
+    onSaved,
+    onDirtyChange: vi.fn(),
+  }));
+
+  fireEvent.click(screen.getByRole("button", { name: /GitHub/ }));
+  fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "Primary GitHub" } });
+  return onSaved;
 }
 
 function replaceProperty(target: object, propertyKey: PropertyKey, value: unknown): () => void {
@@ -159,6 +179,53 @@ describe("ConfigPageSurface", () => {
     await user.click(within(screen.getByRole("status")).getByRole("button", { name: "Clear search" }));
     expect(screen.getByRole("button", { name: /GitHub/ })).toBeDefined();
     expect(screen.getByRole("button", { name: /Redmine/ })).toBeDefined();
+  });
+
+  it("tests a new integration before adding it", async () => {
+    const requestPaths: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = input.toString();
+      requestPaths.push(path);
+      if (path === "/api/admin/integrations/test") {
+        return new Response(JSON.stringify({ success: true, message: "Connection successful" }), { status: 200 });
+      }
+      if (path === "/api/admin/integrations") {
+        return new Response(JSON.stringify({ id: "github-1" }), { status: 201 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    try {
+      const onSaved = await openNewGitHubIntegration();
+      fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+
+      await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+      expect(requestPaths).toEqual([
+        "/api/admin/integrations/test",
+        "/api/admin/integrations",
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not add a new integration when its test fails", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: false,
+      error: "Authentication failed",
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const onSaved = await openNewGitHubIntegration();
+      fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+
+      expect(await screen.findByText("Authentication failed")).toBeDefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(onSaved).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("copies a generated SSH key without the Clipboard API", async () => {
