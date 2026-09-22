@@ -38,4 +38,39 @@ describe("decodeReviewWorkerOutput", () => {
   ])("rejects %s", (_label, stdout) => {
     expect(() => decodeReviewWorkerOutput(stdout)).toThrow(AgentWorkerProtocolError);
   });
+
+  it("retains masked stdout and stderr without exposing them to error serialization", () => {
+    const stdout = 'banner session-secret\n{"password":"hidden-password","status":';
+    try {
+      decodeReviewWorkerOutput(stdout, { code: 0, stderr: "Bearer hidden-bearer", secrets: ["session-secret"] });
+      expect.fail("expected a protocol error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AgentWorkerProtocolError);
+      const failure = error as AgentWorkerProtocolError;
+      expect(failure.diagnostics).toMatchObject({
+        exitCode: 0, stdoutBytes: Buffer.byteLength(stdout), stdoutTruncated: false,
+        stdout: 'banner <redacted>\n{"password":"<redacted>","status":',
+        stderr: "Bearer <redacted>",
+      });
+      expect(failure.diagnostics.parseError).toBeTruthy();
+      expect(JSON.stringify(failure)).not.toContain("banner");
+      expect(failure.message).toBe("Agent worker returned invalid JSON");
+    }
+  });
+
+  it("bounds diagnostics while preserving both ends and the original byte count", () => {
+    const stdout = `begin ${"é".repeat(100_000)} end`;
+    try {
+      decodeReviewWorkerOutput(stdout);
+      expect.fail("expected a protocol error");
+    } catch (error) {
+      const diagnostic = (error as AgentWorkerProtocolError).diagnostics;
+      expect(diagnostic.stdoutBytes).toBe(Buffer.byteLength(stdout));
+      expect(diagnostic.stdoutTruncated).toBe(true);
+      expect(Buffer.byteLength(diagnostic.stdout)).toBeLessThanOrEqual(65_536);
+      expect(diagnostic.stdout).toMatch(/^begin /);
+      expect(diagnostic.stdout).toMatch(/ end$/);
+      expect(diagnostic.stdout).not.toContain("\uFFFD");
+    }
+  });
 });

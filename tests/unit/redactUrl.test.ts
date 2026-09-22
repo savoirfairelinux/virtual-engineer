@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import { redactUrls, sanitizeErrorDetail } from "../../src/utils/redactUrl.js";
 
 describe("redactUrls", () => {
+  it("handles long unbroken worker output without quadratic URL matching", () => {
+    const text = "x".repeat(60_000);
+    const start = performance.now();
+    expect(redactUrls(text)).toBe(text);
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
   it("masks credentials embedded in an https clone URL", () => {
     const url =
       "https://x-access-token:gho_ABCDEFGHIJKLMNOPQRST@github.com/savoirfairelinux/virtual-engineer.git";

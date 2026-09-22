@@ -4,6 +4,7 @@ import {
   buildReviewSystemPrompt,
 } from "../../src/review/reviewOrchestrator.js";
 import { TaskLifecycleCoordinator } from "../../src/orchestrator/taskLifecycleCoordinator.js";
+import { AgentWorkerProtocolError } from "../../src/workspace/agentWorkerProtocol.js";
 import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
@@ -1987,6 +1988,25 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "container crashed");
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toContain("REVIEW_FAILED");
+  });
+
+  it("persists worker output diagnostics in the failed cycle without posting a review", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const error = new AgentWorkerProtocolError("Agent worker returned invalid JSON", "partial result", {
+      code: 0, stderr: "review timed out",
+    });
+    runner.runReviewInDocker.mockRejectedValueOnce(error);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow(error.message);
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(initial.taskId, 1, expect.objectContaining({
+      status: "failed", agentLogs: "partial result",
+      metadata: expect.objectContaining({ workerOutput: error.diagnostics }),
+    }));
+    expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
   });
 
   it("aborts a timed-out review before cleanup or provider effects", async () => {

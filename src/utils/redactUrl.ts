@@ -1,6 +1,6 @@
 /** Token-shaped values that must be masked regardless of the surrounding key. */
 const TOKEN_VALUE = /(gh[opusr]_[A-Za-z0-9]{16,})|(github_pat_[A-Za-z0-9_]{16,})/g;
-const URL_USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^/\s?#@]+@/gi;
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s?#@]+@/gi;
 const SCHEMELESS_USERINFO = /(^|[\s("'`])[^/\s:@]+:[^@\s/]+@(?=[A-Za-z0-9.-]+(?::\d+)?(?:[/:?#]|$))/g;
 const SENSITIVE_QUERY = /([?&](?:access[_-]?token|api[_-]?key|apikey|client[_-]?secret|client[_-]?id|credential|password|passwd|private[_-]?token|secret|token|auth(?:orization)?)(?:=))([^&#\s]*)/gi;
 const SENSITIVE_AUTH_PAIR = /((?:^|[\s,{(])["']?authorization["']?\s*[:=]\s*["']?)([^"'&,}]+)/gi;
