@@ -97,33 +97,3 @@ export function formatTicketFooter(
   // URL format systems: "System: ticketUrl"
   return `${systemName}: ${ticketUrl}`;
 }
-
-/**
- * Checks if a commit message already contains a ticket footer.
- *
- * Idempotent — safe to call multiple times. Prevents duplicate footers.
- * Checks for both system-specific and generic footer keywords.
- *
- * @param message The commit message
- * @param systemLabel The ticket system label (used to check for existing footer)
- * @returns true if message already contains a footer for this system or generic footer
- */
-export function hasTicketFooter(message: string, systemLabel?: string): boolean {
-  // Always check for generic footer keywords (e.g., "Closes:", "Refs:")
-  // These prevent duplicates across all systems
-  const genericFooterPattern = /^(Closes|Refs):/m;
-  if (genericFooterPattern.test(message)) return true;
-
-  // If system label provided, check for system-specific footer
-  if (systemLabel) {
-    const config = TICKET_SYSTEM_CONFIG[parseProviderFromSourceLabel(systemLabel)];
-    if (config) {
-      const systemName = config.displayName;
-      // Escape special regex chars if any, though system names are simple
-      const footerPattern = new RegExp(`^${systemName}:`, "m");
-      if (footerPattern.test(message)) return true;
-    }
-  }
-
-  return false;
-}
