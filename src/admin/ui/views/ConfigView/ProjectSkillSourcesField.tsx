@@ -30,7 +30,11 @@ export interface SkillSourceRow {
 const MAX_TCP_PORT = 65_535;
 
 function newSkillSourceRowId(): string {
-  return crypto.randomUUID();
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return Array.from(
+    crypto.getRandomValues(new Uint32Array(4)),
+    (value) => value.toString(16).padStart(8, "0"),
+  ).join("-");
 }
 
 export function emptySkillSourceRow(): SkillSourceRow {
