@@ -116,12 +116,33 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+async function requestDownload(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const requestToken = getStoredToken();
+  const res = await fetch(path, {
+    method: "GET",
+    headers: authHeaders(requestToken),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const j = (await res.json()) as { error?: unknown; message?: unknown };
+      if (typeof j.message === "string" && j.message) msg = j.message;
+      else if (typeof j.error === "string" && j.error) msg = j.error;
+    } catch { /* ignore */ }
+    if (res.status === 401) notifyUnauthorized(requestToken);
+    throw new ApiError(res.status, msg);
+  }
+  return res.blob();
+}
+
 export const api = {
   get:    <T>(path: string, options?: RequestOptions) => request<T>("GET", path, undefined, options),
   post:   <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("POST", path, body, options),
   put:    <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PUT", path, body, options),
   patch:  <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("PATCH", path, body ?? {}, options),
   delete: <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("DELETE", path, body, options),
+  download: (path: string, options: RequestOptions = {}): Promise<Blob> => requestDownload(path, options),
 };
 
 /* ─── Auth flow ───────────────────────────────────────────────────────── */

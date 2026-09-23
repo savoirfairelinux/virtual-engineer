@@ -531,6 +531,18 @@ export interface ApiAuditPage {
   offset: number;
 }
 
+export interface ApiAuditIntegrationOption {
+  id: string;
+  name: string;
+}
+
+export interface ApiAuditOptions {
+  actions: string[];
+  actors: string[];
+  targetTypes: string[];
+  integrations: ApiAuditIntegrationOption[];
+}
+
 /* ─── Bootstrap injected by the server ────────────────────────────────── */
 export interface VeAdminBootstrap {
   requiresAuth: boolean;

@@ -184,6 +184,54 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(empty.entries).toHaveLength(0);
       expect(empty.total).toBe(0);
     });
+
+    it("filters by inclusive calendar dates and rejects invalid ranges", async () => {
+      const future = await fetch(
+        `${baseUrl}/api/admin/audit?from=2099-01-01&to=2099-01-31`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(future.status).toBe(200);
+      expect((await future.json() as { entries: unknown[] }).entries).toHaveLength(0);
+
+      const invalid = await fetch(
+        `${baseUrl}/api/admin/audit?from=2026-09-23&to=2026-09-22`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(invalid.status).toBe(400);
+    });
+
+    it("returns filter options and exports a quoted CSV", async () => {
+      await store.appendAuditEntry({
+        actorName: "alice",
+        action: "integration.update",
+        targetType: "integration",
+        targetId: "int-1",
+        details: { name: "GitLab, primary", note: 'changed "token"' },
+      });
+      const optionsResponse = await fetch(`${baseUrl}/api/admin/audit/options`, {
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(optionsResponse.status).toBe(200);
+      expect(await optionsResponse.json()).toMatchObject({
+        actions: expect.arrayContaining(["integration.update"]),
+        actors: expect.arrayContaining(["alice"]),
+        targetTypes: expect.arrayContaining(["integration"]),
+        integrations: [{ id: "int-1", name: "GitLab, primary" }],
+      });
+
+      const csvResponse = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?actor=alice&integration=int-1`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(csvResponse.status).toBe(200);
+      expect(csvResponse.headers.get("content-type")).toContain("text/csv");
+      expect(csvResponse.headers.get("content-disposition")).toContain("attachment");
+      const csv = await csvResponse.text();
+      expect(csv).toContain('"id","createdAt","actorUserId","actorName","action","targetType","targetId","details"');
+      expect(csv).toContain('"alice"');
+      expect(csv).toContain('""name"":""GitLab, primary""');
+      expect(csv).toContain('changed \\""token\\"""');
+    });
   });
 
   describe("mutation instrumentation", () => {

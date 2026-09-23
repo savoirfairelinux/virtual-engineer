@@ -27,7 +27,8 @@
 
 ## Audit trail store
 
-- `AuditStoreApi.listAuditActions()` reads the distinct values of `audit_log.action` in alphabetical order for the admin audit filter; it adds no table, column, index, or migration.
+- `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.
+- `AuditStoreApi.listAuditActions()`, `listAuditActors()`, `listAuditIntegrations()`, and `listAuditTargetTypes()` read distinct audit filter options for the admin UI/export page; they add no table, column, index, or migration.
 
 ## Project Integration Bindings
 

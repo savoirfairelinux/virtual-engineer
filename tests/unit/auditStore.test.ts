@@ -78,6 +78,40 @@ describe("auditStore", () => {
     expect(combined.entries[0]?.actorName).toBe("bob");
   });
 
+  it("filters by date range and integration reference", async () => {
+    const first = await store.appendAuditEntry({
+      actorName: "alice",
+      action: "integration.update",
+      targetType: "integration",
+      targetId: "int-1",
+      details: { name: "GitLab" },
+    });
+    await store.appendAuditEntry({
+      actorName: "alice",
+      action: "project.ticket_source_set",
+      targetType: "project",
+      targetId: "project-1",
+      details: { integrationId: "int-1" },
+    });
+    await store.appendAuditEntry({
+      actorName: "bob",
+      action: "integration.update",
+      targetType: "integration",
+      targetId: "int-2",
+      details: { name: "GitHub" },
+    });
+
+    const byDate = await store.listAuditEntries({
+      createdFrom: new Date(first.createdAt.getTime() - 1),
+      createdBefore: new Date(first.createdAt.getTime() + 1_000),
+    });
+    expect(byDate.total).toBe(3);
+
+    const byIntegration = await store.listAuditEntries({ integrationId: "int-1" });
+    expect(byIntegration.total).toBe(2);
+    expect(byIntegration.entries.map((entry) => entry.targetId)).toEqual(["project-1", "int-1"]);
+  });
+
   it("lists distinct audit actions in stable order", async () => {
     await store.appendAuditEntry({ actorName: "alice", action: "user.create" });
     await store.appendAuditEntry({ actorName: "alice", action: "auth.login" });
@@ -85,6 +119,31 @@ describe("auditStore", () => {
 
     const actions = await store.listAuditActions();
     expect(actions).toEqual(["auth.login", "user.create"]);
+  });
+
+  it("lists stable audit filter options", async () => {
+    await store.appendAuditEntry({
+      actorName: "zara",
+      action: "integration.update",
+      targetType: "integration",
+      targetId: "int-2",
+      details: { name: "GitHub" },
+    });
+    await store.appendAuditEntry({
+      actorName: "alice",
+      action: "integration.create",
+      targetType: "integration",
+      targetId: "int-1",
+      details: { name: "GitLab" },
+    });
+    await store.appendAuditEntry({ actorName: "zara", action: "user.update", targetType: "user" });
+
+    expect(await store.listAuditActors()).toEqual(["alice", "zara"]);
+    expect(await store.listAuditTargetTypes()).toEqual(["integration", "user"]);
+    expect(await store.listAuditIntegrations()).toEqual([
+      { id: "int-2", name: "GitHub" },
+      { id: "int-1", name: "GitLab" },
+    ]);
   });
 
   it("paginates with limit and offset while total stays constant", async () => {

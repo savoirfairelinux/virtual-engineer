@@ -154,6 +154,22 @@ describe("AuditSection click-to-filter", () => {
     });
   });
 
+  it("filters by a start and end date", async () => {
+    const user = userEvent.setup();
+    getMock.mockResolvedValue(page([entry()]));
+    render(<AuditSection />);
+
+    const startDate = await screen.findByLabelText("Start date");
+    const endDate = screen.getByLabelText("End date");
+    await user.type(startDate, "2026-09-01");
+    await user.type(endDate, "2026-09-23");
+
+    await waitFor(() => {
+      expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("from=2026-09-01"));
+      expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("to=2026-09-23"));
+    });
+  });
+
   it("sets the action filter when clicking an action tag", async () => {
     getMock.mockResolvedValue(page([entry()]));
     render(<AuditSection />);

@@ -32,6 +32,10 @@ const filterButtonStyle: React.CSSProperties = {
   textAlign: "left",
 };
 
+interface AuditSectionProps {
+  onExport?: () => void;
+}
+
 /** Short technical tokens rendered as acronyms rather than capitalized words. */
 const ACRONYMS = new Set(["ip", "url", "id", "api", "ssh", "http", "https", "json", "uri"]);
 
@@ -130,24 +134,28 @@ function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null
   );
 }
 
-export function AuditSection() {
+export function AuditSection({ onExport }: AuditSectionProps = {}) {
   const [entries, setEntries] = useState<ApiAuditEntry[]>([]);
   const [actions, setActions] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [actionFilter, setActionFilter] = useState("");
   const [actorFilter, setActorFilter] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const load = useCallback(async (nextOffset: number, action: string, actor: string) => {
+  const load = useCallback(async (nextOffset: number, action: string, actor: string, from: string, to: string) => {
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(nextOffset) });
       if (action.trim()) params.set("action", action.trim());
       if (actor.trim()) params.set("actor", actor.trim());
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const page = await api.get<ApiAuditPage>(`/api/admin/audit?${params.toString()}`);
       setEntries(page.entries);
       setActions(page.actions);
@@ -162,9 +170,9 @@ export function AuditSection() {
 
   // Reload on filter change (debounced) — filters reset pagination.
   useEffect(() => {
-    const id = setTimeout(() => { void load(0, actionFilter, actorFilter); }, 300);
+    const id = setTimeout(() => { void load(0, actionFilter, actorFilter, startDate, endDate); }, 300);
     return () => clearTimeout(id);
-  }, [actionFilter, actorFilter, load]);
+  }, [actionFilter, actorFilter, endDate, load, startDate]);
 
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + entries.length, total);
@@ -178,9 +186,16 @@ export function AuditSection() {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Audit trail</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Timestamped record of every admin configuration change.</p>
           </div>
-          <button className="btn" data-tour="audit-refresh" onClick={() => void load(offset, actionFilter, actorFilter)} disabled={loading}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {onExport && (
+              <button className="btn primary" onClick={onExport}>
+                <Icon name="file" size={14} /> Export CSV
+              </button>
+            )}
+            <button className="btn" data-tour="audit-refresh" onClick={() => void load(offset, actionFilter, actorFilter, startDate, endDate)} disabled={loading}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
         </div>
       </div>
 
@@ -201,6 +216,27 @@ export function AuditSection() {
           placeholder="Filter by actor…"
           style={filterControlStyle}
         />
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
+          From
+          <input
+            type="date"
+            aria-label="Start date"
+            value={startDate}
+            onChange={(event) => setStartDate(event.target.value)}
+            style={{ ...filterControlStyle, width: "150px" }}
+          />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
+          To
+          <input
+            type="date"
+            aria-label="End date"
+            value={endDate}
+            min={startDate || undefined}
+            onChange={(event) => setEndDate(event.target.value)}
+            style={{ ...filterControlStyle, width: "150px" }}
+          />
+        </label>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>
           {loading ? "Loading…" : `${from}–${to} of ${total}`}
@@ -291,14 +327,14 @@ export function AuditSection() {
         <button
           className="btn"
           disabled={loading || offset === 0}
-          onClick={() => void load(Math.max(0, offset - PAGE_SIZE), actionFilter, actorFilter)}
+          onClick={() => void load(Math.max(0, offset - PAGE_SIZE), actionFilter, actorFilter, startDate, endDate)}
         >
           Newer
         </button>
         <button
           className="btn"
           disabled={loading || offset + entries.length >= total}
-          onClick={() => void load(offset + PAGE_SIZE, actionFilter, actorFilter)}
+          onClick={() => void load(offset + PAGE_SIZE, actionFilter, actorFilter, startDate, endDate)}
         >
           Older
         </button>

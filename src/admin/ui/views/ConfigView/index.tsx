@@ -21,6 +21,7 @@ import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
+import { AuditExportSection }   from "./AuditExportSection.tsx";
 import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
 import { DenialsSection }       from "./DenialsSection.tsx";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
@@ -317,7 +318,12 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "users"        && <UsersSection {...routedProps} />}
       {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}
       {effectiveSec === "policies"     && <PoliciesSection {...routedProps} />}
-      {effectiveSec === "audit"        && <AuditSection />}
+      {effectiveSec === "audit" && effectiveRoute.mode === "list" && (
+        <AuditSection onExport={() => navigate({ section: "audit", mode: "export" })} />
+      )}
+      {effectiveSec === "audit" && effectiveRoute.mode === "export" && (
+        <AuditExportSection onBack={() => navigate({ section: "audit", mode: "list" })} />
+      )}
       {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} onDirtyChange={routedProps.setDirty} />}
     </>
   );
