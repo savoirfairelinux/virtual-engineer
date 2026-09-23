@@ -9,6 +9,7 @@ import {
   type ConfigSectionId,
 } from "./configRouting.ts";
 import { canAccessConfigRoute, canAccessConfigSection } from "./configPermissions.ts";
+import { EMPTY_LIST_FILTER, type ListFilterState } from "./listFilters.ts";
 
 /* ─── Local sub-component imports ─────────────────────────────────────── */
 import { ConfigOverview }       from "./ConfigOverview.tsx";
@@ -90,6 +91,8 @@ export interface ConfigSectionRouting {
   navigate: (route: ConfigRoute) => void;
   markClean: () => void;
   setDirty: (dirty: boolean) => void;
+  listFilter: ListFilterState;
+  onListFilterChange: (next: ListFilterState) => void;
 }
 
 export type ConfigSectionProps = ConfigViewData & ConfigSectionRouting;
@@ -113,6 +116,7 @@ export function ConfigView(props: ConfigViewData) {
 
   const [route, setRoute] = useState<ConfigRoute>(() => parseConfigHash(window.location.hash));
   const [isDirty, setIsDirty] = useState(false);
+  const [listFilters, setListFilters] = useState<Partial<Record<ConfigSectionId, ListFilterState>>>({});
   const routeRef = useRef(route);
   const dirtyRef = useRef(isDirty);
   const historyIndexRef = useRef(0);
@@ -257,6 +261,10 @@ export function ConfigView(props: ConfigViewData) {
     setIsDirty(dirty);
   }, []);
 
+  const onListFilterChange = useCallback((next: ListFilterState) => {
+    setListFilters((current) => ({ ...current, [effectiveSec]: next }));
+  }, [effectiveSec]);
+
   function handleSectionChange(id: ConfigSectionId) {
     navigate({ section: id, mode: "list" });
   }
@@ -297,6 +305,8 @@ export function ConfigView(props: ConfigViewData) {
     navigate,
     markClean,
     setDirty,
+    listFilter: listFilters[effectiveSec] ?? EMPTY_LIST_FILTER,
+    onListFilterChange,
   };
 
   useEffect(() => {
