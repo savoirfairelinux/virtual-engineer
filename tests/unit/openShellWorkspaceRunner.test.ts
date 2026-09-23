@@ -103,6 +103,7 @@ function reviewInput(
   agentAdapter: AgentAdapter,
   overrides: Partial<ReviewWorkspaceInput> = {},
 ): ReviewWorkspaceInput & { agentAdapter: AgentAdapter } {
+  const { agentAdapter: overrideAgentAdapter, ...rest } = overrides;
   return {
     changeId: "Iabc" as ExternalChangeId,
     reviewStrategy: "ve_direct",
@@ -112,8 +113,8 @@ function reviewInput(
     prompt: "review this diff",
     systemPrompt: "review",
     agentToken: "token",
-    agentAdapter,
-    ...overrides,
+    ...rest,
+    agentAdapter: overrideAgentAdapter ?? agentAdapter,
   };
 }
 
