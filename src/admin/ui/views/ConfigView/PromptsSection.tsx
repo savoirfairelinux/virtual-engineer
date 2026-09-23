@@ -1,26 +1,27 @@
-import { useState } from "react";
+import { useMemo } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import { PromptFormModal } from "./PromptFormModal.tsx";
 import { promptLabel } from "./promptLabel.ts";
+import { promptListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiPrompt } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
-
-type PromptFilter = "all" | "system" | "instructions";
 
 function formatPromptType(promptType: ApiPrompt["promptType"]): string {
   return promptType === "system" ? "System Prompt" : "Instructions Prompt";
 }
 
-export function PromptsSection({ prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+export function PromptsSection({ prompts, onRefresh, route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const { can } = useCurrentUser();
   const canCreate = can("prompt.create");
   const routeId = route.section === "prompts" && (route.mode === "detail" || route.mode === "edit" || route.mode === "copy") ? route.id : null;
   const routePrompt = routeId ? prompts.find((prompt) => prompt.id === routeId) : undefined;
-  const [filter, setFilter] = useState<PromptFilter>("all");
-  const filteredPrompts = filter === "all" ? prompts : prompts.filter((p) => p.promptType === filter);
+  const listConfig = useMemo(() => promptListConfig(prompts), [prompts]);
+  const filteredPrompts = useMemo(() => applyListFilter(prompts, listFilter, listConfig), [prompts, listFilter, listConfig]);
 
   async function deletePrompt(p: ApiPrompt) {
     if (!window.confirm(`Delete prompt "${p.label}"?`)) return;
@@ -84,41 +85,32 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Prompts</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>System and instruction prompts bound to agents.</p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <label style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }} htmlFor="prompt-filter">Filter</label>
-            <select
-              id="prompt-filter"
-              value={filter}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (value === "all" || value === "system" || value === "instructions") {
-                  setFilter(value);
-                }
-              }}
-              style={{
-                padding: "6px 10px", fontSize: "13px", fontFamily: "var(--font-sans)",
-                border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-                background: "var(--panel-2)", color: "var(--text)", outline: "none", cursor: "pointer",
-              }}
-            >
-              <option value="all">All prompts</option>
-              <option value="system">System Prompt</option>
-              <option value="instructions">Instructions Prompt</option>
-            </select>
-            {canCreate && (
-              <button className="btn primary" data-tour="prompts-new" onClick={() => { setFilter("all"); navigate({ section: "prompts", mode: "create" }); }}>
-                <Icon name="plus" size={14} /> New prompt
-              </button>
-            )}
-          </div>
+          {canCreate && (
+            <button className="btn primary" data-tour="prompts-new" onClick={() => { onListFilterChange(EMPTY_LIST_FILTER); navigate({ section: "prompts", mode: "create" }); }}>
+              <Icon name="plus" size={14} /> New prompt
+            </button>
+          )}
         </div>
       </div>
 
+      {prompts.length > 0 && (
+        <ListToolbar
+          noun="prompts"
+          searchPlaceholder="Search by label, ID, or content"
+          config={listConfig}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={filteredPrompts.length}
+          total={prompts.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-        {filteredPrompts.length === 0 && (
-          <div className="placeholder" style={{ minHeight: "120px" }}>
-            {prompts.length === 0 ? "No prompts configured." : "No prompts match the selected filter."}
-          </div>
+        {prompts.length === 0 && (
+          <div className="placeholder" style={{ minHeight: "120px" }}>No prompts configured.</div>
+        )}
+        {prompts.length > 0 && filteredPrompts.length === 0 && (
+          <NoListMatches noun="prompts" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
         )}
         {filteredPrompts.map((p) => (
           <RowCard key={p.id} ariaLabel={`Open prompt ${promptLabel(p, prompts)}`} onClick={() => navigate({ section: "prompts", mode: "detail", id: p.id })}>

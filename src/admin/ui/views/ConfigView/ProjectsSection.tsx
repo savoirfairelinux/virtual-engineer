@@ -2,12 +2,15 @@ import { Toggle } from "../../components/Toggle.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { api } from "../../api.ts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
 import { ProjectStatisticsView } from "./ProjectStatisticsView.tsx";
+import { projectListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import { FieldSelect, Modal } from "../../components/Modal.tsx";
 import type { ApiMe, ApiProject } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
@@ -47,12 +50,14 @@ export function canViewProjectStatistics(
   return hasStatisticsPermission && (isAdmin || project.ownerUserId === user?.id);
 }
 
-export function ProjectsSection({ projects, agents, integrations, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+export function ProjectsSection({ projects, agents, integrations, onRefresh, route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const [accessProject, setAccessProject] = useState<ApiProject | null>(null);
   const { can, isAdmin, user } = useCurrentUser();
   const hasStatisticsPermission = makeHasPermission(user)("project.statistics.read");
   const [busy, setBusy] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
+  const listConfig = useMemo(() => projectListConfig(projects, agents), [projects, agents]);
+  const visibleProjects = useMemo(() => applyListFilter(projects, listFilter, listConfig), [projects, listFilter, listConfig]);
   const detailId = route.section === "projects" && route.mode === "detail" ? route.id : null;
   const editingId = route.section === "projects" && route.mode === "edit" ? route.id : null;
   const statisticsId = route.section === "projects" && route.mode === "statistics" ? route.id : null;
@@ -187,11 +192,26 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
         </div>
       </div>
 
+      {projects.length > 0 && (
+        <ListToolbar
+          noun="projects"
+          searchPlaceholder="Search by name, agent, or ID"
+          config={listConfig}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visibleProjects.length}
+          total={projects.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {projects.length === 0 && (
           <div className="placeholder" style={{ minHeight: "120px" }}>No projects configured.</div>
         )}
-        {projects.map((p) => (
+        {projects.length > 0 && visibleProjects.length === 0 && (
+          <NoListMatches noun="projects" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visibleProjects.map((p) => (
           <RowCard key={p.id} ariaLabel={`Open project ${p.name}`} onClick={() => navigate({ section: "projects", mode: "detail", id: p.id })}>
             <span
               style={{
