@@ -13,6 +13,7 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 /** Store surface needed to read the audit trail (satisfied by SqliteStateStore). */
 export interface AuditReadStore {
   listAuditEntries(filter?: AuditEntryFilter): Promise<{ entries: AuditEntry[]; total: number }>;
+  listAuditDateRange(): Promise<{ from: Date | null; to: Date | null }>;
   listAuditActions(): Promise<string[]>;
   listAuditActors(): Promise<string[]>;
   listAuditIntegrations(): Promise<Array<{ id: string; name: string }>>;
@@ -41,6 +42,10 @@ function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
 function nonEmptyParam(value: string | null): string | undefined {
   const trimmed = value?.trim() ?? "";
   return trimmed ? trimmed : undefined;
+}
+
+function toCalendarDate(value: Date | null): string | null {
+  return value?.toISOString().slice(0, 10) ?? null;
 }
 
 /** Parse an HTML date input as a UTC calendar boundary. `endExclusive` includes the selected end day. */
@@ -130,13 +135,23 @@ async function loadExportEntries(
 export function registerAuditRoutes(router: Router, deps: AuditRouteDeps): void {
   router.add("GET", "/api/admin/audit/options", async (_req, res, _params) => {
     if (!requireStore(deps.auditStore, res, "Audit store not available")) return;
-    const [actions, actors, integrations, targetTypes] = await Promise.all([
+    const [actions, actors, integrations, targetTypes, dateRange] = await Promise.all([
       deps.auditStore.listAuditActions(),
       deps.auditStore.listAuditActors(),
       deps.auditStore.listAuditIntegrations(),
       deps.auditStore.listAuditTargetTypes(),
+      deps.auditStore.listAuditDateRange(),
     ]);
-    writeJson(res, 200, { actions, actors, integrations, targetTypes });
+    writeJson(res, 200, {
+      actions,
+      actors,
+      integrations,
+      targetTypes,
+      dateRange: {
+        from: toCalendarDate(dateRange.from),
+        to: toCalendarDate(dateRange.to),
+      },
+    });
   }, { permission: "audit.read" });
 
   router.add("GET", "/api/admin/audit/export.csv", async (req, res, _params) => {

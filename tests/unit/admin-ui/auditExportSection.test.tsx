@@ -18,6 +18,7 @@ beforeEach(() => {
     actors: ["alice", "bob"],
     targetTypes: ["integration", "user"],
     integrations: [{ id: "int-1", name: "GitLab" }],
+    dateRange: { from: "2026-01-12", to: "2026-09-23" },
   });
   downloadMock.mockResolvedValue(new Blob(["id,action\n1,integration.create\n"], { type: "text/csv" }));
   vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:csv");
@@ -37,6 +38,8 @@ describe("AuditExportSection", () => {
 
     expect(document.querySelector<HTMLElement>(".card")?.style.padding).toBe("22px 24px");
     const actor = await screen.findByRole("combobox", { name: "Filter by user" });
+    expect((screen.getByLabelText("Start date") as HTMLInputElement).value).toBe("2026-01-12");
+    expect((screen.getByLabelText("End date") as HTMLInputElement).value).toBe("2026-09-23");
     await user.selectOptions(actor, "alice");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by action" }), "integration.create");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by integration" }), "int-1");

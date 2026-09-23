@@ -23,6 +23,11 @@ export interface AuditIntegrationOption {
   name: string;
 }
 
+export interface AuditDateRange {
+  from: Date | null;
+  to: Date | null;
+}
+
 export interface AuditStoreApi {
   /** Append one audit-trail entry. `details` is JSON-serialised into `details_json`. */
   appendAuditEntry(input: {
@@ -35,6 +40,8 @@ export interface AuditStoreApi {
   }): Promise<AuditEntry>;
   /** List entries newest-first (created_at DESC, id DESC). Default limit 50, capped at 200. */
   listAuditEntries(filter?: AuditEntryFilter): Promise<{ entries: AuditEntry[]; total: number }>;
+  /** Return the oldest and newest timestamps in the audit trail. */
+  listAuditDateRange(): Promise<AuditDateRange>;
   /** List the distinct action names present in the audit trail, sorted alphabetically. */
   listAuditActions(): Promise<string[]>;
   /** List the distinct actor names present in the audit trail, sorted alphabetically. */
@@ -138,6 +145,23 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
     };
   }
 
+  async function listAuditDateRange(): Promise<AuditDateRange> {
+    const [oldest] = await db
+      .select({ createdAt: auditLog.createdAt })
+      .from(auditLog)
+      .orderBy(asc(auditLog.createdAt), asc(auditLog.id))
+      .limit(1);
+    const [newest] = await db
+      .select({ createdAt: auditLog.createdAt })
+      .from(auditLog)
+      .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+      .limit(1);
+    return {
+      from: oldest?.createdAt ?? null,
+      to: newest?.createdAt ?? null,
+    };
+  }
+
   async function listAuditActions(): Promise<string[]> {
     const rows = await db
       .select({ action: auditLog.action })
@@ -188,6 +212,7 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
   return {
     appendAuditEntry,
     listAuditEntries,
+    listAuditDateRange,
     listAuditActions,
     listAuditActors,
     listAuditIntegrations,

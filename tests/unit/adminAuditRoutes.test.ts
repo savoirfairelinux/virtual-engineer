@@ -217,6 +217,10 @@ describe("adminAuditRoutes + audit instrumentation", () => {
         actors: expect.arrayContaining(["alice"]),
         targetTypes: expect.arrayContaining(["integration"]),
         integrations: [{ id: "int-1", name: "GitLab, primary" }],
+        dateRange: {
+          from: expect.any(String),
+          to: expect.any(String),
+        },
       });
 
       const csvResponse = await fetch(

@@ -58,7 +58,14 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
     let active = true;
     void api.get<ApiAuditOptions>("/api/admin/audit/options")
       .then((result) => {
-        if (active) setOptions(result);
+        if (active) {
+          setOptions(result);
+          setFilters((current) => ({
+            ...current,
+            from: current.from || result.dateRange.from || "",
+            to: current.to || result.dateRange.to || "",
+          }));
+        }
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : "Failed to load audit filters");

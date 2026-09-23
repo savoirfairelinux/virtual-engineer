@@ -112,6 +112,18 @@ describe("auditStore", () => {
     expect(byIntegration.entries.map((entry) => entry.targetId)).toEqual(["project-1", "int-1"]);
   });
 
+  it("returns the audit date range and handles an empty trail", async () => {
+    expect(await store.listAuditDateRange()).toEqual({ from: null, to: null });
+
+    const first = await store.appendAuditEntry({ actorName: "alice", action: "first" });
+    const last = await store.appendAuditEntry({ actorName: "alice", action: "last" });
+
+    expect(await store.listAuditDateRange()).toEqual({
+      from: first.createdAt,
+      to: last.createdAt,
+    });
+  });
+
   it("lists distinct audit actions in stable order", async () => {
     await store.appendAuditEntry({ actorName: "alice", action: "user.create" });
     await store.appendAuditEntry({ actorName: "alice", action: "auth.login" });

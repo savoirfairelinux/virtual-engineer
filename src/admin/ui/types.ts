@@ -536,11 +536,17 @@ export interface ApiAuditIntegrationOption {
   name: string;
 }
 
+export interface ApiAuditDateRange {
+  from: string | null;
+  to: string | null;
+}
+
 export interface ApiAuditOptions {
   actions: string[];
   actors: string[];
   targetTypes: string[];
   integrations: ApiAuditIntegrationOption[];
+  dateRange: ApiAuditDateRange;
 }
 
 /* ─── Bootstrap injected by the server ────────────────────────────────── */
