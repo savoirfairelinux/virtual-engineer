@@ -166,6 +166,32 @@ describe("AuditSection click-to-filter", () => {
 });
 
 describe("AuditSection details panel", () => {
+  it("shows the target name in the row and the target id when expanded", async () => {
+    getMock.mockResolvedValue(page([entry()]));
+    render(<AuditSection />);
+
+    await waitFor(() => expect(screen.getByText("integration · GitLab")).toBeTruthy());
+    expect(screen.queryByText("integration · int-1")).toBeNull();
+
+    fireEvent.click(screen.getByText("integration · GitLab"));
+    await waitFor(() => {
+      expect(screen.getByText("ID")).toBeTruthy();
+      expect(screen.getByText("int-1")).toBeTruthy();
+    });
+  });
+
+  it("keeps the target id expandable when no detail fields are present", async () => {
+    getMock.mockResolvedValue(page([entry({ details: {} })]));
+    render(<AuditSection />);
+
+    const target = await screen.findByText("integration", { exact: true });
+    fireEvent.click(target);
+    await waitFor(() => {
+      expect(screen.getByText("ID")).toBeTruthy();
+      expect(screen.getByText("int-1")).toBeTruthy();
+    });
+  });
+
   it("renders a humanized labeled details table when expanded", async () => {
     getMock.mockResolvedValue(page([entry({
       details: { sourceIp: "10.0.0.1", username: "root", name: "GitLab" },
@@ -173,7 +199,7 @@ describe("AuditSection details panel", () => {
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
     // Expand via the always-visible target cell (the action tag itself click-filters).
-    fireEvent.click(screen.getByText("integration · int-1"));
+    fireEvent.click(screen.getByText("integration · GitLab"));
     await waitFor(() => {
       expect(screen.getByText("Source IP")).toBeTruthy();
       expect(screen.getByText("10.0.0.1")).toBeTruthy();
@@ -188,7 +214,7 @@ describe("AuditSection details panel", () => {
     })]));
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
-    fireEvent.click(screen.getByText("integration · int-1"));
+    fireEvent.click(screen.getByText("integration", { exact: true }));
     await waitFor(() => {
       expect(screen.getByText(/"a":1/)).toBeTruthy();
       expect(screen.getByText(/\[1,2\]/)).toBeTruthy();

@@ -56,17 +56,32 @@ function formatInlineJson(value: unknown): string {
   }
 }
 
+/** Resolve the human-readable target label recorded by admin mutations. */
+function targetName(details: Record<string, unknown>): string | null {
+  for (const key of ["name", "username", "label", "ticketId"]) {
+    const value = details[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
 function isPrimitive(value: unknown): value is string | number | boolean | null {
   return ["string", "number", "boolean"].includes(typeof value) || value === null;
 }
 
 /** Render the masked details blob as a labeled key/value table. */
-function DetailsTable({ details }: { details: Record<string, unknown> }) {
+function DetailsTable({ details, targetId }: { details: Record<string, unknown>; targetId: string | null }) {
   const rows = Object.entries(details);
-  if (rows.length === 0) return null;
+  if (rows.length === 0 && targetId === null) return null;
   return (
     <div style={{ padding: "10px 16px 14px", background: "var(--panel-2)" }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, max-content) 1fr", gap: "6px 20px", fontSize: "12px" }}>
+        {targetId !== null && (
+          <div style={{ display: "contents" }}>
+            <span style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>ID</span>
+            <span className="mono" style={{ color: "var(--text-dim)", wordBreak: "break-word" }}>{targetId}</span>
+          </div>
+        )}
         {rows.map(([key, value]) => (
           <div key={key} style={{ display: "contents" }}>
             <span style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>{humanizeKey(key)}</span>
@@ -225,7 +240,8 @@ export function AuditSection() {
 
         {entries.map((e) => {
           const expanded = expandedId === e.id;
-          const hasDetails = Object.keys(e.details ?? {}).length > 0;
+          const hasDetails = Object.keys(e.details ?? {}).length > 0 || e.targetId !== null;
+          const targetLabel = targetName(e.details);
           return (
             <div key={e.id} style={{ borderBottom: "1px solid var(--border-soft)" }}>
               <div
@@ -252,7 +268,7 @@ export function AuditSection() {
                   </button>
                 </span>
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {e.targetType ? `${e.targetType}${e.targetId ? ` · ${e.targetId}` : ""}` : "—"}
+                  {e.targetType ? `${e.targetType}${targetLabel ? ` · ${targetLabel}` : ""}` : "—"}
                 </span>
                 <span style={{ display: "grid", placeItems: "center" }}>
                   {hasDetails && (
@@ -264,7 +280,7 @@ export function AuditSection() {
                   )}
                 </span>
               </div>
-              {expanded && hasDetails && <DetailsTable details={e.details} />}
+              {expanded && hasDetails && <DetailsTable details={e.details} targetId={e.targetId} />}
             </div>
           );
         })}
