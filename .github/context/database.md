@@ -29,6 +29,7 @@
 
 - `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.
 - `AuditStoreApi.listAuditDateRange()` returns the oldest and newest audit timestamps for export defaults; an empty trail returns null bounds. It is a read-time query and adds no schema, index, or migration.
+- `AuditEntryFilter.maxId` limits reads to the append-only `audit_log.id` high-water mark, and `AuditStoreApi.getLatestAuditId()` returns that mark or NULL for an empty trail. The CSV export captures the mark before paging and applies it to every page, excluding entries appended during the download without holding a long transaction; this adds no schema, index, or migration.
 - `AuditStoreApi.listAuditActions()`, `listAuditActors()`, `listAuditIntegrations()`, and `listAuditTargetTypes()` read distinct audit filter options for the admin UI/export page; they add no table, column, index, or migration.
 
 ## Project Integration Bindings

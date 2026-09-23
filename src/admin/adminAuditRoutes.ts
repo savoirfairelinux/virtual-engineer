@@ -13,6 +13,7 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 /** Store surface needed to read the audit trail (satisfied by SqliteStateStore). */
 export interface AuditReadStore {
   listAuditEntries(filter?: AuditEntryFilter): Promise<{ entries: AuditEntry[]; total: number }>;
+  getLatestAuditId(): Promise<number | null>;
   listAuditDateRange(): Promise<{ from: Date | null; to: Date | null }>;
   listAuditActions(): Promise<string[]>;
   listAuditActors(): Promise<string[]>;
@@ -79,7 +80,7 @@ function parseAuditFilters(requestUrl: URL): ParsedAuditFilters {
   const createdFrom = parsedCreatedFrom ?? undefined;
   const createdBefore = parsedCreatedBefore ?? undefined;
   if (createdFrom !== undefined && createdBefore !== undefined && createdFrom >= createdBefore) {
-    return { filter: {}, error: "from must be before or equal to to" };
+    return { filter: {}, error: "from must be before or equal to 'to'" };
   }
 
   return {
@@ -96,7 +97,8 @@ function parseAuditFilters(requestUrl: URL): ParsedAuditFilters {
 }
 
 function csvCell(value: string): string {
-  return `"${value.replaceAll("\"", "\"\"")}"`;
+  const safeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  return `"${safeValue.replaceAll("\"", "\"\"")}"`;
 }
 
 function auditCsv(entries: AuditEntry[]): string {
@@ -117,13 +119,15 @@ function auditCsv(entries: AuditEntry[]): string {
 async function loadExportEntries(
   store: AuditReadStore,
   filter: Omit<AuditEntryFilter, "limit" | "offset">,
+  snapshotId: number | null,
 ): Promise<AuditEntry[] | null> {
-  const firstPage = await store.listAuditEntries({ ...filter, limit: EXPORT_PAGE_SIZE, offset: 0 });
+  const snapshotFilter = { ...filter, maxId: snapshotId ?? 0 };
+  const firstPage = await store.listAuditEntries({ ...snapshotFilter, limit: EXPORT_PAGE_SIZE, offset: 0 });
   if (firstPage.total > MAX_EXPORT_ENTRIES) return null;
   const entries = [...firstPage.entries];
   let offset = firstPage.entries.length;
   while (entries.length < firstPage.total) {
-    const page = await store.listAuditEntries({ ...filter, limit: EXPORT_PAGE_SIZE, offset });
+    const page = await store.listAuditEntries({ ...snapshotFilter, limit: EXPORT_PAGE_SIZE, offset });
     if (page.entries.length === 0) break;
     entries.push(...page.entries);
     offset += page.entries.length;
@@ -162,7 +166,8 @@ export function registerAuditRoutes(router: Router, deps: AuditRouteDeps): void 
       writeJson(res, 400, { error: parsed.error });
       return;
     }
-    const entries = await loadExportEntries(deps.auditStore, parsed.filter);
+    const snapshotId = await deps.auditStore.getLatestAuditId();
+    const entries = await loadExportEntries(deps.auditStore, parsed.filter, snapshotId);
     if (entries === null) {
       writeJson(res, 413, { error: `Export exceeds the ${MAX_EXPORT_ENTRIES} entry limit; narrow the filters` });
       return;

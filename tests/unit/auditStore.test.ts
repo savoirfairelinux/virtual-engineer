@@ -124,6 +124,20 @@ describe("auditStore", () => {
     });
   });
 
+  it("returns the latest audit id and filters entries by an id cutoff", async () => {
+    expect(await store.getLatestAuditId()).toBeNull();
+
+    const first = await store.appendAuditEntry({ actorName: "alice", action: "first" });
+    expect(await store.getLatestAuditId()).toBe(first.id);
+
+    const second = await store.appendAuditEntry({ actorName: "alice", action: "second" });
+    expect(await store.getLatestAuditId()).toBe(second.id);
+
+    const snapshot = await store.listAuditEntries({ maxId: first.id });
+    expect(snapshot.total).toBe(1);
+    expect(snapshot.entries.map((entry) => entry.id)).toEqual([first.id]);
+  });
+
   it("lists distinct audit actions in stable order", async () => {
     await store.appendAuditEntry({ actorName: "alice", action: "user.create" });
     await store.appendAuditEntry({ actorName: "alice", action: "auth.login" });

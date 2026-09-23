@@ -280,6 +280,7 @@ function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
   const candidate = stateStore as Partial<AuditReadStore> | null | undefined;
   return candidate
     && typeof candidate.listAuditEntries === "function"
+    && typeof candidate.getLatestAuditId === "function"
     && typeof candidate.listAuditDateRange === "function"
     && typeof candidate.listAuditActions === "function"
     && typeof candidate.listAuditActors === "function"

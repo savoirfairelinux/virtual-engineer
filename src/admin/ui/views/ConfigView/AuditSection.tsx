@@ -32,6 +32,14 @@ const filterButtonStyle: React.CSSProperties = {
   textAlign: "left",
 };
 
+const expandButtonStyle: React.CSSProperties = {
+  ...filterButtonStyle,
+  display: "grid",
+  placeItems: "center",
+  width: "24px",
+  height: "24px",
+};
+
 interface AuditSectionProps {
   onExport?: () => void;
 }
@@ -217,20 +225,20 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
           style={filterControlStyle}
         />
         <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
-          From
+          From (UTC)
           <input
             type="date"
-            aria-label="Start date"
+            aria-label="Start date (UTC)"
             value={startDate}
             onChange={(event) => setStartDate(event.target.value)}
             style={{ ...filterControlStyle, width: "150px" }}
           />
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
-          To
+          To (UTC)
           <input
             type="date"
-            aria-label="End date"
+            aria-label="End date (UTC)"
             value={endDate}
             min={startDate || undefined}
             onChange={(event) => setEndDate(event.target.value)}
@@ -267,7 +275,7 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
             textTransform: "uppercase", color: "var(--text-ghost)",
           }}
         >
-          <span>Time</span><span>Actor</span><span>Action</span><span>Target</span><span />
+          <span>Time (UTC)</span><span>Actor</span><span>Action</span><span>Target</span><span />
         </div>
 
         {entries.length === 0 && !loading && (
@@ -281,15 +289,14 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
           return (
             <div key={e.id} style={{ borderBottom: "1px solid var(--border-soft)" }}>
               <div
-                onClick={() => { if (hasDetails) setExpandedId(expanded ? null : e.id); }}
                 style={{
                   display: "grid", gridTemplateColumns: "170px 140px 1fr 220px 32px",
                   gap: "0 12px", padding: "10px 16px", alignItems: "center",
-                  cursor: hasDetails ? "pointer" : "default", fontSize: "12.5px",
+                  fontSize: "12.5px",
                 }}
               >
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>
-                  {new Date(e.createdAt).toLocaleString()}
+                  {new Date(e.createdAt).toLocaleString(undefined, { timeZone: "UTC" })}
                 </span>
                 <ActorCell actorUserId={e.actorUserId} name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
                 <span>
@@ -308,15 +315,28 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
                 </span>
                 <span style={{ display: "grid", placeItems: "center" }}>
                   {hasDetails && (
-                    <Icon
-                      name="chevdown"
-                      size={13}
-                      style={{ color: "var(--text-faint)", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
-                    />
+                    <button
+                      type="button"
+                      aria-label={`${expanded ? "Collapse" : "Expand"} audit entry ${e.id}`}
+                      aria-expanded={expanded}
+                      aria-controls={`audit-details-${e.id}`}
+                      onClick={() => setExpandedId(expanded ? null : e.id)}
+                      style={expandButtonStyle}
+                    >
+                      <Icon
+                        name="chevdown"
+                        size={13}
+                        style={{ color: "var(--text-faint)", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+                      />
+                    </button>
                   )}
                 </span>
               </div>
-              {expanded && hasDetails && <DetailsTable details={e.details} targetId={e.targetId} />}
+              {expanded && hasDetails && (
+                <div id={`audit-details-${e.id}`}>
+                  <DetailsTable details={e.details} targetId={e.targetId} />
+                </div>
+              )}
             </div>
           );
         })}

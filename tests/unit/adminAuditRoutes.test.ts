@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import { makeAgentId, makeTaskId, makeTicketId, type AuditEntry } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
@@ -198,6 +198,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
         { headers: { authorization: `Bearer ${adminToken}` } },
       );
       expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({ error: "from must be before or equal to 'to'" });
     });
 
     it("returns filter options and exports a quoted CSV", async () => {
@@ -235,6 +236,59 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(csv).toContain('"alice"');
       expect(csv).toContain('""name"":""GitLab, primary""');
       expect(csv).toContain('changed \\""token\\"""');
+    });
+
+    it("neutralizes formula-like values in CSV cells", async () => {
+      await store.appendAuditEntry({
+        actorName: "=HYPERLINK(\"https://example.test\")",
+        action: "audit.csv_formula",
+        targetType: "integration",
+        targetId: "+target",
+        details: { note: "@SUM(1,1)" },
+      });
+      const response = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?action=audit.csv_formula`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(response.status).toBe(200);
+      const csv = await response.text();
+      expect(csv).toContain('"\'=HYPERLINK(""https://example.test"")"');
+      expect(csv).toContain('"\'+target"');
+      expect(csv).toContain('"{""note"":""@SUM(1,1)""}"');
+    });
+
+    it("exports a stable snapshot when entries are appended between pages", async () => {
+      for (let index = 0; index <= 200; index++) {
+        await store.appendAuditEntry({
+          actorName: "snapshot-user",
+          action: "audit.snapshot",
+          details: { index },
+        });
+      }
+      const listEntries = store.listAuditEntries.bind(store);
+      let appendedDuringExport = false;
+      vi.spyOn(store, "listAuditEntries").mockImplementation(async (filter) => {
+        const result = await listEntries(filter);
+        if (!appendedDuringExport && filter?.action === "audit.snapshot" && filter.offset === 0) {
+          appendedDuringExport = true;
+          await store.appendAuditEntry({
+            actorName: "snapshot-user",
+            action: "audit.snapshot",
+            details: { index: 999 },
+          });
+        }
+        return result;
+      });
+
+      const response = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?action=audit.snapshot`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(response.status).toBe(200);
+      const csv = await response.text();
+      expect(csv.trimEnd().split("\r\n")).toHaveLength(202);
+      expect(csv).toContain('""index"":200');
+      expect(csv).not.toContain('""index"":999');
     });
   });
 

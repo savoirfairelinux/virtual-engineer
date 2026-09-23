@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, lte, or, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AuditEntry } from "../../interfaces.js";
 import { auditLog } from "../schema.js";
@@ -16,6 +16,7 @@ export interface AuditEntryFilter {
   integrationId?: string;
   createdFrom?: Date;
   createdBefore?: Date;
+  maxId?: number;
 }
 
 export interface AuditIntegrationOption {
@@ -40,6 +41,8 @@ export interface AuditStoreApi {
   }): Promise<AuditEntry>;
   /** List entries newest-first (created_at DESC, id DESC). Default limit 50, capped at 200. */
   listAuditEntries(filter?: AuditEntryFilter): Promise<{ entries: AuditEntry[]; total: number }>;
+  /** Return the highest audit ID currently present, for stable export snapshots. */
+  getLatestAuditId(): Promise<number | null>;
   /** Return the oldest and newest timestamps in the audit trail. */
   listAuditDateRange(): Promise<AuditDateRange>;
   /** List the distinct action names present in the audit trail, sorted alphabetically. */
@@ -121,6 +124,7 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
     }
     if (filter?.createdFrom !== undefined) conditions.push(gte(auditLog.createdAt, filter.createdFrom));
     if (filter?.createdBefore !== undefined) conditions.push(lt(auditLog.createdAt, filter.createdBefore));
+    if (filter?.maxId !== undefined) conditions.push(lte(auditLog.id, filter.maxId));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const limit = Math.min(Math.max(filter?.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
@@ -160,6 +164,15 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
       from: oldest?.createdAt ?? null,
       to: newest?.createdAt ?? null,
     };
+  }
+
+  async function getLatestAuditId(): Promise<number | null> {
+    const [row] = await db
+      .select({ id: auditLog.id })
+      .from(auditLog)
+      .orderBy(desc(auditLog.id))
+      .limit(1);
+    return row?.id ?? null;
   }
 
   async function listAuditActions(): Promise<string[]> {
@@ -213,6 +226,7 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
     appendAuditEntry,
     listAuditEntries,
     listAuditDateRange,
+    getLatestAuditId,
     listAuditActions,
     listAuditActors,
     listAuditIntegrations,

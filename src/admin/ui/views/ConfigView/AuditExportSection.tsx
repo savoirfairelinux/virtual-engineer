@@ -106,7 +106,7 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
           <div>
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Export audit trail</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>
-              Choose the entries to include in the CSV download.
+              Choose the entries to include in the CSV download. Dates use UTC calendar days.
             </p>
           </div>
           <button className="btn" type="button" onClick={onBack} aria-label="Back to audit">
@@ -177,18 +177,18 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
               ))}
             </FieldSelect>
           </Field>
-          <Field label="Start date">
+          <Field label="Start date (UTC)">
             <FieldInput
               type="date"
-              aria-label="Start date"
+              aria-label="Start date (UTC)"
               value={filters.from}
               onChange={(event) => updateFilter("from", event.target.value)}
             />
           </Field>
-          <Field label="End date">
+          <Field label="End date (UTC)">
             <FieldInput
               type="date"
-              aria-label="End date"
+              aria-label="End date (UTC)"
               value={filters.to}
               min={filters.from || undefined}
               onChange={(event) => updateFilter("to", event.target.value)}

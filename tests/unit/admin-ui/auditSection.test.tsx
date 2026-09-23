@@ -97,7 +97,7 @@ describe("AuditSection actor badges", () => {
     })]));
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByText("SYSTEM")).toBeTruthy());
-    // The raw name is still visible for filtering context.
+    // The reserved raw actor name is hidden; the badge conveys the system identity.
     expect(screen.queryByText("bootstrap")).toBeNull();
   });
 });
@@ -159,8 +159,8 @@ describe("AuditSection click-to-filter", () => {
     getMock.mockResolvedValue(page([entry()]));
     render(<AuditSection />);
 
-    const startDate = await screen.findByLabelText("Start date");
-    const endDate = screen.getByLabelText("End date");
+    const startDate = await screen.findByLabelText("Start date (UTC)");
+    const endDate = screen.getByLabelText("End date (UTC)");
     await user.type(startDate, "2026-09-01");
     await user.type(endDate, "2026-09-23");
 
@@ -189,19 +189,22 @@ describe("AuditSection details panel", () => {
     await waitFor(() => expect(screen.getByText("integration · GitLab")).toBeTruthy());
     expect(screen.queryByText("integration · int-1")).toBeNull();
 
-    fireEvent.click(screen.getByText("integration · GitLab"));
+    const expandButton = screen.getByRole("button", { name: "Expand audit entry 1" });
+    expect(expandButton.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(expandButton);
     await waitFor(() => {
       expect(screen.getByText("ID")).toBeTruthy();
       expect(screen.getByText("int-1")).toBeTruthy();
     });
+    expect(screen.getByRole("button", { name: "Collapse audit entry 1" }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps the target id expandable when no detail fields are present", async () => {
     getMock.mockResolvedValue(page([entry({ details: {} })]));
     render(<AuditSection />);
 
-    const target = await screen.findByText("integration", { exact: true });
-    fireEvent.click(target);
+    const expandButton = await screen.findByRole("button", { name: "Expand audit entry 1" });
+    fireEvent.click(expandButton);
     await waitFor(() => {
       expect(screen.getByText("ID")).toBeTruthy();
       expect(screen.getByText("int-1")).toBeTruthy();
@@ -214,8 +217,7 @@ describe("AuditSection details panel", () => {
     })]));
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
-    // Expand via the always-visible target cell (the action tag itself click-filters).
-    fireEvent.click(screen.getByText("integration · GitLab"));
+    fireEvent.click(screen.getByRole("button", { name: "Expand audit entry 1" }));
     await waitFor(() => {
       expect(screen.getByText("Source IP")).toBeTruthy();
       expect(screen.getByText("10.0.0.1")).toBeTruthy();
@@ -230,7 +232,7 @@ describe("AuditSection details panel", () => {
     })]));
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
-    fireEvent.click(screen.getByText("integration", { exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand audit entry 1" }));
     await waitFor(() => {
       expect(screen.getByText(/"a":1/)).toBeTruthy();
       expect(screen.getByText(/\[1,2\]/)).toBeTruthy();

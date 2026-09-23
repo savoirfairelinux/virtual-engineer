@@ -38,14 +38,14 @@ describe("AuditExportSection", () => {
 
     expect(document.querySelector<HTMLElement>(".card")?.style.padding).toBe("22px 24px");
     const actor = await screen.findByRole("combobox", { name: "Filter by user" });
-    expect((screen.getByLabelText("Start date") as HTMLInputElement).value).toBe("2026-01-12");
-    expect((screen.getByLabelText("End date") as HTMLInputElement).value).toBe("2026-09-23");
+    expect((screen.getByLabelText("Start date (UTC)") as HTMLInputElement).value).toBe("2026-01-12");
+    expect((screen.getByLabelText("End date (UTC)") as HTMLInputElement).value).toBe("2026-09-23");
     await user.selectOptions(actor, "alice");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by action" }), "integration.create");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by integration" }), "int-1");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by target type" }), "integration");
-    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-09-01" } });
-    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-09-23" } });
+    fireEvent.change(screen.getByLabelText("Start date (UTC)"), { target: { value: "2026-09-01" } });
+    fireEvent.change(screen.getByLabelText("End date (UTC)"), { target: { value: "2026-09-23" } });
 
     await user.click(screen.getByRole("button", { name: "Download CSV" }));
     await waitFor(() => {
