@@ -6,6 +6,11 @@ import type { ApiAuditEntry, ApiAuditPage } from "../../types.ts";
 
 const PAGE_SIZE = 50;
 
+/** Actor names that denote unverified identities (legacy + current fallback). */
+const UNVERIFIED_ACTORS = new Set(["unknown", "unauthenticated"]);
+/** Actor name for the unauthenticated bootstrap phase before any user exists. */
+const BOOTSTRAP_ACTOR = "bootstrap";
+
 const filterInputStyle: React.CSSProperties = {
   padding: "7px 10px", fontSize: "12.5px", fontFamily: "var(--font-sans)",
   border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
@@ -13,12 +18,89 @@ const filterInputStyle: React.CSSProperties = {
   width: "200px",
 };
 
-function formatDetails(details: Record<string, unknown>): string {
+const clickableStyle: React.CSSProperties = {
+  cursor: "pointer",
+};
+
+/** Short technical tokens rendered as acronyms rather than capitalized words. */
+const ACRONYMS = new Set(["ip", "url", "id", "api", "ssh", "http", "https", "json", "uri"]);
+
+/** Humanize a details key for display: "sourceIp" → "Source IP". */
+function humanizeKey(key: string): string {
+  const spaced = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return spaced
+    .split(/\s+/)
+    .map((word) => ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/** Compact inline JSON for non-primitive detail values. */
+function formatInlineJson(value: unknown): string {
   try {
-    return JSON.stringify(details, null, 2);
+    return JSON.stringify(value);
   } catch {
-    return String(details);
+    return String(value);
   }
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return ["string", "number", "boolean"].includes(typeof value) || value === null;
+}
+
+/** Render the masked details blob as a labeled key/value table. */
+function DetailsTable({ details }: { details: Record<string, unknown> }) {
+  const rows = Object.entries(details);
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ padding: "10px 16px 14px", background: "var(--panel-2)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, max-content) 1fr", gap: "6px 20px", fontSize: "12px" }}>
+        {rows.map(([key, value]) => (
+          <div key={key} style={{ display: "contents" }}>
+            <span style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>{humanizeKey(key)}</span>
+            {isPrimitive(value) ? (
+              <span className="mono" style={{ color: "var(--text-dim)", wordBreak: "break-word" }}>
+                {value === null ? "—" : String(value)}
+              </span>
+            ) : (
+              <span className="mono" style={{ color: "var(--text-dim)", fontSize: "11.5px", wordBreak: "break-all" }}>
+                {formatInlineJson(value)}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Actor cell: real usernames plain; unverified/bootstrap actors as badges. */
+function ActorCell({ name, onFilter }: { name: string; onFilter: (actor: string) => void }) {
+  if (UNVERIFIED_ACTORS.has(name)) {
+    return (
+      <span title={`Unverified identity (actor name: ${name})`}>
+        <Tag tone="muted">UNVERIFIED</Tag>
+      </span>
+    );
+  }
+  if (name === BOOTSTRAP_ACTOR) {
+    return (
+      <span title="Initial bootstrap (no users existed yet)">
+        <Tag tone="muted">SYSTEM</Tag>
+      </span>
+    );
+  }
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); onFilter(name); }}
+      style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...clickableStyle }}
+      title={`Filter by ${name}`}
+    >
+      {name}
+    </span>
+  );
 }
 
 export function AuditSection() {
@@ -140,10 +222,12 @@ export function AuditSection() {
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>
                   {new Date(e.createdAt).toLocaleString()}
                 </span>
-                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {e.actorName}
+                <ActorCell name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
+                <span>
+                  <span onClick={(e2) => { e2.stopPropagation(); setActionFilter(e.action); }} style={clickableStyle}>
+                    <Tag tone="info">{e.action}</Tag>
+                  </span>
                 </span>
-                <span><Tag tone="info">{e.action}</Tag></span>
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {e.targetType ? `${e.targetType}${e.targetId ? ` · ${e.targetId}` : ""}` : "—"}
                 </span>
@@ -157,18 +241,7 @@ export function AuditSection() {
                   )}
                 </span>
               </div>
-              {expanded && (
-                <pre
-                  className="mono"
-                  style={{
-                    margin: 0, padding: "10px 16px 14px",
-                    fontSize: "11.5px", lineHeight: 1.6, color: "var(--text-dim)",
-                    background: "var(--panel-2)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  }}
-                >
-                  {formatDetails(e.details)}
-                </pre>
-              )}
+              {expanded && hasDetails && <DetailsTable details={e.details} />}
             </div>
           );
         })}
