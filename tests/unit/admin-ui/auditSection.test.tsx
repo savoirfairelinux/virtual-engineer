@@ -48,6 +48,22 @@ describe("AuditSection actor badges", () => {
     expect(screen.queryByText("SYSTEM")).toBeNull();
   });
 
+  it("renders reserved actor names as real usernames when actorUserId is present", async () => {
+    getMock.mockResolvedValue(page([
+      entry({ id: 2, actorUserId: "u-unknown", actorName: "unknown" }),
+      entry({ id: 3, actorUserId: "u-unauthenticated", actorName: "unauthenticated" }),
+      entry({ id: 4, actorUserId: "u-bootstrap", actorName: "bootstrap" }),
+    ]));
+    render(<AuditSection />);
+    await waitFor(() => {
+      expect(screen.getByText("unknown")).toBeTruthy();
+      expect(screen.getByText("unauthenticated")).toBeTruthy();
+      expect(screen.getByText("bootstrap")).toBeTruthy();
+    });
+    expect(screen.queryByText("UNVERIFIED")).toBeNull();
+    expect(screen.queryByText("SYSTEM")).toBeNull();
+  });
+
   it("renders an UNVERIFIED badge for 'unauthenticated' actors", async () => {
     getMock.mockResolvedValue(page([entry({
       actorName: "unauthenticated",

@@ -77,15 +77,15 @@ function DetailsTable({ details }: { details: Record<string, unknown> }) {
 }
 
 /** Actor cell: real usernames plain; unverified/bootstrap actors as badges. */
-function ActorCell({ name, onFilter }: { name: string; onFilter: (actor: string) => void }) {
-  if (UNVERIFIED_ACTORS.has(name)) {
+function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null; name: string; onFilter: (actor: string) => void }) {
+  if (actorUserId === null && UNVERIFIED_ACTORS.has(name)) {
     return (
       <span title={`Unverified identity (actor name: ${name})`}>
         <Tag tone="muted">UNVERIFIED</Tag>
       </span>
     );
   }
-  if (name === BOOTSTRAP_ACTOR) {
+  if (actorUserId === null && name === BOOTSTRAP_ACTOR) {
     return (
       <span title="Initial bootstrap (no users existed yet)">
         <Tag tone="muted">SYSTEM</Tag>
@@ -222,7 +222,7 @@ export function AuditSection() {
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>
                   {new Date(e.createdAt).toLocaleString()}
                 </span>
-                <ActorCell name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
+                <ActorCell actorUserId={e.actorUserId} name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
                 <span>
                   <span onClick={(e2) => { e2.stopPropagation(); setActionFilter(e.action); }} style={clickableStyle}>
                     <Tag tone="info">{e.action}</Tag>
