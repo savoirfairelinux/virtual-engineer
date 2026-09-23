@@ -3,6 +3,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextare
 import { Icon } from "../../components/Icon.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { api, generateSshKeyPair, listAgentKeys } from "../../api.ts";
+import { copyText } from "../../clipboard.ts";
 import type { AgentKey } from "../../api.ts";
 import type { ApiIntegration, ApiPlugin, ApiPluginOAuth, PluginField } from "../../types.ts";
 
@@ -35,46 +36,6 @@ const CAPABILITY_LABEL: Record<string, string> = {
   source_control:  "VCS",
   agent_execution: "Agent",
 };
-
-function copyTextWithExecCommand(text: string): void {
-  const previouslyFocusedElement = document.activeElement instanceof HTMLElement
-    ? document.activeElement
-    : null;
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.focus();
-    textarea.select();
-    if (typeof document.execCommand !== "function" || !document.execCommand("copy")) {
-      throw new Error("Copy command was rejected");
-    }
-  } finally {
-    textarea.remove();
-    if (previouslyFocusedElement?.isConnected) {
-      previouslyFocusedElement.focus();
-    }
-  }
-}
-
-async function copyText(text: string): Promise<void> {
-  try {
-    const clipboard = navigator.clipboard;
-    if (typeof clipboard?.writeText === "function") {
-      await clipboard.writeText(text);
-      return;
-    }
-  } catch {
-    // Clipboard API can be exposed but denied outside a secure context.
-  }
-
-  copyTextWithExecCommand(text);
-}
 
 function CapabilityBadge({ capability }: { capability: string }) {
   const c = CAPABILITY_COLORS[capability] ?? CAPABILITY_COLORS["agent_execution"]!;

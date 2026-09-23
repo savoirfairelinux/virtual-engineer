@@ -12,7 +12,7 @@ The workspace module owns two unrelated concerns: (a) the **agent runtime** — 
 |---|---|
 | `hostGitExecutor.ts` | All host-side Git plumbing: `createWorkspace`, `cloneRepo`, `fetchAndCheckout`, `fetchAndCherryPick`, `execGit`, `rebuildTrustedMetadata`, `destroyWorkspace`, `credentialFreeUrl`. Every `execFile` goes through `trustedGitArgs` / `trustedGitEnv` (`src/utils/gitExec.ts`). Project clones are shallow (`--depth 1`) and retry transient transfer failures up to three attempts, with a five-minute per-attempt timeout and partial-destination cleanup. |
 | `openShellWorkspaceRunner.ts` | Sandbox lifecycle: create → upload → exec → download → destroy. |
-| `agentWorkerProtocol.ts` | Validates the worker's JSON result envelope at the workspace boundary (`decodeReviewWorkerOutput`). |
+| `agentWorkerProtocol.ts` | Validates the worker's JSON result envelope at the workspace boundary (`decodeReviewWorkerOutput`). Execution/protocol errors carry non-enumerable, secret-filtered stdout/stderr diagnostics for cycle persistence, not general error serialization. Each stream is capped at 64 KiB with UTF-8-safe head/tail retention, original received byte counts, truncation flags, exit code, and a masked parser detail. |
 | `skillSources.ts` | Parses `projects.skill_sources_json`, builds `npx skills` arguments (project-scoped), and exports the shared SSH/env-building helpers reused by both admin-side discovery and the host-side installer. |
 | `skillSourceInstaller.ts` | Host-side `installSkillSources()`: fetches each configured skill source and installs it into the workspace directory **before** upload — see below. |
 

@@ -421,6 +421,22 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({ from: "project:img" }));
   });
 
+  it.each([0, 1])("retains safe review diagnostics for worker exit %s", async (code) => {
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ execInSandbox: vi.fn().mockResolvedValue({
+        code, stdout: 'noise credential-value {"status":', stderr: "worker failed credential-value",
+      }) } as unknown as Partial<OpenShellClient>),
+    });
+    await expect(runner.runReviewInDocker(handle, reviewInput(fakeReviewAdapter(), {
+      agentToken: "credential-value",
+    }))).rejects.toMatchObject({
+      diagnostics: {
+        exitCode: code, stdout: 'noise <redacted> {"status":', stderr: "worker failed <redacted>",
+      },
+    });
+  });
+
   it("forwards review stderr chunks and the OpenShell exec timeout", async () => {
     const onStderrChunk = vi.fn();
     const execInSandbox = vi.fn().mockImplementation(async (input: {

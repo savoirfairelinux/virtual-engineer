@@ -1410,6 +1410,18 @@ describe("adminServer PBAC project scoping", () => {
     // Detail for the out-of-scope task B is forbidden; A is allowed.
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token))).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskB}`, authed(user.token))).status).toBe(403);
+    for (const taskId of [taskA, taskB]) {
+      await store.saveAgentCycle(makeTaskId(taskId), 1, {
+        status: "failed", modifiedFiles: [], summary: "Invalid worker JSON", agentLogs: "masked output",
+        metadata: { workerOutput: { stdout: `diagnostic-${taskId}`, exitCode: 0 } },
+      });
+    }
+    const ownCycles = await fetch(`${baseUrl}/api/admin/tasks/${taskA}/cycles`, authed(user.token));
+    expect(ownCycles.status).toBe(200);
+    expect(await ownCycles.text()).toContain(`diagnostic-${taskA}`);
+    const otherCycles = await fetch(`${baseUrl}/api/admin/tasks/${taskB}/cycles`, authed(user.token));
+    expect(otherCycles.status).toBe(403);
+    expect(await otherCycles.text()).not.toContain(`diagnostic-${taskB}`);
   });
 
   it("scope-filters the global live-log stream by task project", async () => {

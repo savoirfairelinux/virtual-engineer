@@ -34,7 +34,7 @@ import { getLogger } from "../logger.js";
 import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
-import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
+import { AgentWorkerProtocolError, decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 import { parseDenialEvent, type DenialSink } from "../openshell/denialEvents.js";
 import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
 import { buildDefaultPolicyYaml } from "../openshell/openShellPolicyBuilder.js";
@@ -529,8 +529,17 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
         ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
-      this.assertExecSucceeded(result);
-      return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
+      const outputContext = {
+        code: result.code,
+        stderr: result.stderr,
+        secrets: [input.agentToken, ...Object.entries(spec.env)
+          .filter(([key]) => /TOKEN|SECRET|PASSWORD|API_KEY/i.test(key))
+          .map(([, value]) => value)],
+      };
+      if (result.code !== 0) {
+        throw new AgentWorkerProtocolError(`OpenShell agent exited with code ${result.code}: ${result.stderr}`, result.stdout, outputContext);
+      }
+      return { rawOutput: decodeReviewWorkerOutput(result.stdout, outputContext) };
     } finally {
       await this.collectPolicyDenials(name, taskId, input.projectId);
     }

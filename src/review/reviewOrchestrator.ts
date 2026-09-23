@@ -37,6 +37,7 @@ import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverit
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { evaluateExistingReviewTask } from "./reviewRetriggerGuard.js";
 import { processReviewStderrLine } from "./reviewStderrEvents.js";
+import { AgentWorkerProtocolError } from "../workspace/agentWorkerProtocol.js";
 import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGate.js";
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
 import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
@@ -1197,13 +1198,14 @@ export class ReviewOrchestrator {
       emitReviewEvent("review.failed", { message });
 
       // Save a failure cycle for visibility.
+      const workerOutput = err instanceof AgentWorkerProtocolError ? err.diagnostics : undefined;
       const failCycleResult: AgentResult = {
         status: "failed",
         modifiedFiles: [],
         summary: message,
-        agentLogs: "",
+        agentLogs: workerOutput?.stdout ?? "",
         agentEvents: collectedEvents,
-        metadata: { reviewMode: true, error: message },
+        metadata: { reviewMode: true, error: message, ...(workerOutput !== undefined ? { workerOutput } : {}) },
       };
       await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, failCycleResult).catch(
         (saveErr: unknown) => log.warn({ err: saveErr, taskId }, "failed to save review failure cycle")

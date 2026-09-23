@@ -43,6 +43,9 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 
 ## Sandbox Environment
 
+- Review sessions receive a fixed 15-minute worker execution budget. The host review deadline and OpenShell exec timeout remain independent upper bounds and may stop the run earlier. The budget is elapsed session time, not an inactivity timeout.
+- `agent-worker/src/workerResult.ts` awaits completion of the stdout write before exiting, for both success and failure envelopes. Worker exceptions also emit a bounded, credential-filtered `worker.error` event on stderr before the failure envelope; an output-write failure exits nonzero. A valid failure envelope still exits zero so the host can decode its original error.
+
 - The agent runs in an ephemeral **OpenShell sandbox** created by `src/workspace/openShellWorkspaceRunner.ts` (create → upload → exec → download). There is no Docker container, no named volume, and no docker CLI invocation on the VE side.
 - `src/agents/containerSpecBuilders.ts` owns the shared spec via `buildCodegenContainerSpec()` / `buildReviewContainerSpec()`. The spec is exactly `{ image, env, command, userPromptContent?, egress? }` — no `networkMode`, no `additionalDockerArgs`, no security flags. `command` is always `["node", "/app/agent-worker/dist/index.js"]`. `copilotAdapter.ts`, `claudeAdapter.ts`, `aiderAdapter.ts`, `gooseAdapter.ts`, `codexAdapter.ts`, `geminiAdapter.ts`, `opencodeAdapter.ts`, and `cursorAdapter.ts` supply only provider-specific auth/model/runtime env plus their `AgentEgressSpec`.
 - Isolation comes from OpenShell runtime **policies** (`src/openshell/openShellPolicyBuilder.ts` + `runtimePolicyResolver.ts`): deny-by-default filesystem/network/process, `run_as_user/group = sandbox`, writable paths limited to `/sandbox`, `/tmp`, `/dev/null`, and the narrow `/dev/pts` PTY device tree required by nested provider shells. Egress is opened per run with `OpenShellClient.allowEgress({ hosts, binaries })`.

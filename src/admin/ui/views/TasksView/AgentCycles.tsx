@@ -7,6 +7,7 @@ import { totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { formatUsd, formatCredits } from "./costFormat.ts";
 import { getCyclePresentation } from "./agentCyclePresentation.ts";
 import { summarizeToolUsage } from "./toolUsageSummary.ts";
+import { WorkerDiagnostics } from "./WorkerDiagnostics.tsx";
 
 interface ReviewComment {
   file: string;
@@ -251,6 +252,7 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
                   </div>
                 </>
               )}
+              <WorkerDiagnostics value={cycle.result.metadata?.["workerOutput"]} cycleNumber={cycle.cycleNumber} />
               {cycle.cost && (
                 <>
                   <div className="eyebrow" style={{ margin: "20px 0 8px" }}>Cost</div>
