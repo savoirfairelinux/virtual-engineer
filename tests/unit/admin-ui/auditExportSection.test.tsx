@@ -35,6 +35,7 @@ describe("AuditExportSection", () => {
     const onBack = vi.fn();
     render(<AuditExportSection onBack={onBack} />);
 
+    expect(document.querySelector<HTMLElement>(".card")?.style.padding).toBe("22px 24px");
     const actor = await screen.findByRole("combobox", { name: "Filter by user" });
     await user.selectOptions(actor, "alice");
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by action" }), "integration.create");

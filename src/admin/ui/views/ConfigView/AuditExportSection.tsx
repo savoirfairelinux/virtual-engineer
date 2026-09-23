@@ -122,7 +122,7 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
         </div>
       )}
 
-      <div className="card" style={{ maxWidth: "900px" }}>
+      <div className="card" style={{ maxWidth: "900px", padding: "22px 24px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "16px" }}>
           <Field label="User">
             <FieldSelect
