@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AuditEntry } from "../../interfaces.js";
 import { auditLog } from "../schema.js";
@@ -24,6 +24,8 @@ export interface AuditStoreApi {
     action?: string;
     actorName?: string;
   }): Promise<{ entries: AuditEntry[]; total: number }>;
+  /** List the distinct action names present in the audit trail, sorted alphabetically. */
+  listAuditActions(): Promise<string[]>;
 }
 
 interface AuditStoreContext {
@@ -114,8 +116,18 @@ export function createAuditStore(context: AuditStoreContext): AuditStoreApi {
     };
   }
 
+  async function listAuditActions(): Promise<string[]> {
+    const rows = await db
+      .select({ action: auditLog.action })
+      .from(auditLog)
+      .groupBy(auditLog.action)
+      .orderBy(asc(auditLog.action));
+    return rows.map((row) => row.action);
+  }
+
   return {
     appendAuditEntry,
     listAuditEntries,
+    listAuditActions,
   };
 }

@@ -525,6 +525,7 @@ export interface ApiAuditEntry {
 
 export interface ApiAuditPage {
   entries: ApiAuditEntry[];
+  actions: string[];
   total: number;
   limit: number;
   offset: number;

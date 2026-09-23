@@ -132,6 +132,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       });
       const payload = (await response.json()) as {
         entries: Array<Record<string, unknown>>;
+        actions: string[];
         total: number;
         limit: number;
         offset: number;
@@ -139,6 +140,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(payload.limit).toBe(50);
       expect(payload.offset).toBe(0);
       expect(payload.total).toBeGreaterThanOrEqual(1); // auth.setup
+      expect(payload.actions).toContain("auth.setup");
       const setupEntry = payload.entries.find((e) => e["action"] === "auth.setup");
       expect(setupEntry).toBeDefined();
       expect(setupEntry).toMatchObject({
@@ -161,6 +163,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       );
       const payload = (await filtered.json()) as {
         entries: Array<Record<string, unknown>>;
+        actions: string[];
         total: number;
         limit: number;
         offset: number;
@@ -169,6 +172,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(payload.limit).toBe(2);
       expect(payload.offset).toBe(1);
       expect(payload.entries).toHaveLength(2);
+      expect(payload.actions).toEqual(expect.arrayContaining(["auth.setup", "seed.action"]));
       // Newest-first: entries 3 and 2 after skipping entry 4.
       expect(payload.entries.map((e) => (e["details"] as { i: number }).i)).toEqual([3, 2]);
       expect(payload.entries.every((e) => e["actorName"] === "seed-actor")).toBe(true);

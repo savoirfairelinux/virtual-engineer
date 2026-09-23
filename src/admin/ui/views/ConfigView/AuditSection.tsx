@@ -6,12 +6,12 @@ import type { ApiAuditEntry, ApiAuditPage } from "../../types.ts";
 
 const PAGE_SIZE = 50;
 
-/** Actor names that denote unverified identities (legacy + current fallback). */
-const UNVERIFIED_ACTORS = new Set(["unknown", "unauthenticated"]);
+/** Actor names that denote unauthenticated identities (legacy + current fallback). */
+const UNAUTHENTICATED_ACTORS = new Set(["unknown", "unauthenticated"]);
 /** Actor name for the unauthenticated bootstrap phase before any user exists. */
 const BOOTSTRAP_ACTOR = "bootstrap";
 
-const filterInputStyle: React.CSSProperties = {
+const filterControlStyle: React.CSSProperties = {
   padding: "7px 10px", fontSize: "12.5px", fontFamily: "var(--font-sans)",
   border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
   background: "var(--panel-2)", color: "var(--text)", outline: "none",
@@ -86,12 +86,12 @@ function DetailsTable({ details }: { details: Record<string, unknown> }) {
   );
 }
 
-/** Actor cell: real usernames plain; unverified/bootstrap actors as badges. */
+/** Actor cell: real usernames plain; unauthenticated/bootstrap actors as badges. */
 function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null; name: string; onFilter: (actor: string) => void }) {
-  if (actorUserId === null && UNVERIFIED_ACTORS.has(name)) {
+  if (actorUserId === null && UNAUTHENTICATED_ACTORS.has(name)) {
     return (
-      <span title={`Unverified identity (actor name: ${name})`}>
-        <Tag tone="muted">UNVERIFIED</Tag>
+      <span title={`Unauthenticated identity (actor name: ${name})`}>
+        <Tag tone="muted">UNAUTHENTICATED</Tag>
       </span>
     );
   }
@@ -117,6 +117,7 @@ function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null
 
 export function AuditSection() {
   const [entries, setEntries] = useState<ApiAuditEntry[]>([]);
+  const [actions, setActions] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [actionFilter, setActionFilter] = useState("");
@@ -134,6 +135,7 @@ export function AuditSection() {
       if (actor.trim()) params.set("actor", actor.trim());
       const page = await api.get<ApiAuditPage>(`/api/admin/audit?${params.toString()}`);
       setEntries(page.entries);
+      setActions(page.actions);
       setTotal(page.total);
       setOffset(page.offset);
     } catch (e) {
@@ -169,17 +171,20 @@ export function AuditSection() {
 
       {/* filters */}
       <div data-tour="audit-filters" style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
-        <input
+        <select
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
-          placeholder="Filter by action (e.g. integration.update)…"
-          style={{ ...filterInputStyle, width: "260px" }}
-        />
+          aria-label="Filter by action"
+          style={{ ...filterControlStyle, width: "260px" }}
+        >
+          <option value="">All actions</option>
+          {actions.map((action) => <option key={action} value={action}>{action}</option>)}
+        </select>
         <input
           value={actorFilter}
           onChange={(e) => setActorFilter(e.target.value)}
           placeholder="Filter by actor…"
-          style={filterInputStyle}
+          style={filterControlStyle}
         />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>

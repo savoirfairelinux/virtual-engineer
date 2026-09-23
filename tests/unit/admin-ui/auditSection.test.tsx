@@ -26,8 +26,8 @@ function entry(overrides: Partial<ApiAuditEntry> = {}): ApiAuditEntry {
   };
 }
 
-function page(entries: ApiAuditEntry[]): ApiAuditPage {
-  return { entries, total: entries.length, limit: 50, offset: 0 };
+function page(entries: ApiAuditEntry[], actions = [...new Set(entries.map((item) => item.action))].sort()): ApiAuditPage {
+  return { entries, actions, total: entries.length, limit: 50, offset: 0 };
 }
 
 beforeEach(() => {
@@ -45,7 +45,7 @@ describe("AuditSection actor badges", () => {
     getMock.mockResolvedValue(page([entry()]));
     render(<AuditSection />);
     await waitFor(() => expect(screen.getByText("root")).toBeTruthy());
-    expect(screen.queryByText("UNVERIFIED")).toBeNull();
+    expect(screen.queryByText("UNAUTHENTICATED")).toBeNull();
     expect(screen.queryByText("SYSTEM")).toBeNull();
   });
 
@@ -61,11 +61,11 @@ describe("AuditSection actor badges", () => {
       expect(screen.getByText("unauthenticated")).toBeTruthy();
       expect(screen.getByText("bootstrap")).toBeTruthy();
     });
-    expect(screen.queryByText("UNVERIFIED")).toBeNull();
+    expect(screen.queryByText("UNAUTHENTICATED")).toBeNull();
     expect(screen.queryByText("SYSTEM")).toBeNull();
   });
 
-  it("renders an UNVERIFIED badge for 'unauthenticated' actors", async () => {
+  it("renders an UNAUTHENTICATED badge for 'unauthenticated' actors", async () => {
     getMock.mockResolvedValue(page([entry({
       actorName: "unauthenticated",
       actorUserId: null,
@@ -73,11 +73,11 @@ describe("AuditSection actor badges", () => {
       details: { username: "root", sourceIp: "127.0.0.1" },
     })]));
     render(<AuditSection />);
-    await waitFor(() => expect(screen.getByText("UNVERIFIED")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("UNAUTHENTICATED")).toBeTruthy());
     expect(screen.queryByText("unauthenticated")).toBeNull();
   });
 
-  it("renders an UNVERIFIED badge for legacy 'unknown' actors", async () => {
+  it("renders an UNAUTHENTICATED badge for legacy 'unknown' actors", async () => {
     getMock.mockResolvedValue(page([entry({
       actorName: "unknown",
       actorUserId: null,
@@ -85,7 +85,7 @@ describe("AuditSection actor badges", () => {
       details: { username: "root", sourceIp: "127.0.0.1" },
     })]));
     render(<AuditSection />);
-    await waitFor(() => expect(screen.getByText("UNVERIFIED")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("UNAUTHENTICATED")).toBeTruthy());
     expect(screen.queryByText("unknown")).toBeNull();
   });
 
@@ -134,11 +134,31 @@ describe("AuditSection click-to-filter", () => {
     });
   });
 
+  it("offers existing actions in a select and filters by the selected action", async () => {
+    const user = userEvent.setup();
+    getMock.mockResolvedValue(page([
+      entry(),
+      entry({ id: 2, action: "user.create" }),
+    ], ["integration.create", "user.create"]));
+    render(<AuditSection />);
+
+    const actionSelect = await screen.findByRole("combobox", { name: "Filter by action" });
+    expect(await screen.findByRole("option", { name: "All actions" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "integration.create" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "user.create" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Filter by action/)).toBeNull();
+
+    await user.selectOptions(actionSelect, "user.create");
+    await waitFor(() => {
+      expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("action=user.create"));
+    });
+  });
+
   it("sets the action filter when clicking an action tag", async () => {
     getMock.mockResolvedValue(page([entry()]));
     render(<AuditSection />);
-    await waitFor(() => expect(screen.getByText("integration.create")).toBeTruthy());
-    fireEvent.click(screen.getByText("integration.create"));
+    const actionButton = await screen.findByRole("button", { name: "Filter by action integration.create" });
+    fireEvent.click(actionButton);
     await waitFor(() => {
       expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("action=integration.create"));
     });
@@ -151,7 +171,7 @@ describe("AuditSection details panel", () => {
       details: { sourceIp: "10.0.0.1", username: "root", name: "GitLab" },
     })]));
     render(<AuditSection />);
-    await waitFor(() => expect(screen.getByText("integration.create")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
     // Expand via the always-visible target cell (the action tag itself click-filters).
     fireEvent.click(screen.getByText("integration · int-1"));
     await waitFor(() => {
@@ -167,7 +187,7 @@ describe("AuditSection details panel", () => {
       details: { nested: { a: 1 }, list: [1, 2] },
     })]));
     render(<AuditSection />);
-    await waitFor(() => expect(screen.getByText("integration.create")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter by action integration.create" })).toBeTruthy());
     fireEvent.click(screen.getByText("integration · int-1"));
     await waitFor(() => {
       expect(screen.getByText(/"a":1/)).toBeTruthy();

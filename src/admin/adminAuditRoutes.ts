@@ -14,6 +14,7 @@ export interface AuditReadStore {
     action?: string;
     actorName?: string;
   }): Promise<{ entries: AuditEntry[]; total: number }>;
+  listAuditActions(): Promise<string[]>;
 }
 
 export interface AuditRouteDeps {
@@ -44,14 +45,18 @@ export function registerAuditRoutes(router: Router, deps: AuditRouteDeps): void 
     const offset = parseNonNegativeInt(requestUrl.searchParams.get("offset")) ?? 0;
     const action = requestUrl.searchParams.get("action") ?? undefined;
     const actorName = requestUrl.searchParams.get("actor") ?? undefined;
-    const { entries, total } = await deps.auditStore.listAuditEntries({
-      limit: Math.max(limit, 1),
-      offset,
-      ...(action !== undefined ? { action } : {}),
-      ...(actorName !== undefined ? { actorName } : {}),
-    });
+    const [{ entries, total }, actions] = await Promise.all([
+      deps.auditStore.listAuditEntries({
+        limit: Math.max(limit, 1),
+        offset,
+        ...(action !== undefined ? { action } : {}),
+        ...(actorName !== undefined ? { actorName } : {}),
+      }),
+      deps.auditStore.listAuditActions(),
+    ]);
     writeJson(res, 200, {
       entries: entries.map(serializeAuditEntry),
+      actions,
       total,
       limit: Math.max(limit, 1),
       offset,

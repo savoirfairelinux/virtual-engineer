@@ -78,6 +78,15 @@ describe("auditStore", () => {
     expect(combined.entries[0]?.actorName).toBe("bob");
   });
 
+  it("lists distinct audit actions in stable order", async () => {
+    await store.appendAuditEntry({ actorName: "alice", action: "user.create" });
+    await store.appendAuditEntry({ actorName: "alice", action: "auth.login" });
+    await store.appendAuditEntry({ actorName: "alice", action: "user.create" });
+
+    const actions = await store.listAuditActions();
+    expect(actions).toEqual(["auth.login", "user.create"]);
+  });
+
   it("paginates with limit and offset while total stays constant", async () => {
     for (let i = 0; i < 5; i++) {
       await store.appendAuditEntry({ actorName: "a", action: `action-${i}` });

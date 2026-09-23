@@ -25,6 +25,10 @@
 - Effective permissions impose a read-only ceiling on `viewer`, including resource ownership and explicit user/group grants. Delegated project/task reads remain available, but mutation and access delegation do not. Self-service password changes and logout remain authenticated operations.
 - The seeded `Operator` policy no longer grants `system.write`. Administrators retain full access; an operator needs an explicit policy grant to change instance settings. Built-in policy rules are refreshed at startup.
 
+## Audit trail store
+
+- `AuditStoreApi.listAuditActions()` reads the distinct values of `audit_log.action` in alphabetical order for the admin audit filter; it adds no table, column, index, or migration.
+
 ## Project Integration Bindings
 
 `project_integration_bindings.config_json` stores capability-specific JSON. The
