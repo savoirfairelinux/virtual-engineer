@@ -143,17 +143,44 @@ export async function appendAuditWithRetry(
 }
 
 /**
+ * Actor recorded on audit entries for requests where no identity could be
+ * verified or attached (e.g. public auth attempts such as a failed login).
+ * Older rows in existing databases may still contain the legacy value
+ * "unknown"; the admin UI renders both as unverified actors.
+ */
+export const UNAUTHENTICATED_ACTOR_NAME = "unauthenticated";
+
+/**
+ * Explicit actor for an audit entry. Takes precedence over the request's auth
+ * context — used by public auth routes (login/setup) that know the verified
+ * identity from the auth result rather than from a session context.
+ */
+export interface AuditActorOverride {
+  userId: string | null;
+  username: string;
+}
+
+/**
  * Fire-and-forget audit append for admin mutations. Resolves the actor from
- * the request's auth context (fallback `"unknown"`), masks secret-like keys in
- * `details`, and never throws or blocks the response — an audit failure must
- * not fail the mutation. Transient append failures are retried with backoff
- * (see {@link appendAuditWithRetry}). No-ops when the store lacks
+ * the request's auth context, unless an explicit {@link AuditActorOverride} is
+ * supplied (public auth routes), falling back to
+ * {@link UNAUTHENTICATED_ACTOR_NAME}. Masks secret-like keys in `details`,
+ * and never throws or blocks the response — an audit failure must not fail
+ * the mutation. Transient append failures are retried with backoff (see
+ * {@link appendAuditWithRetry}). No-ops when the store lacks
  * `appendAuditEntry`.
  */
 export function recordAudit(
   store: AuditCapableStore | null | undefined,
   req: IncomingMessage,
-  input: { action: string; targetType?: string; targetId?: string; details?: Record<string, unknown> }
+  input: {
+    action: string;
+    targetType?: string;
+    targetId?: string;
+    details?: Record<string, unknown>;
+    /** Explicit actor overriding the request auth context (see {@link AuditActorOverride}). */
+    actor?: AuditActorOverride;
+  }
 ): void {
   if (!store || typeof store.appendAuditEntry !== "function") return;
   const context = getAuthContext(req);
@@ -162,8 +189,8 @@ export function recordAudit(
   // but attach .catch() as a safety net for any unexpected rejection so it is
   // always visible in logs and never becomes an unhandled promise rejection.
   appendAuditWithRetry(appendable, {
-    actorUserId: context?.userId ?? null,
-    actorName: context?.username ?? "unknown",
+    actorUserId: input.actor?.userId ?? context?.userId ?? null,
+    actorName: input.actor?.username ?? context?.username ?? UNAUTHENTICATED_ACTOR_NAME,
     action: input.action,
     targetType: input.targetType ?? null,
     targetId: input.targetId ?? null,

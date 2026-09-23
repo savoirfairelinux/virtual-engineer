@@ -27,12 +27,25 @@ interface RateLimitEntry {
   failures: number;
   lastFailureAt: number;
   lockedUntil: number;
+  /**
+   * Timestamp of the lockout window whose first blocked attempt has already
+   * been surfaced (via `firstBlocked`). Lets callers audit each lockout
+   * episode exactly once without amplifying audit-log growth under a 429
+   * flood. Reset alongside entries by `recordSuccess` and the sweep.
+   */
+  auditedLockedUntil: number;
 }
 
 export interface RateLimitDecision {
   allowed: boolean;
   /** Milliseconds the caller should wait before retrying; only set when `allowed` is false. */
   retryAfterMs?: number;
+  /**
+   * True when this is the first blocked attempt of the current lockout
+   * episode (callers audit once per episode); false for later attempts in
+   * the same window. Absent when `allowed` is true.
+   */
+  firstBlocked?: boolean;
 }
 
 /**
@@ -51,7 +64,12 @@ export class LoginRateLimiter {
     if (!entry || now >= entry.lockedUntil) {
       return { allowed: true };
     }
-    return { allowed: false, retryAfterMs: entry.lockedUntil - now };
+    // First blocked attempt of this lockout window → surface for one-time auditing.
+    const firstBlocked = entry.auditedLockedUntil !== entry.lockedUntil;
+    if (firstBlocked) {
+      entry.auditedLockedUntil = entry.lockedUntil;
+    }
+    return { allowed: false, retryAfterMs: entry.lockedUntil - now, firstBlocked };
   }
 
   /** Record a failed attempt for `key`, extending/creating a lockout past the threshold. */
@@ -65,7 +83,13 @@ export class LoginRateLimiter {
       const lockoutMs = Math.min(MAX_LOCKOUT_MS, BASE_LOCKOUT_MS * 2 ** exponent);
       lockedUntil = Math.max(lockedUntil, now + lockoutMs);
     }
-    this.entries.set(key, { failures, lastFailureAt: now, lockedUntil });
+    this.entries.set(key, {
+      failures,
+      lastFailureAt: now,
+      lockedUntil,
+      // A new (or extended) lockout window begins a fresh audit episode.
+      auditedLockedUntil: withinWindow && lockedUntil === existing.lockedUntil ? existing.auditedLockedUntil : 0,
+    });
   }
 
   /** Clear any tracked failures for `key` (call on successful auth). */

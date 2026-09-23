@@ -7,7 +7,7 @@ import type { Router } from "./router.js";
 import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuthService.js";
 import { getAuthContext, getEffectivePermissions } from "./authContext.js";
 import { serializeEffectivePermissions } from "./authorization/policyEngine.js";
-import { recordAudit } from "./adminAudit.js";
+import { recordAudit, UNAUTHENTICATED_ACTOR_NAME } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
 import { getPasswordStrength } from "./commonPasswords.js";
 
@@ -155,16 +155,19 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   /**
    * Check the per-IP and per-username rate limits for an auth attempt. Returns
    * the blocking decision (with the longer `retryAfterMs` of the two) or
-   * `null` when the attempt may proceed.
+   * `null` when the attempt may proceed. When blocked, `firstBlocked` is true
+   * only when this is the first blocked attempt of the current lockout
+   * episode on either axis — callers audit the episode exactly once.
    */
-  function checkRateLimit(req: IncomingMessage, username: string): { retryAfterMs: number } | null {
+  function checkRateLimit(req: IncomingMessage, username: string): { retryAfterMs: number; firstBlocked: boolean } | null {
     const now = Date.now();
     const ipDecision = loginRateLimiter.check(clientIpKey(requestIp(req, trustProxy)), now);
     const userDecision = loginRateLimiter.check(usernameKey(username), now);
     const blocked = [ipDecision, userDecision].filter((d) => !d.allowed);
     if (blocked.length === 0) return null;
     const retryAfterMs = Math.max(...blocked.map((d) => d.retryAfterMs ?? 0));
-    return { retryAfterMs };
+    const firstBlocked = blocked.some((d) => d.firstBlocked === true);
+    return { retryAfterMs, firstBlocked };
   }
 
   function recordAuthFailure(req: IncomingMessage, username: string): void {
@@ -203,6 +206,20 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     }
     const limited = checkRateLimit(req, credentials.username);
     if (limited) {
+      if (limited.firstBlocked) {
+        recordAudit(deps.auditStore, req, {
+          action: "auth.setup_rate_limited",
+          targetType: "user",
+          // No identity was verified on a blocked attempt; the bootstrap
+          // pre-stamp would misattribute it.
+          actor: { userId: null, username: UNAUTHENTICATED_ACTOR_NAME },
+          details: {
+            username: credentials.username,
+            sourceIp: requestIp(req, trustProxy),
+            retryAfterMs: limited.retryAfterMs,
+          },
+        });
+      }
       writeRateLimited(res, limited.retryAfterMs);
       return;
     }
@@ -242,7 +259,13 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       return;
     }
     recordAuthSuccess(req, credentials.username);
-    recordAudit(deps.auditStore, req, { action: "auth.setup", targetType: "user", targetId: user.id, details: { username: user.username, role: user.role } });
+    recordAudit(deps.auditStore, req, {
+      action: "auth.setup",
+      targetType: "user",
+      targetId: user.id,
+      actor: { userId: user.id, username: user.username },
+      details: { username: user.username, role: user.role, sourceIp: requestIp(req, trustProxy) },
+    });
     log.info({ username: user.username }, "first admin user created via setup");
     writeJson(res, 201, session);
   });
@@ -260,25 +283,47 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     }
     const limited = checkRateLimit(req, username);
     if (limited) {
+      if (limited.firstBlocked) {
+        recordAudit(deps.auditStore, req, {
+          action: "auth.login_rate_limited",
+          targetType: "user",
+          details: {
+            username,
+            sourceIp: requestIp(req, trustProxy),
+            retryAfterMs: limited.retryAfterMs,
+          },
+        });
+      }
       writeRateLimited(res, limited.retryAfterMs);
       return;
     }
     const session = await deps.authService.login(username, password);
     if (!session) {
       recordAuthFailure(req, username);
-      recordAudit(deps.auditStore, req, { action: "auth.login_failed", targetType: "user", details: { username } });
+      recordAudit(deps.auditStore, req, {
+        action: "auth.login_failed",
+        targetType: "user",
+        details: { username, sourceIp: requestIp(req, trustProxy) },
+      });
       writeJson(res, 401, { error: "Invalid username or password" });
       return;
     }
     recordAuthSuccess(req, username);
-    recordAudit(deps.auditStore, req, { action: "auth.login", targetType: "user", details: { username } });
+    recordAudit(deps.auditStore, req, {
+      action: "auth.login",
+      targetType: "user",
+      targetId: session.user.id,
+      actor: { userId: session.user.id, username: session.user.username },
+      details: { username: session.user.username, sourceIp: requestIp(req, trustProxy) },
+    });
     writeJson(res, 200, session);
   });
 
   router.add("POST", "/api/admin/auth/logout", async (req, res, _params) => {
     const token = extractBearerToken(req);
-    if (token && deps.authService) {
-      await deps.authService.logout(token);
+    const revoked = token && deps.authService ? await deps.authService.logout(token) : false;
+    if (revoked) {
+      recordAudit(deps.auditStore, req, { action: "auth.logout", targetType: "user" });
     }
     res.statusCode = 204;
     res.end();

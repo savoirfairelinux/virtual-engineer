@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IncomingMessage } from "node:http";
-import { maskAuditDetails, recordAudit, appendAuditWithRetry } from "../../src/admin/adminAudit.js";
+import {
+  UNAUTHENTICATED_ACTOR_NAME,
+  maskAuditDetails,
+  recordAudit,
+  appendAuditWithRetry,
+} from "../../src/admin/adminAudit.js";
 import { setAuthContext } from "../../src/admin/authContext.js";
 
 function fakeRequest(): IncomingMessage {
@@ -148,17 +153,60 @@ describe("recordAudit", () => {
     });
   });
 
-  it("falls back to actorName 'unknown' when no auth context is attached", async () => {
+  it(`falls back to actorName '${UNAUTHENTICATED_ACTOR_NAME}' when no auth context is attached`, async () => {
     const appendAuditEntry = vi.fn().mockResolvedValue({});
     recordAudit({ appendAuditEntry }, fakeRequest(), { action: "task.pause" });
     await flushMicrotasks();
     expect(appendAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
       actorUserId: null,
-      actorName: "unknown",
+      actorName: "unauthenticated",
       action: "task.pause",
       targetType: null,
       targetId: null,
       details: {},
+    }));
+  });
+
+  it("uses an explicit actor override even when no auth context is attached", async () => {
+    const appendAuditEntry = vi.fn().mockResolvedValue({});
+    recordAudit({ appendAuditEntry }, fakeRequest(), {
+      action: "auth.login",
+      actor: { userId: "u-9", username: "root" },
+      details: { sourceIp: "127.0.0.1" },
+    });
+    await flushMicrotasks();
+    expect(appendAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: "u-9",
+      actorName: "root",
+      action: "auth.login",
+    }));
+  });
+
+  it("prefers an explicit actor override over the request auth context", async () => {
+    const appendAuditEntry = vi.fn().mockResolvedValue({});
+    const req = fakeRequest();
+    setAuthContext(req, { userId: "u-1", username: "alice", role: "admin" });
+    recordAudit({ appendAuditEntry }, req, {
+      action: "auth.login",
+      actor: { userId: "u-9", username: "root" },
+    });
+    await flushMicrotasks();
+    expect(appendAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: "u-9",
+      actorName: "root",
+    }));
+  });
+
+  it("supports a null userId on the actor override (e.g. unverified identities)", async () => {
+    const appendAuditEntry = vi.fn().mockResolvedValue({});
+    recordAudit({ appendAuditEntry }, fakeRequest(), {
+      action: "auth.setup",
+      actor: { userId: null, username: "bootstrap" },
+    });
+    await flushMicrotasks();
+    expect(appendAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: null,
+      actorName: "bootstrap",
     }));
   });
 

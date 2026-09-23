@@ -14,8 +14,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminServer.ts` | Auth gate (DB-backed session tokens, plus an open bootstrap mode while zero users exist), RBAC enforcement, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. Also registers `GET /api/admin/img-proxy/token` (`{ authenticated: true }`) to mint short-lived image-proxy tokens. Re-exports `getAuthContext` / `AuthContext`. |
 | `adminAuthService.ts` | Password hashing (`scrypt`, `scrypt:N:r:p:salt:hash` format), session-token hashing (sha256), and `createAdminAuthService()` (login / validateSession with sliding 12-hour expiry / logout). Exports `SESSION_TTL_MS`, `AuthContext`. |
 | `imageProxyTokenStore.ts` | In-memory, single-use, 60s-TTL tokens for the image proxy's `?t=` query parameter — distinct from session tokens so a value that ever appears in a URL is never the long-lived bearer session token. `mintImageProxyToken()` (called only from the authenticated `/api/admin/img-proxy/token` route) / `consumeImageProxyToken(token)` (hash lookup + delete, single-use) / `clearImageProxyTokensForTests()`. |
-| `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. |
-| `adminAudit.ts` | Shared audit-trail helper: `recordAudit(store, req, { action, targetType?, targetId?, details? })` resolves the actor from `getAuthContext(req)` (fallback `"unknown"`), masks secret-like detail keys via `maskAuditDetails()`, and appends fire-and-forget (never throws or blocks the response; no-ops when the store lacks `appendAuditEntry`). |
+| `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. Auth events append `auth.login` / `auth.login_failed` / `auth.logout` / `auth.setup` (and `auth.login_rate_limited` / `auth.setup_rate_limited` for the first blocked attempt of each lockout episode) with the client `sourceIp` in details (honoring `ADMIN_TRUST_PROXY`); logins/setups record the verified user as the actor, while unverified attempts and lockouts record the `"unauthenticated"` actor with the attempted username in details. |
+| `adminAudit.ts` | Shared audit-trail helper: `recordAudit(store, req, { action, targetType?, targetId?, details?, actor? })` resolves the actor from `getAuthContext(req)` unless an explicit `actor: { userId, username }` override is supplied, masks secret-like detail keys via `maskAuditDetails()`, and appends fire-and-forget (never throws or blocks the response; no-ops when the store lacks `appendAuditEntry`). Requests with no verifiable identity fall back to the exported `UNAUTHENTICATED_ACTOR_NAME` (`"unauthenticated"`); rows written before this fallback existed may contain the legacy `"unknown"`. |
 | `adminAuditRoutes.ts` | `GET /api/admin/audit` — admin-only, paginated audit-log read API. |
 | `authContext.ts` | Per-request identity/effective-permission storage plus fail-closed `requestCanAccessResource()` for owner-aware handlers. |
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
@@ -67,8 +67,8 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | `GET` | `/ready` | Unauthenticated readiness check; returns 503 while the OpenShell gateway is unavailable. |
 | `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Every request requires the configured per-integration secret via HMAC, `X-Gitlab-Token`, or Bearer auth. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
 | `GET` | `/api/admin/auth/setup-status` | `{ needsSetup, credentialEncryptionConfigured }` — while setup is required, includes a non-sensitive boolean derived from whether `ADMIN_AUTH_SECRET` is present. The boolean is always `false` after setup and never exposes secret metadata. |
-| `POST` | `/api/admin/auth/login` | `{ username, password }` → `{ token, user }` or 401. |
-| `POST` | `/api/admin/auth/setup` | Bootstrap-only (403 once any user exists, including a concurrent setup winner). Rate-limited with `/login`. Atomically creates the first `admin`, logs in, 201, audits `auth.setup`. |
+| `POST` | `/api/admin/auth/login` | `{ username, password }` → `{ token, user }` or 401 (audited: `auth.login` with the verified user as actor, or `auth.login_failed` with the `"unauthenticated"` actor and the attempted username in details). |
+| `POST` | `/api/admin/auth/setup` | Bootstrap-only (403 once any user exists, including a concurrent setup winner). Rate-limited with `/login`. Atomically creates the first `admin`, logs in, 201, audits `auth.setup` with the created admin as actor. |
 
 ### Auth-protected route families
 
@@ -120,7 +120,7 @@ Two authenticated deployment states plus one explicit test/embed mode share the 
 - **Bootstrap (zero users)**: the dashboard, static assets, health check, webhooks, `GET /api/admin/auth/setup-status`, `POST /api/admin/auth/login`, and `POST /api/admin/auth/setup` remain public. Other `/api/admin/*` routes and the GitLab image proxy return 401 until the first admin is created. Production SQLite stores serialize the zero-user check and first-admin insert in one transaction, so concurrent setup requests yield exactly one 201 and the loser receives 403; the winner is logged in and `auth.setup` is audited. `ADMIN_AUTH_SECRET` is unrelated to login, but is mandatory before creating or loading stored provider credentials. A non-atomic compatibility fallback exists only for structural test doubles that predate `createInitialAdmin`.
 - **DB sessions (≥1 user)**: once a user exists, `/api/admin/*` requires a Bearer session token from `POST /api/admin/auth/login` (opaque 64-hex token; sha256 hash stored in `user_sessions`; sliding 12-hour expiry, touch throttled to once per minute; the short window is XSS defense-in-depth since the SPA holds the token in sessionStorage). `POST /api/admin/auth/setup` then always returns 403.
 - **Explicit test/embed mode**: `createAdminServer({ allowUnauthenticatedAdmin: true, ... })` permits stores without the user/PBAC API and grants the legacy open-admin context only outside production. Missing user/session or PBAC rule-resolution support otherwise fails server creation, and `nodeEnv: "production"` always rejects the escape hatch.
-- **Brute-force protection**: `/api/admin/auth/login` and `/api/admin/auth/setup` share an in-memory rate limiter (`loginRateLimiter.ts`) keyed by client IP and by (normalized) username. After 5 failures in a 15-minute window the key is locked out with exponential backoff (30s doubling up to a 15-minute cap); requests during a lockout get 429 with `Retry-After`. Failed logins are also recorded in the audit log (`auth.login_failed`, no secrets).
+- **Brute-force protection**: `/api/admin/auth/login` and `/api/admin/auth/setup` share an in-memory rate limiter (`loginRateLimiter.ts`) keyed by client IP and by (normalized) username. After 5 failures in a 15-minute window the key is locked out with exponential backoff (30s doubling up to a 15-minute cap); requests during a lockout get 429 with `Retry-After`. Failed logins are also recorded in the audit log (`auth.login_failed`, no secrets, unauthenticated actor + `sourceIp`); the first blocked attempt of each lockout episode is recorded once (`auth.login_rate_limited` / `auth.setup_rate_limited`) so a 429 flood cannot balloon the audit log.
 - **Username normalization**: usernames are normalized (Unicode NFC, trimmed, lower-cased) on both creation and login, so e.g. `Alice` and `alice` are always the same account.
 - **Password policy**: passwords must be ≥ 8 characters and are checked against a curated common-password denylist (`commonPasswords.ts`); this applies to `POST /api/admin/auth/setup`, user creation, and password changes.
 
@@ -164,7 +164,7 @@ The GitLab img-proxy `?t=` query token is a short-lived (60s), single-use **imag
 
 All mutating admin routes append an `audit_log` row after a successful mutation via the shared `recordAudit()` helper ([adminAudit.ts](../../../src/admin/adminAudit.ts)):
 
-- **Actor** comes from `getAuthContext(req)` (`actorUserId` + `actorName`; bootstrap mode records `"bootstrap"`, missing context falls back to `"unknown"`).
+- **Actor** comes from `getAuthContext(req)` (`actorUserId` + `actorName`) unless an explicit `actor: { userId, username }` override is supplied — used by public auth routes that know the verified identity from the auth result. Bootstrap mode records `"bootstrap"`; successful logins/setups record the verified user; requests with no verifiable identity (failed logins, lockouts) fall back to `UNAUTHENTICATED_ACTOR_NAME` (`"unauthenticated"`, with the attempted username kept in details). Rows written before this fallback existed may contain the legacy `"unknown"`.
 - **Details masking**: `maskAuditDetails()` recursively replaces values whose key contains a secret pattern (`token`, `secret`, `password`, `passwd`, `pwd`, `credential`, `key` — case-insensitive substring) with `"***"`. Matching is a deliberately fail-safe substring test (mirrors `SECRET_KEY_PATTERNS` in `adminAgentsRoutes.ts`) so separator-less compounds like `apikey` / `accesstoken` are still masked; the trade-off is that benign words containing a pattern may be over-masked. An explicit safe-key allowlist (`repoKey`, `repoKeys`, `ticketProjectKey`, `publicKey`) and any key ending in `Path` (e.g. `sshKeyPath`, a filesystem path) are never masked. Cyclic object graphs are detected (`WeakSet` of visited objects) and resolve to `"[Circular]"` instead of recursing forever. Secrets are never written to the audit log.
 - **Fire-and-forget with retry**: appends run in the background and never block or fail the API response. Transient append failures are retried with backoff (`appendAuditWithRetry`, delays 100ms/500ms/2s); after the final attempt the failure is logged at error level with the attempt count for monitoring. Stores without `appendAuditEntry` (feature-detected) are silently skipped, keeping mock-store tests working.
 
@@ -172,7 +172,7 @@ Recorded actions:
 
 | Area | Actions |
 | --- | --- |
-| Auth / users | `auth.setup`, `user.create`, `user.update`, `user.password_change`, `user.delete` |
+| Auth / users | `auth.setup`, `auth.login`, `auth.login_failed`, `auth.login_rate_limited`, `auth.setup_rate_limited`, `auth.logout`, `user.create`, `user.update`, `user.password_change`, `user.delete` |
 | Integrations | `integration.create`, `integration.update`, `integration.delete`, `integration.enable`, `integration.disable`, `integration.discover` |
 | OAuth apps / plugins | `oauth_app.create`, `oauth_app.delete`, `plugin.oauth` |
 | Webhooks | `webhook.secret_rotate`, `webhook.allowed_ips_update` |
@@ -210,8 +210,7 @@ The dashboard includes a portal-rendered spotlight tutorial for the top-level Ov
 
 **Users tab (`user.manage`)**: Configuration → Users lists accounts (username, role badge, enabled toggle, created date), with a create-user modal (username/password/role), inline role select, reset-password modal, and delete-with-confirm. Server-side 409s (duplicate username, last-admin guard) surface as inline error banners.
 
-**Audit tab (`audit.read`)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable pretty-printed details JSON) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`.
-
+**Audit tab (`audit.read`)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable labeled details table) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`. Real usernames render bold and are click-to-filter; `bootstrap` renders a muted SYSTEM badge; `"unauthenticated"` and legacy `"unknown"` actors render a muted UNVERIFIED badge. Expanded rows show masked `details` as a humanized key/value table (`sourceIp` → "Source IP"; nested objects/arrays stay compact mono JSON).
 **Configuration navigation**: configurable resources use addressable hash pages while the Configuration navigation remains visible. Lists use `#config/<section>`, creation uses `#config/<section>/new`, details use `#config/<section>/<encoded-id>`, and edits use `#config/<section>/<encoded-id>/edit`; user password reset uses `#config/users/<id>/password`. Integration, agent, project, prompt, user, group, and policy forms/details render in the central page rather than in modal/drawer overlays. The standalone OAuth app registry is not exposed in the dashboard; legacy OAuth hashes fall back to the first visible Configuration section. Existing API capabilities remain authoritative, and built-in prompts/policies are read-only. Destructive confirmations remain short browser confirmations.
 
 Configuration forms, including private prompt copies, register unsaved state with the parent app. Internal section navigation, top-level navigation, logout, browser Back/Forward, reload, and tab close warn before discarding changes. Accepted navigation clears the guard; successful saves return to the relevant detail/list page. The history controller uses indexed `pushState`/`popstate` entries so rejecting Back/Forward restores the current entry without overwriting history. System Settings participates in the same guard despite remaining an inline section form.
@@ -291,13 +290,8 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/adminServerRbac.test.ts`
 - `tests/unit/adminAudit.test.ts`
 - `tests/unit/adminAuditRoutes.test.ts`
-- `tests/unit/dashboard.test.ts`
-- `tests/unit/dashboard.configurationTab.test.ts`
-- `tests/unit/configRouting.test.ts`
-- `tests/unit/configPageSurface.test.ts`
-- `tests/unit/configNavigation.test.tsx`
-- `tests/unit/admin-ui/guidedTour.test.tsx`
-- `tests/unit/admin-ui/topBar.test.tsx`
+- `tests/unit/loginRateLimiter.test.ts`
+- `tests/unit/admin-ui/auditSection.test.tsx`
 
 ## Related docs
 

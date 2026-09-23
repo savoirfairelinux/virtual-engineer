@@ -142,9 +142,9 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const setupEntry = payload.entries.find((e) => e["action"] === "auth.setup");
       expect(setupEntry).toBeDefined();
       expect(setupEntry).toMatchObject({
-        actorName: "bootstrap",
+        actorName: "root",
         targetType: "user",
-        details: { username: "root", role: "admin" },
+        details: expect.objectContaining({ username: "root", role: "admin" }),
       });
       expect(typeof setupEntry?.["id"]).toBe("number");
       expect(typeof setupEntry?.["createdAt"]).toBe("string");
