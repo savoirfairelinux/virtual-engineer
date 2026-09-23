@@ -197,6 +197,21 @@ describe("recordAudit", () => {
     }));
   });
 
+  it("preserves an explicit null actor userId over the request auth context", async () => {
+    const appendAuditEntry = vi.fn().mockResolvedValue({});
+    const req = fakeRequest();
+    setAuthContext(req, { userId: "u-1", username: "alice", role: "admin" });
+    recordAudit({ appendAuditEntry }, req, {
+      action: "auth.login_failed",
+      actor: { userId: null, username: "unauthenticated" },
+    });
+    await flushMicrotasks();
+    expect(appendAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: null,
+      actorName: "unauthenticated",
+    }));
+  });
+
   it("supports a null userId on the actor override (e.g. unverified identities)", async () => {
     const appendAuditEntry = vi.fn().mockResolvedValue({});
     recordAudit({ appendAuditEntry }, fakeRequest(), {

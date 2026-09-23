@@ -22,6 +22,16 @@ const clickableStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
+const filterButtonStyle: React.CSSProperties = {
+  ...clickableStyle,
+  border: "none",
+  padding: 0,
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+  textAlign: "left",
+};
+
 /** Short technical tokens rendered as acronyms rather than capitalized words. */
 const ACRONYMS = new Set(["ip", "url", "id", "api", "ssh", "http", "https", "json", "uri"]);
 
@@ -93,13 +103,15 @@ function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null
     );
   }
   return (
-    <span
+    <button
+      type="button"
+      aria-label={`Filter by actor ${name}`}
       onClick={(e) => { e.stopPropagation(); onFilter(name); }}
-      style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...clickableStyle }}
+      style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...filterButtonStyle }}
       title={`Filter by ${name}`}
     >
       {name}
-    </span>
+    </button>
   );
 }
 
@@ -224,9 +236,15 @@ export function AuditSection() {
                 </span>
                 <ActorCell actorUserId={e.actorUserId} name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
                 <span>
-                  <span onClick={(e2) => { e2.stopPropagation(); setActionFilter(e.action); }} style={clickableStyle}>
+                  <button
+                    type="button"
+                    aria-label={`Filter by action ${e.action}`}
+                    onClick={(e2) => { e2.stopPropagation(); setActionFilter(e.action); }}
+                    style={filterButtonStyle}
+                    title={`Filter by ${e.action}`}
+                  >
                     <Tag tone="info">{e.action}</Tag>
-                  </span>
+                  </button>
                 </span>
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {e.targetType ? `${e.targetType}${e.targetId ? ` · ${e.targetId}` : ""}` : "—"}

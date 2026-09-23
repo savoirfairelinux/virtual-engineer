@@ -184,13 +184,14 @@ export function recordAudit(
 ): void {
   if (!store || typeof store.appendAuditEntry !== "function") return;
   const context = getAuthContext(req);
+  const actor = input.actor ?? context;
   const appendable = store as Required<Pick<AuditCapableStore, "appendAuditEntry">>;
   // appendAuditWithRetry never rejects (all errors are caught + logged internally),
   // but attach .catch() as a safety net for any unexpected rejection so it is
   // always visible in logs and never becomes an unhandled promise rejection.
   appendAuditWithRetry(appendable, {
-    actorUserId: input.actor?.userId ?? context?.userId ?? null,
-    actorName: input.actor?.username ?? context?.username ?? UNAUTHENTICATED_ACTOR_NAME,
+    actorUserId: actor?.userId ?? null,
+    actorName: actor?.username ?? UNAUTHENTICATED_ACTOR_NAME,
     action: input.action,
     targetType: input.targetType ?? null,
     targetId: input.targetId ?? null,

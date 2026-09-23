@@ -186,6 +186,18 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too weak") });
     });
+
+    it("normalizes usernames by trimming whitespace and lowercasing", async () => {
+      await runSetup(baseUrl, "  Root  ", "Str0ng-Pass-1x");
+      const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "ROOT", password: "Str0ng-Pass-1x" }),
+      });
+      expect(login.status).toBe(200);
+      const session = (await login.json()) as SessionResponse;
+      expect(session.user.username).toBe("root");
+    });
   });
 
   describe("login / me / logout", () => {

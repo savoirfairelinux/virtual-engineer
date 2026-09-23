@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditSection } from "../../../src/admin/ui/views/ConfigView/AuditSection.js";
 import { api } from "../../../src/admin/ui/api.js";
@@ -109,6 +110,27 @@ describe("AuditSection click-to-filter", () => {
     fireEvent.click(screen.getByText("root"));
     await waitFor(() => {
       expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("actor=root"));
+    });
+  });
+
+  it("exposes actor and action filters as keyboard-accessible buttons", async () => {
+    const user = userEvent.setup();
+    getMock.mockResolvedValue(page([entry()]));
+    render(<AuditSection />);
+
+    const actorButton = await screen.findByRole("button", { name: "Filter by actor root" });
+    const actionButton = screen.getByRole("button", { name: "Filter by action integration.create" });
+
+    actorButton.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("actor=root"));
+    });
+
+    actionButton.focus();
+    await user.keyboard(" ");
+    await waitFor(() => {
+      expect(getMock).toHaveBeenLastCalledWith(expect.stringContaining("action=integration.create"));
     });
   });
 
