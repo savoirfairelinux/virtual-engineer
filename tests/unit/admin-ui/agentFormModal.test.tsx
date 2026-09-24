@@ -122,6 +122,42 @@ describe("AgentFormModal model discovery", () => {
     ]);
   });
 
+  it("refreshes cached Copilot models on demand", async () => {
+    const requestedPaths: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      requestedPaths.push(path);
+      if (path === "/api/admin/integrations/copilot-cached/models/discover") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (path === "/api/admin/integrations/copilot-cached/models") {
+        return new Response(JSON.stringify({ models: [{ id: "gpt-4.1", name: "GPT-4.1" }] }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    render(
+      <AgentFormModal
+        integrations={[cachedCopilotIntegration]}
+        plugins={[copilotPlugin]}
+        prompts={prompts}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "GPT-4.1" })).toBeTruthy();
+    });
+    expect(requestedPaths).toEqual([
+      "/api/admin/integrations/copilot-cached/models/discover",
+      "/api/admin/integrations/copilot-cached/models",
+    ]);
+  });
+
   it("uses each Copilot model's reasoning efforts and defaults unsupported models", () => {
     render(<AgentFormModal
       integrations={[{
