@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
+import { policyListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiGroup, ApiPolicy, ApiPolicyDetail, ApiPolicyRule, ApiUser } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
+
+const POLICY_LIST_CONFIG = policyListConfig();
 
 const SCOPEABLE = new Set(["project", "task"]);
 function isScopeable(permission: string): boolean {
@@ -238,10 +243,11 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
 
 /* ─── Policies section ────────────────────────────────────────────────── */
 
-export function PoliciesSection({ route, navigate, markClean }: ConfigSectionProps) {
+export function PoliciesSection({ route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const [policies, setPolicies] = useState<ApiPolicy[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const visiblePolicies = useMemo(() => applyListFilter(policies, listFilter, POLICY_LIST_CONFIG), [policies, listFilter]);
 
   const load = useCallback(async () => {
     try {
@@ -315,9 +321,24 @@ export function PoliciesSection({ route, navigate, markClean }: ConfigSectionPro
         <div style={{ marginBottom: "14px", padding: "10px 14px", background: "var(--danger-soft)", border: "1px solid color-mix(in oklab,var(--danger) 30%, transparent)", borderRadius: "var(--radius-sm)", fontSize: "13px", color: "var(--danger)" }}>{error}</div>
       )}
 
+      {policies.length > 0 && (
+        <ListToolbar
+          noun="policies"
+          searchPlaceholder="Search by name, description, or ID"
+          config={POLICY_LIST_CONFIG}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visiblePolicies.length}
+          total={policies.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {policies.length === 0 && <div className="placeholder" style={{ minHeight: "120px" }}>No policies yet.</div>}
-        {policies.map((p) => (
+        {policies.length > 0 && visiblePolicies.length === 0 && (
+          <NoListMatches noun="policies" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visiblePolicies.map((p) => (
           <RowCard key={p.id} ariaLabel={`Open policy ${p.name}`} onClick={() => navigate({ section: "policies", mode: "detail", id: p.id })}>
             <span style={{ width: 36, height: 36, borderRadius: "8px", display: "grid", placeItems: "center", background: "var(--panel-2)", color: "var(--text-faint)", border: "1px solid var(--border-soft)", flex: "none" }}>
               <Icon name="config" size={17} />

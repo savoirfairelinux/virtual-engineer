@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { AdminServerDependencies } from "../../src/admin/adminServer.js";
-import type { PromptStore, Prompt, PromptType } from "../../src/interfaces.js";
+import { makeAgentId, type AgentRecord, type PromptStore, type Prompt, type PromptType } from "../../src/interfaces.js";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
 
@@ -83,6 +83,30 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
       data.delete(id);
     }),
   };
+}
+
+function makeAgent(overrides: Partial<AgentRecord> = {}): AgentRecord {
+  return {
+    id: makeAgentId("agent-1"),
+    name: "Agent One",
+    type: "coding",
+    modelConfigJson: "{}",
+    integrationId: null,
+    systemPromptId: "system_generic_code",
+    instructionsPromptId: "instructions_review",
+    feedbackInstructionsPromptId: null,
+    maxConcurrent: 1,
+    enabled: true,
+    createdAt: new Date("2026-04-10T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-10T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeAgentStore(agents: AgentRecord[]): NonNullable<AdminServerDependencies["agentStore"]> {
+  return {
+    listAgents: vi.fn(async () => agents),
+  } as unknown as NonNullable<AdminServerDependencies["agentStore"]>;
 }
 
 function makeMinimalDeps(
@@ -197,6 +221,31 @@ describe("Admin API — Prompt routes", () => {
         content: "You are a software engineer.",
       });
       expect(typeof system!["updatedAt"]).toBe("string");
+    });
+
+    it("includes each referencing agent once in the usage count", async () => {
+      const agent = makeAgent({
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "system_generic_code",
+        feedbackInstructionsPromptId: "system_generic_code",
+      });
+      const serverWithAgents = createAdminServer(makeMinimalDeps({
+        promptStore,
+        agentStore: makeAgentStore([agent]),
+      }));
+      await new Promise<void>((resolve) => serverWithAgents.listen(0, "127.0.0.1", resolve));
+
+      try {
+        const { status, body } = await fetchFromServer(serverWithAgents, "/api/admin/prompts");
+        expect(status).toBe(200);
+        const prompts = body["prompts"] as Array<Record<string, unknown>>;
+        expect(prompts.find((prompt) => prompt["id"] === "system_generic_code")?.["usedByCount"]).toBe(1);
+        expect(prompts.find((prompt) => prompt["id"] === "instructions_review")?.["usedByCount"]).toBe(0);
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          serverWithAgents.close((err) => (err ? reject(err) : resolve()))
+        );
+      }
     });
 
     it("returns 501 when promptStore is not configured", async () => {

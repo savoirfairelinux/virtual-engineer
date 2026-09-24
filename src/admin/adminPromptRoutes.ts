@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import { getLogger } from "../logger.js";
 import type { AgentRecord, Prompt, PromptStore, PromptType } from "../interfaces.js";
 import { writeJson, readBody, toIsoTimestamp, requireStore } from "./adminRouteUtils.js";
@@ -25,6 +26,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
   router.add("GET", "/api/admin/prompts", async (req, res, _params) => {
     if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const prompts = await deps.promptStore.getPrompts();
+    const agents = deps.agentStore ? await deps.agentStore.listAgents() : [];
     const perms = getEffectivePermissions(req);
     const actorUserId = getAuthContext(req)?.userId ?? null;
     const visible = perms
@@ -35,7 +37,12 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
           actorUserId
         ))
       : prompts;
-    writeJson(res, 200, { prompts: visible.map(serializePrompt) });
+      writeJson(res, 200, {
+        prompts: visible.map((prompt) => serializePrompt(
+          prompt,
+          getReadablePromptUsage(req, agents, prompt.id).length,
+        )),
+      });
   }, { permission: "prompt.read", collection: true });
 
   router.add("POST", "/api/admin/prompts", async (req, res, _params) => {
@@ -81,13 +88,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     const prompt = await deps.promptStore.getPrompt(promptId);
     if (!prompt) { writeJson(res, 404, { error: "Prompt not found" }); return; }
     const agents = deps.agentStore ? await deps.agentStore.listAgents() : [];
-    const usedBy = agents
-      .filter((a) => a.systemPromptId === promptId || a.instructionsPromptId === promptId || a.feedbackInstructionsPromptId === promptId)
-      .filter((agent) => requestCanAccessResource(req, "agent.read", {
-        type: "agent",
-        id: agent.id,
-        ownerUserId: agent.ownerUserId ?? null,
-      }))
+    const usedBy = getReadablePromptUsage(req, agents, promptId)
       .map((a) => ({ id: a.id, name: a.name }));
     writeJson(res, 200, { promptId, agents: usedBy });
   }, { permission: "prompt.read", resourceParam: "id" });
@@ -153,8 +154,24 @@ function isPromptType(value: unknown): value is PromptType {
 }
 
 /** Serialize a Prompt to the admin API response shape. */
-function serializePrompt(prompt: Prompt): Record<string, unknown> {
-  return {
+function getReadablePromptUsage(
+  req: IncomingMessage,
+  agents: readonly AgentRecord[],
+  promptId: string,
+): AgentRecord[] {
+  return agents
+    .filter((agent) => agent.systemPromptId === promptId
+      || agent.instructionsPromptId === promptId
+      || agent.feedbackInstructionsPromptId === promptId)
+    .filter((agent) => requestCanAccessResource(req, "agent.read", {
+      type: "agent",
+      id: agent.id,
+      ownerUserId: agent.ownerUserId ?? null,
+    }));
+}
+
+function serializePrompt(prompt: Prompt, usedByCount?: number): Record<string, unknown> {
+  const serialized: Record<string, unknown> = {
     id: prompt.id,
     label: prompt.label,
     content: prompt.content,
@@ -163,4 +180,6 @@ function serializePrompt(prompt: Prompt): Record<string, unknown> {
     ownerUserId: prompt.ownerUserId,
     updatedAt: toIsoTimestamp(prompt.updatedAt),
   };
+  if (usedByCount !== undefined) serialized["usedByCount"] = usedByCount;
+  return serialized;
 }

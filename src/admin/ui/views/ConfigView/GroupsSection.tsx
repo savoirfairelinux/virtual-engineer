@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
+import { groupListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiGroup, ApiGroupDetail, ApiUser } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
+
+const GROUP_LIST_CONFIG = groupListConfig();
 
 /* ─── Create-group modal ──────────────────────────────────────────────── */
 
@@ -147,10 +152,11 @@ function MembersModal({ groupId, readOnly, onClose, onEdit, onPersisted }: {
 
 /* ─── Groups section ──────────────────────────────────────────────────── */
 
-export function GroupsSection({ route, navigate, markClean }: ConfigSectionProps) {
+export function GroupsSection({ route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const [groups, setGroups] = useState<ApiGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const visibleGroups = useMemo(() => applyListFilter(groups, listFilter, GROUP_LIST_CONFIG), [groups, listFilter]);
 
   const load = useCallback(async () => {
     try {
@@ -213,9 +219,24 @@ export function GroupsSection({ route, navigate, markClean }: ConfigSectionProps
         <div style={{ marginBottom: "14px", padding: "10px 14px", background: "var(--danger-soft)", border: "1px solid color-mix(in oklab,var(--danger) 30%, transparent)", borderRadius: "var(--radius-sm)", fontSize: "13px", color: "var(--danger)" }}>{error}</div>
       )}
 
+      {groups.length > 0 && (
+        <ListToolbar
+          noun="groups"
+          searchPlaceholder="Search by name or description"
+          config={GROUP_LIST_CONFIG}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visibleGroups.length}
+          total={groups.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {groups.length === 0 && <div className="placeholder" style={{ minHeight: "120px" }}>No groups yet.</div>}
-        {groups.map((g) => (
+        {groups.length > 0 && visibleGroups.length === 0 && (
+          <NoListMatches noun="groups" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visibleGroups.map((g) => (
           <RowCard key={g.id} ariaLabel={`Open group ${g.name}`} onClick={() => navigate({ section: "groups", mode: "detail", id: g.id })}>
             <span style={{ width: 36, height: 36, borderRadius: "8px", display: "grid", placeItems: "center", background: "var(--panel-2)", color: "var(--text-faint)", border: "1px solid var(--border-soft)", flex: "none" }}>
               <Icon name="user" size={17} />

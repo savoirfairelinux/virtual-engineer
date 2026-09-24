@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Toggle } from "../../components/Toggle.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -7,14 +8,18 @@ import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import { AgentFormModal } from "./AgentFormModal.tsx";
 import { AgentDrawer } from "./ConfigDrawers.tsx";
+import { agentListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiAgent } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
-export function AgentsSection({ agents, integrations, plugins, prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+export function AgentsSection({ agents, integrations, plugins, prompts, onRefresh, route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const { can } = useCurrentUser();
   const canCreate = can("agent.create");
   const [busy, setBusy] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<ApiAgent | null>(null);
+  const listConfig = useMemo(() => agentListConfig(agents, integrations, plugins), [agents, integrations, plugins]);
+  const visibleAgents = useMemo(() => applyListFilter(agents, listFilter, listConfig), [agents, listFilter, listConfig]);
   const detailId = route.section === "agents" && route.mode === "detail" ? route.id : null;
   const editingId = route.section === "agents" && route.mode === "edit" ? route.id : null;
   const detailItem = detailId ? agents.find((agent) => agent.id === detailId) : undefined;
@@ -130,11 +135,26 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
         </div>
       </div>
 
+      {agents.length > 0 && (
+        <ListToolbar
+          noun="agents"
+          searchPlaceholder="Search by name, model, engine, or ID"
+          config={listConfig}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visibleAgents.length}
+          total={agents.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {agents.length === 0 && (
           <div className="placeholder" style={{ minHeight: "120px" }}>No agents configured.</div>
         )}
-        {agents.map((a) => (
+        {agents.length > 0 && visibleAgents.length === 0 && (
+          <NoListMatches noun="agents" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visibleAgents.map((a) => (
           <RowCard key={a.id} ariaLabel={`Open agent ${a.name}`} onClick={() => navigate({ section: "agents", mode: "detail", id: a.id })}>
             <span
               style={{

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Toggle } from "../../components/Toggle.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -8,11 +9,16 @@ import { PasswordField } from "../../components/PasswordField.tsx";
 import { Drawer, DetailSection, DetailRow, StatusBanner } from "../../components/Drawer.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
+import { userListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiUser, UserRole } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
 const ROLE_TONE = { admin: "active", operator: "info", viewer: "muted" } as const;
 const ROLES: readonly UserRole[] = ["admin", "operator", "viewer"];
+// Backend maximum page size for GET /api/admin/users.
+const USERS_FETCH_LIMIT = 200;
+const USER_LIST_CONFIG = userListConfig();
 
 /* ─── Create-user modal ───────────────────────────────────────────────── */
 
@@ -163,16 +169,19 @@ function UserEditModal({ user, onClose, onSaved }: { user: ApiUser; onClose: () 
 
 /* ─── Users section ───────────────────────────────────────────────────── */
 
-export function UsersSection({ route, navigate, markClean }: ConfigSectionProps) {
+export function UsersSection({ route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const { user: me } = useCurrentUser();
   const [users, setUsers] = useState<ApiUser[]>([]);
+  const [totalUsers, setTotalUsers] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const visibleUsers = useMemo(() => applyListFilter(users, listFilter, USER_LIST_CONFIG), [users, listFilter]);
 
   const load = useCallback(async () => {
     try {
-      const r = await api.get<{ users: ApiUser[] }>("/api/admin/users");
+      const r = await api.get<{ users: ApiUser[]; total?: number }>(`/api/admin/users?limit=${USERS_FETCH_LIMIT}`);
       setUsers(r.users);
+      setTotalUsers(r.total ?? r.users.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load users");
     }
@@ -302,11 +311,32 @@ export function UsersSection({ route, navigate, markClean }: ConfigSectionProps)
         </div>
       )}
 
+      {totalUsers > users.length && (
+        <div style={{ marginBottom: "14px", fontSize: "12.5px", color: "var(--text-faint)" }}>
+          Showing the first {users.length} of {totalUsers} users; search and filters apply to these accounts only.
+        </div>
+      )}
+
+      {users.length > 0 && (
+        <ListToolbar
+          noun="users"
+          searchPlaceholder="Search by username or ID"
+          config={USER_LIST_CONFIG}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visibleUsers.length}
+          total={users.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {users.length === 0 && (
           <div className="placeholder" style={{ minHeight: "120px" }}>No users found.</div>
         )}
-        {users.map((u) => (
+        {users.length > 0 && visibleUsers.length === 0 && (
+          <NoListMatches noun="users" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visibleUsers.map((u) => (
           <RowCard key={u.id} ariaLabel={`Open user ${u.username}`} onClick={() => navigate({ section: "users", mode: "detail", id: u.id })}>
             <span
               style={{

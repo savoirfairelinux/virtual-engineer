@@ -1169,8 +1169,14 @@ describe("adminServer PBAC project scoping", () => {
       modelConfigJson: "{}",
       systemPromptId: "system_generic_code",
       instructionsPromptId: "instructions_generic_code",
+      feedbackInstructionsPromptId: "system_generic_code",
       ownerUserId: owner.user.id,
     });
+
+    const ownerList = await fetch(`${baseUrl}/api/admin/prompts`, authed(owner.token));
+    expect(ownerList.status).toBe(200);
+    const ownerListBody = await ownerList.json() as { prompts: Array<{ id: string; usedByCount?: number }> };
+    expect(ownerListBody.prompts.find((prompt) => prompt.id === "system_generic_code")?.usedByCount).toBe(1);
 
     const response = await fetch(
       `${baseUrl}/api/admin/prompts/system_generic_code/usage`,
@@ -1181,6 +1187,11 @@ describe("adminServer PBAC project scoping", () => {
       promptId: "system_generic_code",
       agents: [],
     });
+
+    const peerList = await fetch(`${baseUrl}/api/admin/prompts`, authed(peer.token));
+    expect(peerList.status).toBe(200);
+    const peerListBody = await peerList.json() as { prompts: Array<{ id: string; usedByCount?: number }> };
+    expect(peerListBody.prompts.find((prompt) => prompt.id === "system_generic_code")?.usedByCount).toBe(0);
   });
 
   it("filters overview and concurrency data to visible resources", async () => {

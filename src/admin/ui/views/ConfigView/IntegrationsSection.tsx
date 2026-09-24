@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
+import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Toggle } from "../../components/Toggle.tsx";
@@ -8,13 +9,17 @@ import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import { IntegrationFormModal } from "./IntegrationFormModal.tsx";
 import { IntegrationDrawer } from "./ConfigDrawers.tsx";
+import { integrationListConfig } from "./configListConfigs.ts";
+import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiIntegration } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
-export function IntegrationsSection({ integrations, plugins, onRefresh, route, navigate, markClean, setDirty }: ConfigSectionProps) {
+export function IntegrationsSection({ integrations, plugins, onRefresh, route, navigate, markClean, setDirty, listFilter, onListFilterChange }: ConfigSectionProps) {
   const { can } = useCurrentUser();
   const canCreate = can("integration.create");
   const [busy, setBusy] = useState<string | null>(null);
+  const listConfig = useMemo(() => integrationListConfig(integrations, plugins), [integrations, plugins]);
+  const visibleIntegrations = useMemo(() => applyListFilter(integrations, listFilter, listConfig), [integrations, listFilter, listConfig]);
   const routeId = route.section === "integrations" && (route.mode === "detail" || route.mode === "edit")
     ? route.id
     : null;
@@ -102,11 +107,26 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
         </div>
       </div>
 
+      {integrations.length > 0 && (
+        <ListToolbar
+          noun="integrations"
+          searchPlaceholder="Search by name, provider, or ID"
+          config={listConfig}
+          state={listFilter}
+          onChange={onListFilterChange}
+          shown={visibleIntegrations.length}
+          total={integrations.length}
+        />
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {integrations.length === 0 && (
           <div className="placeholder" style={{ minHeight: "120px" }}>No integrations configured.</div>
         )}
-        {integrations.map((it) => {
+        {integrations.length > 0 && visibleIntegrations.length === 0 && (
+          <NoListMatches noun="integrations" onClear={() => onListFilterChange(EMPTY_LIST_FILTER)} />
+        )}
+        {visibleIntegrations.map((it) => {
           const tone = it.enabled ? "ok" : "muted";
           return (
             <RowCard key={it.id} ariaLabel={`Open integration ${it.name}`} onClick={() => navigate({ section: "integrations", mode: "detail", id: it.id })}>
