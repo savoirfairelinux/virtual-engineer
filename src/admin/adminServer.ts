@@ -32,6 +32,8 @@ import { registerSettingsRoutes, type SettingsController } from "./adminSettings
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
+import type { AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
@@ -306,6 +308,17 @@ function extractPbacStore(stateStore: unknown): PbacRuleStore | null {
     : null;
 }
 
+/** Feature-detect the authentication-source store backing /api/admin/auth-sources. */
+function extractAuthSourceStore(stateStore: unknown): AuthSourceStoreApi | null {
+  const candidate = stateStore as Partial<AuthSourceStoreApi> | null | undefined;
+  return candidate &&
+    typeof candidate.listAuthSources === "function" &&
+    typeof candidate.getAuthSourceById === "function" &&
+    typeof candidate.createAuthSource === "function"
+    ? (candidate as AuthSourceStoreApi)
+    : null;
+}
+
 /** Feature-detect the policy-binding surface used to assign role-default policies. */
 function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | null {
   const candidate = stateStore as Partial<DefaultPolicyBinderStore> | null | undefined;
@@ -473,6 +486,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
       ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
       : {}),
     trustProxy: dependencies.config.adminTrustProxy,
+  });
+  registerAuthSourceRoutes(router, {
+    authSourceStore: extractAuthSourceStore(dependencies.stateStore) ?? undefined,
+    auditStore,
+    adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
   registerPolicyRoutes(router, { policyStore: policyRoutesStore ?? undefined, auditStore });
