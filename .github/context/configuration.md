@@ -19,6 +19,9 @@ All variables are optional. Only system/infra settings remain in the environment
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. `test` silences the logger by default. |
 | `LOG_LEVEL` | `info` | Pino level. |
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. |
+| `BACKUP_DIR` | `<DATABASE_PATH directory>/backups` | Local `.tar.gz` archive directory; defaults beside the database file. Admin UI controls scheduling/retention, not this path. Download or copy archives to separate storage for disaster recovery. |
+| `VE_RESTORE_FROM` | — | One-shot archive path read at startup before SQLite opens. Archives do not contain `ADMIN_AUTH_SECRET`; restore requires the original secret and the deployment's OIDC/runtime configuration. Do not leave this set in a persistent environment after restore. |
+| `VE_RESTORE_FORCE` | `false` | Explicitly permit replacement of existing database/prompt targets; existing targets are preserved in a `.pre-restore-*` directory. Use only with a requested restore and clear it immediately afterward, or every restart can reapply the archive. |
 
 ### Admin server
 
@@ -27,7 +30,7 @@ All variables are optional. Only system/infra settings remain in the environment
 | `ADMIN_API_ENABLED` | `true` | Boolean. |
 | `ADMIN_API_HOST` | `127.0.0.1` | Bind host. |
 | `ADMIN_API_PORT` | `3100` | Port. |
-| `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the documented generation command produces a 64-character value. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
+| `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. Backup creation and restore also require the same secret used to create the archive; the manifest contains only its HMAC fingerprint. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the documented generation command produces a 64-character value. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, derive the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Enable only behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
 
 There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value exists only as an optional dependency field wired into the admin server (used to render webhook URLs), not as configuration parsed by `src/config.ts`.
@@ -55,7 +58,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Image the OpenShell sandbox is created from (`sandbox create --from`). |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
 
-There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
+There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 24 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
 
 ### Read outside `ConfigSchema`
 
@@ -84,6 +87,19 @@ example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun `./scripts/start.sh` wh
 no tasks are active. The mount option participates in the existing run-config
 hash, so changing it recreates the orchestrator container. This setting does not
 change OpenShell sandbox limits or Kubernetes deployment storage.
+
+### Restore launcher
+
+`./scripts/start.sh --restore <archive> [--force] [--yes]` validates the local
+archive, asks the operator to type `restore`, then stops/removes the existing
+`ve-orchestrator` before starting its replacement with the archive mounted
+read-only. `--yes` skips only the interactive confirmation and is intended for
+explicit automation. `--force` is separate: use it only when replacing a
+populated database or prompt directory is intended; the old targets are
+quarantined under the data directory. The launcher-based restore works with
+either OpenShell compute driver because the orchestrator remains a Docker
+container. For the manifests-based Kubernetes deployment, follow the PVC
+procedure in [deploy/k8s/README.md](../../deploy/k8s/README.md).
 
 ## Boot-time validation
 
