@@ -20,6 +20,7 @@ tests/
 
 | Area | Families (file-name stems) |
 |---|---|
+| Backups / recovery | `backupService`, `backupRestore`, `backupScheduler`, `adminBackupRoutes`, `backupSection` |
 | Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminUiSse`, `adminImageProxy`, `imageProxyTokenStore`, `adminHealthEndpoint`, `adminOverviewRoutes`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminProjectStatisticsRoutes`, `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminAgentEngineRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminModelUsageRoutes`, `adminAuthService`, `localPasswordAuthenticator`, `adminAuthRoutes`, `adminAuthSourceRoutes`, `authSourcesSection`, `adminServerRbac`, `adminPoliciesRoutes`, `adminRuntimePolicyRoutes`, `adminRuntimeStatusRoute`, `runtimePolicyValidation`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `toolAuthorizationSection`, `toolUsageSummary`, `projectFormModal`, `projectStatisticsView`, `apiIdentityBoundary`, `appIdentityHandoff`, `configDirtyRace`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `configListFilters`, `configListSearch`, `guidedTour`, `topBar`, `identityReset`, `auditSection`, `auditExportSection`, `policyRuleModel`, `policiesSection`, `agentEnginesPanel`, `integrationTypePicker`, `providerSummary`, `taskFiltersFromHash`, `statusCategories` |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `projectConnectorResolver`, `agentRuntimeResolver`, `projectPushService`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `taskLifecycleCoordinator`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
 | State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`, `.reviewDedup`, `.modelUsage`), `projectStatisticsStore`, `settingsStore`, `databaseMigrations`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
@@ -49,6 +50,8 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 
 ## Conventions
+
+- Backup tests cover online SQLite snapshot/session scrubbing, archive checksum and secret fingerprint validation, forced replacement quarantine and idempotent restore, scheduler due-time/coalescing/retention behavior, permissioned admin download and mutation auditing, schedule-form unsaved-navigation state, and launcher confirmation/force/read-only-mount contracts.
 
 - Dashboard shell tests mock the Vite manifest to verify the hashed brand-logo favicon URL and graceful omission when the logo is absent.
 

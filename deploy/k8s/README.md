@@ -181,6 +181,63 @@ kubectl -n virtual-engineer port-forward svc/virtual-engineer-admin 3100:3100
 # Config → Policy Denials to audit.
 ```
 
+## Restore from backup
+
+The restore must run before the orchestrator opens SQLite. The backup archive
+does not contain `ADMIN_AUTH_SECRET`, Keycloak/OIDC state, OpenShell state, or
+ephemeral workspaces. Keep the original `ADMIN_AUTH_SECRET` in
+`virtual-engineer-secret`, preserve or reconfigure OIDC separately, and copy the
+archive off-cluster before restoring. A populated PVC requires an explicit
+forced restore; the existing database and prompt overrides are quarantined on
+that PVC as `.pre-restore-*`.
+
+For an existing deployment, stage the archive on the data PVC through the
+running orchestrator pod, then stop that pod before enabling the one-shot
+restore. Replace the local archive path below with the downloaded archive:
+
+```bash
+NAMESPACE=virtual-engineer
+DEPLOYMENT=virtual-engineer-orchestrator
+ARCHIVE=/secure/path/ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz
+POD=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/name=virtual-engineer,app.kubernetes.io/component=orchestrator \
+  -o jsonpath='{.items[0].metadata.name}')
+test -n "$POD"
+kubectl exec -i "$POD" -n "$NAMESPACE" -c orchestrator -- \
+  sh -ec 'umask 077; cat > /app/data/restore.tar.gz' < "$ARCHIVE"
+kubectl scale deployment/"$DEPLOYMENT" -n "$NAMESPACE" --replicas=0
+kubectl wait --for=delete "pod/$POD" -n "$NAMESPACE" --timeout=180s
+```
+
+The current PVC already contains the database, so replacing it requires the
+explicit force variable. Do not set it when restoring to an empty PVC. Start
+one restore rollout and wait for readiness:
+
+```bash
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
+  VE_RESTORE_FROM=/app/data/restore.tar.gz VE_RESTORE_FORCE=true
+kubectl scale deployment/"$DEPLOYMENT" -n "$NAMESPACE" --replicas=1
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+```
+
+After the restore pod is ready, immediately remove both one-shot variables. This
+updates the Deployment and starts a normal pod against the restored database;
+leaving `VE_RESTORE_FORCE=true` set would reapply the archive on later restarts.
+Remove the staged archive only after that normal rollout succeeds, and retain
+the `.pre-restore-*` quarantine until the instance has been verified:
+
+```bash
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
+  VE_RESTORE_FROM- VE_RESTORE_FORCE-
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -c orchestrator -- \
+  rm -f /app/data/restore.tar.gz
+```
+
+If restore validation or startup fails, keep the restore variables and staged
+archive in place while diagnosing the pod logs. The archive is never copied
+into a Kubernetes Secret or ConfigMap.
+
 ## Scheduling model
 
 VE keeps **business admission** (`ConcurrencyTracker`, per-integration limits).

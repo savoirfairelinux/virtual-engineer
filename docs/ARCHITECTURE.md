@@ -85,6 +85,7 @@ src/
     adminProjectsRoutes.ts# /api/admin/projects CRUD
     adminConcurrencyRoutes.ts # /api/admin/concurrency
     adminSettingsRoutes.ts# /api/admin/settings (editable runtime workflow settings)
+    adminBackupRoutes.ts # /api/admin/backups (schedule + archive management)
     adminWebhookRoutes.ts # Webhook secret rotation, allowed-IPs, info
     adminOverviewRoutes.ts# Dashboard overview + cost-summary endpoints
     dashboard.ts          # Serves the Vite-built React SPA from dist/admin-ui
@@ -209,8 +210,13 @@ src/
     openShellPolicyBuilder.ts # deny-by-default policy YAML
     denialEvents.ts           # scrubbed policy-denial events
   runtime/
+    backupScheduler.ts    # UTC schedule, coalesced runs, retention
     runtimeStartup.ts         # resolveOpenShellGateway + startRuntimeRecovery
                               # (called from index.ts at boot)
+  backup/
+    backupArchive.ts          # archive manifest, checksums, secret fingerprint
+    backupService.ts          # online SQLite snapshot + prompt archive lifecycle
+    backupRestore.ts          # validated pre-SQLite startup restore
 
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
@@ -342,6 +348,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
 | `adminConcurrencyRoutes.ts` | `GET /api/admin/concurrency` (read-only run-slot snapshot) |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
+| `adminBackupRoutes.ts` | `GET/PUT /api/admin/backups/settings`, `GET/POST /api/admin/backups`, archive download/delete (`system.backup.manage`) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 | `adminRuntimePolicyRoutes.ts` | `GET/POST/PUT/DELETE /api/admin/runtime/policies`, bindings CRUD |
 | `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` (policy-denial audit log) |
@@ -771,6 +778,10 @@ app_settings                   ← singleton (editable runtime workflow settings
   polling_interval_ms / max_agent_cycles / max_retry_attempts  INTEGER | NULL
     (NULL = fall back to the config.ts default; edited via admin UI →
      System Settings, hot-applied without restart)
+  backup_enabled              INTEGER | NULL (boolean)
+  backup_interval_days        INTEGER | NULL
+  backup_time_of_day          TEXT | NULL (UTC HH:MM)
+  backup_retention_count      INTEGER | NULL
   updated_at
 ```
 
@@ -1163,3 +1174,26 @@ Editable runtime workflow settings live in the `app_settings` singleton row (`id
 |-------|---------|
 | `GET /api/admin/settings` | Read current effective settings |
 | `PUT /api/admin/settings` | Persist and hot-apply setting overrides |
+
+### 10.8 Backups and recovery
+
+`src/backup/backupService.ts` creates private `.tar.gz` archives from an online
+SQLite snapshot plus allowlisted prompt override Markdown files. Active admin
+sessions are removed from the snapshot. The archive manifest records the
+database SHA-256 and an HMAC fingerprint of `ADMIN_AUTH_SECRET`; the secret
+itself, local OpenShell/Keycloak state, and ephemeral workspaces are excluded.
+The same `ADMIN_AUTH_SECRET` is required to verify the archive and decrypt the
+restored provider credentials. `BACKUP_DIR` defaults to a `backups/` directory
+beside `DATABASE_PATH`; copy archives off-machine because local retention is
+not disaster recovery.
+
+`BackupScheduler` uses the `app_settings` schedule (disabled by default; daily
+at `03:00` UTC; seven retained archives), checks every 15 minutes, coalesces
+overlapping runs, and is stopped before SQLite closes. `src/index.ts` performs
+`VE_RESTORE_FROM` validation and restore before `SqliteStateStore.create()`.
+Existing database/prompt targets require the explicit `VE_RESTORE_FORCE` flag
+and are quarantined before replacement. Clear both one-shot restore variables
+after success. The Docker launcher command is
+`./scripts/start.sh --restore <archive> [--force] [--yes]`; manifests-based
+Kubernetes restores are staged on the existing data PVC as documented in
+[`deploy/k8s/README.md`](../deploy/k8s/README.md#restore-from-backup).
