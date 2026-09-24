@@ -1439,6 +1439,32 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
   });
 });
 
+describe("ReviewOrchestrator.runReview project reconfiguration", () => {
+  it("fails before agent execution when the project now selects another review integration", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-replacement",
+      repos: ["p"],
+      assignmentMode: "manual" as const,
+    }));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow(
+      "Review integration changed while task",
+    );
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
+      initial.taskId,
+      expect.stringContaining("Manual retry is required"),
+    );
+    expect(mocks.store.task?.state).toBe("REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+  });
+});
+
 describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
   it("fetches the delta and injects it into the prompt on a re-review", async () => {
     const initial = makeTask({

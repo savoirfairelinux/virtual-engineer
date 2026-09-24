@@ -15,6 +15,7 @@ import {
   type PolicyRule,
   type Prompt,
   type ProjectId,
+  type ProjectConfigurationUpdateResult,
   type ProjectPushTargetRecord,
   type ProjectRecord,
   type ProjectReviewConfig,
@@ -34,6 +35,7 @@ import {
   getProviderDomainCapabilities,
 } from "../plugins/registry.js";
 import { ReviewStrategyConfigError, resolveReviewStrategy } from "../agents/reviewStrategy.js";
+import { PROJECT_RECONFIGURATION_FAILURE_PREFIX } from "../domain/projectConfiguration.js";
 
 const log = getLogger("admin-projects");
 export const MAX_TCP_PORT = 65_535;
@@ -63,6 +65,13 @@ export async function relaunchFailedTasksForProject(
   }
 
   for (const task of failedTasks) {
+    if (task.failureReason?.startsWith(PROJECT_RECONFIGURATION_FAILURE_PREFIX)) {
+      log.info(
+        { projectId, taskId: task.taskId },
+        "preserving project-reconfiguration failure for manual retry",
+      );
+      continue;
+    }
     try {
       await store.retryTask(task.taskId);
       void taskControl?.retryTask(task.taskId).catch((err: unknown) => {
@@ -118,8 +127,9 @@ export interface ProjectsRouteStore {
         repoKeys: string[];
         assignmentMode?: ReviewAssignmentMode | undefined;
       } | undefined;
+      confirmedActiveTaskIds?: string[] | undefined;
     }
-  ): Promise<ProjectRecord>;
+  ): Promise<ProjectConfigurationUpdateResult>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
   setProjectTicketSource(
@@ -477,6 +487,7 @@ export const projectUpdateSchema = z.object({
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
   reviewConfig: reviewConfigSchema.optional(),
+  confirmedActiveTaskIds: z.array(z.string()).optional(),
 });
 
 export interface IntegrationLookup {

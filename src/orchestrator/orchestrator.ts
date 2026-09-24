@@ -19,6 +19,7 @@ import {
   type ExternalChangeId,
   type TicketId,
 } from "../domain/identifiers.js";
+import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
 import {
   TERMINAL_STATES,
   type CodeGenState,
@@ -285,6 +286,13 @@ export class Orchestrator {
     try {
       reviewConnector = await this.resolveReviewConnector(task);
     } catch (err) {
+      if (err instanceof ProjectReconfigurationIncompatibleError) {
+        const reason = redactUrls(err.message);
+        await this.stateStore.setFailureReason(taskId, reason);
+        await this.stateStore.transition(taskId, "REVIEW_FAILED", { error: reason }, "REVIEW_WATCHING");
+        log.warn({ taskId, reason }, "project reconfiguration made the review task incompatible");
+        return;
+      }
       log.warn({ taskId, err }, "checkReviewWatchingTask: could not resolve review connector — skipping");
       return;
     }
@@ -648,6 +656,18 @@ export class Orchestrator {
       projectPushTargets = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
       if (projectPushTargets.length === 0) {
         throw new Error(`Project ${task.projectId} has no push targets configured`);
+      }
+      const existingChanges = await this.stateStore.getChangesForTask(task.taskId);
+      for (const change of existingChanges) {
+        if (change.status === "NO_CHANGE" || change.status === "ORPHANED") continue;
+        const targetStillConfigured = projectPushTargets.some(
+          (target) => target.integrationId === change.integrationId && target.repoKey === change.repoKey,
+        );
+        if (!targetStillConfigured) {
+          throw new ProjectReconfigurationIncompatibleError(
+            `Project reconfiguration removed or reassigned repository "${change.repoKey}" for active change "${change.changeId}" (integration "${change.integrationId}"). Manual retry is required.`,
+          );
+        }
       }
       const vendorComponents = (await this.projectMode.projectStore.listProjectVendorComponents?.(task.projectId) ?? [])
         .map((component) => ({
@@ -1114,10 +1134,12 @@ export class Orchestrator {
       // connection cannot be established) are already surfaced in the admin UI.
       // Posting them as a ticket note duplicates that view and adds noise to the
       // ticket-following process, so skip the notification for those.
-      if (isInfrastructureError(err)) {
+      if (err instanceof ProjectReconfigurationIncompatibleError || isInfrastructureError(err)) {
         log.warn(
           { taskId: task.taskId, ticketId: task.ticketId },
-          "infrastructure error — skipping ticket failure note"
+          err instanceof ProjectReconfigurationIncompatibleError
+            ? "project reconfiguration made the task incompatible — skipping ticket failure note"
+            : "infrastructure error — skipping ticket failure note"
         );
       } else {
         await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${safeReason}`);

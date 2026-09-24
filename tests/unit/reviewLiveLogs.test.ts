@@ -182,6 +182,7 @@ function makeMocks(initialTask?: Task) {
     markReviewCommentsPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
+    getProjectReviewConfig: vi.fn(async () => ({ integrationId: "gerrit-1", repos: ["p"] })),
     getTaskByTicketId: vi.fn(async () => null),
     setTaskProjectId: vi.fn(async () => undefined),
   };

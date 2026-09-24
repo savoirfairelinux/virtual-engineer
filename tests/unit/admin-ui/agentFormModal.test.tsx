@@ -122,6 +122,42 @@ describe("AgentFormModal model discovery", () => {
     ]);
   });
 
+  it("refreshes cached Copilot models on demand", async () => {
+    const requestedPaths: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      requestedPaths.push(path);
+      if (path === "/api/admin/integrations/copilot-cached/models/discover") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (path === "/api/admin/integrations/copilot-cached/models") {
+        return new Response(JSON.stringify({ models: [{ id: "gpt-4.1", name: "GPT-4.1" }] }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    render(
+      <AgentFormModal
+        integrations={[cachedCopilotIntegration]}
+        plugins={[copilotPlugin]}
+        prompts={prompts}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "GPT-4.1" })).toBeTruthy();
+    });
+    expect(requestedPaths).toEqual([
+      "/api/admin/integrations/copilot-cached/models/discover",
+      "/api/admin/integrations/copilot-cached/models",
+    ]);
+  });
+
   it("uses each Copilot model's reasoning efforts and defaults unsupported models", () => {
     render(<AgentFormModal
       integrations={[{
@@ -195,6 +231,79 @@ describe("AgentFormModal model discovery", () => {
       expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
     });
     expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it("does not retain the previous integration's models when discovery fails", async () => {
+    const nextIntegration: ApiIntegration = {
+      ...copilotIntegration,
+      id: "copilot-no-cache",
+      name: "Copilot without cached models",
+    };
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Model discovery unavailable" }),
+      { status: 502, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <AgentFormModal
+        integrations={[cachedCopilotIntegration, nextIntegration]}
+        plugins={[copilotPlugin]}
+        prompts={prompts}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: /Agent Integration/ }), {
+      target: { value: "copilot-no-cache" },
+    });
+
+    await waitFor(() => expect(screen.getByText("Model discovery unavailable")).toBeTruthy());
+    expect(screen.queryByRole("option", { name: "Claude Sonnet" })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/integrations/copilot-no-cache/models/discover",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("keeps current integration models after a failed manual refresh", async () => {
+    let failDiscovery = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      if (path === "/api/admin/integrations/copilot-cached/models/discover") {
+        return failDiscovery
+          ? new Response(JSON.stringify({ error: "Model refresh unavailable" }), {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (path === "/api/admin/integrations/copilot-cached/models") {
+        return new Response(JSON.stringify({ models: [{ id: "claude-sonnet", name: "Claude Sonnet" }] }), {
+          status: 200,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    render(
+      <AgentFormModal
+        integrations={[cachedCopilotIntegration]}
+        plugins={[copilotPlugin]}
+        prompts={prompts}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
+    failDiscovery = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+    await waitFor(() => expect(screen.getByText("Model refresh unavailable")).toBeTruthy());
+    expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
   });
 
   it.each([

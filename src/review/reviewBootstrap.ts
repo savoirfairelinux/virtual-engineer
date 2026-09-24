@@ -20,6 +20,8 @@ import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoor
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "../utils/ticketSourceLabel.js";
 import { makeExternalChangeId } from "../interfaces.js";
+import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
+import { selectReviewRepository } from "../domain/reviewRepository.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 import { asOptionalString } from "../bootstrap/runtimeBuilder.js";
 import type {
@@ -51,14 +53,57 @@ function getIntegrationIdFromSourceLabel(sourceLabel: string | null | undefined)
   return parseIntegrationIdFromSourceLabel(sourceLabel);
 }
 
+async function resolveTaskReviewIntegrationId(
+  store: ReviewRuntimeStateStore,
+  target: string | Task | undefined,
+): Promise<string | undefined> {
+  if (typeof target !== "object" || target === null || target.taskType !== "code-review") {
+    return undefined;
+  }
+  if (!target.projectId) {
+    throw new ProjectReconfigurationIncompatibleError(
+      `Review task ${target.taskId} is no longer linked to a project. Manual retry is required.`,
+    );
+  }
+
+  const reviewConfig = await store.getProjectReviewConfig(target.projectId);
+  if (!reviewConfig) {
+    throw new ProjectReconfigurationIncompatibleError(
+      `Review configuration was removed from project ${target.projectId} while task ${target.taskId} was active. Manual retry is required.`,
+    );
+  }
+
+  const taskIntegrationId = getIntegrationIdFromSourceLabel(target.ticketSourceLabel);
+  if (taskIntegrationId && reviewConfig.integrationId !== taskIntegrationId) {
+    throw new ProjectReconfigurationIncompatibleError(
+      `Review integration changed while task ${target.taskId} was active: it was created from ${taskIntegrationId}, but project ${target.projectId} now uses ${reviewConfig.integrationId}. Manual retry is required.`,
+    );
+  }
+
+  if (reviewConfig.repos.length === 0) {
+    throw new ProjectReconfigurationIncompatibleError(
+      `Review configuration for project ${target.projectId} no longer contains a repository for task ${target.taskId}. Manual retry is required.`,
+    );
+  }
+
+  const repositorySelection = selectReviewRepository(target.externalChangeId, reviewConfig.repos);
+  if (repositorySelection.hasQualifiedRepository && repositorySelection.repoKey === undefined) {
+    const changeId = target.externalChangeId === null ? "" : String(target.externalChangeId);
+    throw new ProjectReconfigurationIncompatibleError(
+      `Review change ${changeId} no longer matches a repository bound to project ${target.projectId}. Manual retry is required.`,
+    );
+  }
+
+  return reviewConfig.integrationId;
+}
+
 // ─── Review integration resolution ───────────────────────────────────────────
 
 /**
  * Resolve an active review integration that has a `createReviewer`
- * descriptor hook.  When `target` is a `Task`, the integration referenced by
- * `ticketSourceLabel` is tried first; when it is a plain string it is treated
- * as an explicit integration id.  Falls back to the most-recently-updated
- * active review-category integration that supports the factory.
+ * descriptor hook. When a task or string explicitly identifies an integration,
+ * never route it through another integration if that source is unavailable.
+ * Untargeted triggers may use the most-recently-updated active reviewer.
  */
 export function resolveReviewIntegration(
   pluginManager: PluginManager,
@@ -67,15 +112,16 @@ export function resolveReviewIntegration(
   const explicitIntegrationId = typeof target === "string"
     ? target
     : getIntegrationIdFromSourceLabel(target?.ticketSourceLabel);
-  const candidates: Integration[] = [];
 
   if (explicitIntegrationId) {
     const explicitIntegration = pluginManager.getActiveIntegrationById(explicitIntegrationId);
-    if (explicitIntegration && getProviderDescriptor(explicitIntegration.provider)?.capabilities.code_review?.createReviewer) {
-      candidates.push(explicitIntegration);
-    }
+    return explicitIntegration &&
+      getProviderDescriptor(explicitIntegration.provider)?.capabilities.code_review?.createReviewer
+      ? explicitIntegration
+      : null;
   }
 
+  const candidates: Integration[] = [];
   for (const integration of pluginManager.getActiveIntegrationsByCapability("code_review")) {
     if (!candidates.some((c) => c.id === integration.id)) {
       if (getProviderDescriptor(integration.provider)?.capabilities.code_review?.createReviewer) {
@@ -420,13 +466,12 @@ export interface ReviewBundle {
 }
 
 /**
- * Resolve the optional code-review orchestrator for the best-matching review
- * integration. When `target` is provided it prefers that integration id (or
- * a review task tagged with `ticketSourceLabel = <provider>:<integrationId>`),
- * then falls back to the next active review integration that declares
- * `createReviewer` in its descriptor.
+ * Resolve the optional code-review orchestrator for a targeted integration or
+ * task. Project-bound tasks stay pinned to their persisted integration and
+ * qualified repository; only untargeted triggers may select another active
+ * review integration.
  */
-export function buildReviewBundle(
+export async function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: ReviewRuntimeStateStore,
@@ -438,7 +483,8 @@ export function buildReviewBundle(
   const bundleLog = getLogger("review-bundle");
   const targetId = typeof target === "string" ? target : target?.taskId ?? "(none)";
 
-  const integration = resolveReviewIntegration(pluginManager, target);
+  const taskIntegrationId = await resolveTaskReviewIntegrationId(stateStore, target);
+  const integration = resolveReviewIntegration(pluginManager, taskIntegrationId ?? target);
   if (!integration) {
     bundleLog.warn(
       { target: targetId },

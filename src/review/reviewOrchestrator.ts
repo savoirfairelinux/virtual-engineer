@@ -41,6 +41,7 @@ import { AgentWorkerProtocolError } from "../workspace/agentWorkerProtocol.js";
 import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGate.js";
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
 import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
+import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
 
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
@@ -669,6 +670,25 @@ export class ReviewOrchestrator {
         throw new Error(
           `No VE project linked to review task "${taskId}". ` +
           `Ensure startReviewTask was called before runReview.`
+        );
+      }
+
+      const reviewConfig = await withinDeadline(
+        this.deps.stateStore.getProjectReviewConfig(project.id)
+      );
+      if (reviewConfig === null) {
+        throw new ProjectReconfigurationIncompatibleError(
+          `Review configuration was removed from project ${project.id} while task ${taskId} was active. Manual retry is required.`,
+        );
+      }
+      if (reviewConfig.integrationId !== this.deps.integrationId) {
+        throw new ProjectReconfigurationIncompatibleError(
+          `Review integration changed while task ${taskId} was active: it was created from ${this.deps.integrationId}, but project ${project.id} now uses ${reviewConfig.integrationId}. Manual retry is required.`,
+        );
+      }
+      if (!reviewConfig.repos.includes(details.project)) {
+        throw new ProjectReconfigurationIncompatibleError(
+          `Review repository ${details.project} was removed from project ${project.id} while task ${taskId} was active. Manual retry is required.`,
         );
       }
 

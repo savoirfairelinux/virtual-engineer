@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { getAgentTokenForReview } from "../../src/review/reviewBootstrap.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { buildReviewBundle, getAgentTokenForReview, resolveReviewIntegration } from "../../src/review/reviewBootstrap.js";
 import { encryptToken } from "../../src/utils/encryption.js";
 import { resetConfig } from "../../src/config.js";
-import type { Integration, ProviderId } from "../../src/interfaces.js";
+import { ProjectReconfigurationIncompatibleError } from "../../src/domain/projectConfiguration.js";
+import { makeExternalChangeId, makeProjectId, makeTaskId, type Integration, type ProviderId, type Task, type WorkspaceRunner } from "../../src/interfaces.js";
 import type { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
 const TEST_ADMIN_AUTH_SECRET = "test-secret-32-bytes-min-padding!";
 
@@ -16,6 +18,30 @@ function makeIntegration(provider: ProviderId, configJson: Record<string, unknow
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
+  };
+}
+
+function makeReviewTask(overrides: Partial<Task> = {}): Task {
+  return {
+    taskId: makeTaskId("review-bootstrap-task"),
+    ticketId: "gerrit:42" as Task["ticketId"],
+    displayId: "42",
+    ticketTitle: "Review change",
+    ticketDescription: "",
+    state: "REVIEW_PENDING",
+    taskType: "code-review",
+    ticketSourceLabel: "gerrit:gerrit-old",
+    externalChangeId: makeExternalChangeId("project/repo#42"),
+    currentPatchset: 1,
+    reviewedPatchset: null,
+    cycleCount: 0,
+    failureReason: null,
+    ticketUrl: null,
+    reviewUrl: null,
+    projectId: makeProjectId("review-project"),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
   };
 }
 
@@ -86,5 +112,77 @@ describe("getAgentTokenForReview", () => {
     expect(() => getAgentTokenForReview(pluginManager, integration)).toThrow(
       "Stored token cannot be decrypted; reconnect OAuth."
     );
+  });
+});
+
+describe("resolveReviewIntegration", () => {
+  it("does not route an old review task to a different active integration", () => {
+    registerBuiltinPlugins();
+    const replacement = makeIntegration("gerrit", {});
+    replacement.id = "gerrit-new";
+    const pluginManager = {
+      getActiveIntegrationById: () => null,
+      getActiveIntegrationsByCapability: () => [replacement],
+    } as unknown as PluginManager;
+
+    expect(resolveReviewIntegration(pluginManager, {
+      ticketSourceLabel: "gerrit:gerrit-removed",
+    } as Task)).toBeNull();
+  });
+});
+
+describe("buildReviewBundle project binding", () => {
+  it("rejects a targeted task when its project now uses another review integration", async () => {
+    const pluginManager = {
+      getActiveIntegrationById: () => null,
+    } as unknown as PluginManager;
+    const stateStore = {
+      getProjectReviewConfig: async () => ({ integrationId: "gerrit-new", repos: ["project/repo"] }),
+    } as unknown as Parameters<typeof buildReviewBundle>[2];
+
+    await expect(buildReviewBundle(
+      pluginManager,
+      "/workspaces",
+      stateStore,
+      {} as WorkspaceRunner,
+      undefined,
+      makeReviewTask(),
+    )).rejects.toBeInstanceOf(ProjectReconfigurationIncompatibleError);
+  });
+
+  it("keeps a matching task unavailable when its review runtime is inactive", async () => {
+    const getActiveIntegrationById = vi.fn(() => null);
+    const pluginManager = { getActiveIntegrationById } as unknown as PluginManager;
+    const stateStore = {
+      getProjectReviewConfig: async () => ({ integrationId: "gerrit-old", repos: ["project/repo"] }),
+    } as unknown as Parameters<typeof buildReviewBundle>[2];
+
+    const bundle = await buildReviewBundle(
+      pluginManager,
+      "/workspaces",
+      stateStore,
+      {} as WorkspaceRunner,
+      undefined,
+      makeReviewTask(),
+    );
+
+    expect(bundle.orchestrator).toBeNull();
+    expect(getActiveIntegrationById).toHaveBeenCalledWith("gerrit-old");
+  });
+
+  it("rejects a targeted task when its qualified repository is no longer bound", async () => {
+    const pluginManager = {} as PluginManager;
+    const stateStore = {
+      getProjectReviewConfig: async () => ({ integrationId: "gerrit-old", repos: ["another/repo"] }),
+    } as unknown as Parameters<typeof buildReviewBundle>[2];
+
+    await expect(buildReviewBundle(
+      pluginManager,
+      "/workspaces",
+      stateStore,
+      {} as WorkspaceRunner,
+      undefined,
+      makeReviewTask(),
+    )).rejects.toBeInstanceOf(ProjectReconfigurationIncompatibleError);
   });
 });

@@ -7,42 +7,16 @@ import type {
   Task,
   TicketConnector,
 } from "../interfaces.js";
-import type { ExternalChangeId } from "../domain/identifiers.js";
+import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
+import { selectReviewRepository } from "../domain/reviewRepository.js";
 import { getLogger } from "../logger.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { resolveIntegrationConfig } from "./integrationConfig.js";
 import type { ProjectModeDeps } from "./projectMode.js";
+import { parseIntegrationIdFromSourceLabel } from "../utils/ticketSourceLabel.js";
 
 const log = getLogger("project-connector-resolver");
-
-interface ReviewRepositorySelection {
-  repoKey: string | undefined;
-  hasQualifiedRepository: boolean;
-}
-
-function selectReviewRepository(
-  externalChangeId: ExternalChangeId | null | undefined,
-  repositories: readonly string[],
-): ReviewRepositorySelection {
-  const rawChangeId = externalChangeId === null || externalChangeId === undefined
-    ? ""
-    : String(externalChangeId).trim();
-  const hashIndex = rawChangeId.indexOf("#");
-
-  if (hashIndex > 0) {
-    const requestedRepoKey = rawChangeId.slice(0, hashIndex);
-    return {
-      repoKey: repositories.includes(requestedRepoKey) ? requestedRepoKey : undefined,
-      hasQualifiedRepository: true,
-    };
-  }
-
-  return {
-    repoKey: repositories.length === 1 ? repositories[0] : undefined,
-    hasQualifiedRepository: false,
-  };
-}
 
 export interface ProjectConnectorResolverDependencies {
   getProjectMode: () => ProjectModeDeps | null;
@@ -110,7 +84,7 @@ export class ProjectConnectorResolver {
 
   /** Resolve the ticket connector for a project-bound task. */
   async resolveTicketConnector(
-    task: Pick<Task, "taskId" | "projectId">,
+    task: Pick<Task, "taskId" | "projectId" | "ticketSourceIntegrationId" | "ticketSourceProjectKey">,
   ): Promise<TicketConnector> {
     const mode = this.dependencies.getProjectMode();
     if (!task.projectId || !mode) {
@@ -118,7 +92,24 @@ export class ProjectConnectorResolver {
     }
     const ticketSource = await mode.projectStore.getProjectTicketSource(task.projectId);
     if (!ticketSource) {
+      if (task.ticketSourceIntegrationId != null || task.ticketSourceProjectKey != null) {
+        throw new ProjectReconfigurationIncompatibleError(
+          `Ticket source was removed from project ${task.projectId} while task ${task.taskId} was active. Manual retry is required.`,
+        );
+      }
       throw new Error(`No ticket source configured for project ${task.projectId} (task ${task.taskId})`);
+    }
+
+    const hasTicketSourceSnapshot =
+      task.ticketSourceIntegrationId != null || task.ticketSourceProjectKey != null;
+    if (
+      hasTicketSourceSnapshot &&
+      (task.ticketSourceIntegrationId !== ticketSource.integrationId ||
+        task.ticketSourceProjectKey !== ticketSource.ticketProjectKey)
+    ) {
+      throw new ProjectReconfigurationIncompatibleError(
+        `Ticket source changed while task ${task.taskId} was active: it was created from ${task.ticketSourceIntegrationId ?? "an unknown integration"}/${task.ticketSourceProjectKey ?? "an unknown project"}, but project ${task.projectId} now uses ${ticketSource.integrationId}/${ticketSource.ticketProjectKey}. Manual retry is required.`,
+      );
     }
 
     const connector = mode.pluginManager.createConnectorForCapability
@@ -144,20 +135,35 @@ export class ProjectConnectorResolver {
 
   /** Resolve the review connector from review config or push targets. */
   async resolveReviewConnector(
-    task: Pick<Task, "taskId" | "projectId" | "externalChangeId">,
+    task: Pick<Task, "taskId" | "projectId" | "externalChangeId"> &
+      Partial<Pick<Task, "taskType" | "ticketSourceLabel">>,
   ): Promise<ReviewConnector> {
     const mode = this.dependencies.getProjectMode();
     if (!task.projectId || !mode) {
       throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
     }
 
+    const sourceReviewIntegrationId = task.taskType === "code-review"
+      ? parseIntegrationIdFromSourceLabel(task.ticketSourceLabel)
+      : null;
+    const assertReviewIntegrationCompatible = (integrationId: string): void => {
+      if (sourceReviewIntegrationId && sourceReviewIntegrationId !== integrationId) {
+        throw new ProjectReconfigurationIncompatibleError(
+          `Review integration changed while task ${task.taskId} was active: it was created from ${sourceReviewIntegrationId}, but project ${task.projectId} now uses ${integrationId}. Manual retry is required.`,
+        );
+      }
+    };
+
     const reviewConfig = await mode.projectStore.getProjectReviewConfig(task.projectId);
     if (reviewConfig) {
+      assertReviewIntegrationCompatible(reviewConfig.integrationId);
       const selection = selectReviewRepository(task.externalChangeId, reviewConfig.repos);
       if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
-        throw new Error(
-          `Review change ${task.externalChangeId ?? ""} does not match a repository bound to project ${task.projectId}`,
-        );
+        const message =
+          `Review change ${task.externalChangeId ?? ""} does not match a repository bound to project ${task.projectId}`;
+        throw task.taskType === "code-review"
+          ? new ProjectReconfigurationIncompatibleError(`${message}. Manual retry is required.`)
+          : new Error(message);
       }
       const connector = await this.resolveReviewCapabilityConnector(
         reviewConfig.integrationId,
@@ -169,20 +175,24 @@ export class ProjectConnectorResolver {
     const pushTargets = await mode.projectStore.listProjectPushTargets(task.projectId);
     const selection = selectReviewRepository(task.externalChangeId, pushTargets.map((target) => target.repoKey));
     if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
-      throw new Error(
-        `Review change ${task.externalChangeId ?? ""} does not match a repository push target for project ${task.projectId}`,
-      );
+      const message =
+        `Review change ${task.externalChangeId ?? ""} does not match a repository push target for project ${task.projectId}`;
+      throw task.taskType === "code-review"
+        ? new ProjectReconfigurationIncompatibleError(`${message}. Manual retry is required.`)
+        : new Error(message);
     }
 
     if (selection.repoKey !== undefined) {
       const target = pushTargets.find((candidate) => candidate.repoKey === selection.repoKey);
       if (target) {
+        assertReviewIntegrationCompatible(target.integrationId);
         const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
         if (connector) return connector;
       }
     } else if (pushTargets.length === 1) {
       const target = pushTargets[0];
       if (target) {
+        assertReviewIntegrationCompatible(target.integrationId);
         const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
         if (connector) return connector;
       }
@@ -191,6 +201,7 @@ export class ProjectConnectorResolver {
       if (integrationIds.length === 1) {
         const integrationId = integrationIds[0];
         if (integrationId !== undefined) {
+          assertReviewIntegrationCompatible(integrationId);
           const connector = await this.resolveReviewCapabilityConnector(integrationId);
           if (connector) return connector;
         }

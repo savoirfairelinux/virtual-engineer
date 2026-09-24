@@ -11,6 +11,9 @@ export interface PushTarget {
   repoKey: string;
   cloneUrl: string;
   targetBranch: string;
+  role?: "primary" | "submodule" | "dependency" | "related" | undefined;
+  commitOrder?: number | undefined;
+  sshKeyPath?: string | null | undefined;
   localPath: string;
   localPathMode: "fixed" | "derived";
   origin: "manual" | "workspace_scan";
