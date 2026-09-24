@@ -272,6 +272,72 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(stateStore.createTask).not.toHaveBeenCalled();
     expect(stateStore.setTaskProjectId).not.toHaveBeenCalled();
   });
+  it("fails a retry before agent execution when an existing change target was reassigned", async () => {
+    const task = makeTask({
+      state: "RETRY_CYCLE",
+      ticketSourceIntegrationId: "redmine-int",
+      ticketSourceProjectKey: "PLATFORM",
+    });
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockResolvedValue(task),
+      getChangesForTask: vi.fn().mockResolvedValue([{
+        id: "change-row-1",
+        taskId: task.taskId,
+        repoKey: "root",
+        changeId: "Iprevious",
+        reviewUrl: "https://review.example.test/Iprevious",
+        status: "OPEN",
+        integrationId: "vcs-old",
+        reviewSystem: "gerrit",
+        commitIndex: 0,
+        subjectHash: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }]),
+    });
+    const ws = makeWorkspaceRunner();
+    const redmine = makeRedmine();
+    const vcs = {
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task" }),
+      reviewSystemLabel: "gerrit",
+      useChangeIdContinuity: true,
+    } as unknown as VcsConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-new", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({
+          integrationId: "redmine-int",
+          ticketProjectKey: "PLATFORM",
+        }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: makeProjectAgentLookup(),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((integrationId: string) =>
+          integrationId === "redmine-int" ? redmine : null
+        ),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => vcs),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    await (orch as unknown as { runWorkflow(current: Task): Promise<void> }).runWorkflow(task);
+
+    expect(ws.runAgent).not.toHaveBeenCalled();
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+      task.taskId,
+      expect.stringContaining("repository \"root\""),
+    );
+    expect(stateStore.transition).toHaveBeenCalledWith(
+      task.taskId,
+      "FAILED",
+      expect.objectContaining({ error: expect.stringContaining("Manual retry is required") }),
+    );
+    expect(redmine.addNote).not.toHaveBeenCalled();
+  });
 
   it("resolves a project-bound ticket connector with the VE ticket project binding", async () => {
     const boundConnector = makeRedmine();
@@ -627,9 +693,9 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const redmine = makeRedmine();
     const stateStore = makeStateStore({
       getChangesForTask: vi.fn().mockResolvedValue([
-        { repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
-        { repoKey: "core", reviewUrl: "u-core", status: "OPEN" },
-        { repoKey: "skipped", reviewUrl: "", status: "NO_CHANGE" },
+        { integrationId: "vcs-root", repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
+        { integrationId: "vcs-core", repoKey: "core", reviewUrl: "u-core", status: "OPEN" },
+        { integrationId: "vcs-root", repoKey: "skipped", reviewUrl: "", status: "NO_CHANGE" },
       ]),
     });
     const ws = makeWorkspaceRunner();
@@ -702,7 +768,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const redmine = makeRedmine();
     const stateStore = makeStateStore({
       getChangesForTask: vi.fn().mockResolvedValue([
-        { repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
+        { integrationId: "vcs-root", repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
       ]),
     });
     const ws = makeWorkspaceRunner();
@@ -1440,6 +1506,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const task = makeTask({
       state: "REVIEW_WATCHING",
       taskType: "code-review",
+      ticketSourceLabel: "github:github-int",
       externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
     });
     const stateStore = makeStateStore({
@@ -1483,10 +1550,53 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_DONE");
   });
 
+  it("fails a REVIEW_WATCHING task when project reconfiguration replaces its review integration", async () => {
+    const task = makeTask({
+      state: "REVIEW_WATCHING",
+      taskType: "code-review",
+      ticketSourceLabel: "github:github-old",
+      externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
+    });
+    const stateStore = makeStateStore({ getTask: vi.fn().mockResolvedValue(task) });
+    const createConnectorForCapability = vi.fn().mockResolvedValue({
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+    });
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ type: "review" })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue(null),
+        getProjectReviewConfig: vi.fn().mockResolvedValue({
+          integrationId: "github-new",
+          repos: ["octocat/hello-world"],
+        }),
+        getAgentById: makeProjectAgentLookup(),
+      },
+      pluginManager: {
+        getConnectorForCapability: vi.fn().mockReturnValue(null),
+        getConnectorForIntegration: vi.fn().mockReturnValue(null),
+        createConnectorForCapability,
+      },
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+
+    await orch.checkReviewWatchingTask(task.taskId);
+
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+      task.taskId,
+      expect.stringContaining("Review integration changed while task"),
+    );
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_FAILED", {
+      error: expect.stringContaining("Manual retry is required"),
+    }, "REVIEW_WATCHING");
+    expect(createConnectorForCapability).not.toHaveBeenCalled();
+  });
+
   it("abandons a REVIEW_WATCHING task when the bound change is closed without merging", async () => {
     const task = makeTask({
       state: "REVIEW_WATCHING",
       taskType: "code-review",
+      ticketSourceLabel: "github:github-int",
       externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
     });
     const setFailureReason = vi.fn();

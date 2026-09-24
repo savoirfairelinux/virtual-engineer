@@ -99,6 +99,11 @@ export interface ProjectRecord {
   updatedAt: Date;
 }
 
+export interface ProjectConfigurationUpdateResult {
+  project: ProjectRecord;
+  executionChanged: boolean;
+}
+
 export interface ProjectTicketSourceRecord {
   id: number;
   projectId: ProjectId;

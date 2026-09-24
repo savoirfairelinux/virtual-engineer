@@ -25,6 +25,11 @@
 - Effective permissions impose a read-only ceiling on `viewer`, including resource ownership and explicit user/group grants. Delegated project/task reads remain available, but mutation and access delegation do not. Self-service password changes and logout remain authenticated operations.
 - The seeded `Operator` policy no longer grants `system.write`. Administrators retain full access; an operator needs an explicit policy grant to change instance settings. Built-in policy rules are refreshed at startup.
 
+## Task Ticket-Source Snapshot
+
+- `tasks.ticket_source_integration_id` and `tasks.ticket_source_project_key` are nullable text snapshots of the issue-tracking binding that created a ticket task. `createTask()` writes them from its optional `ticketSource` argument, and task hydration exposes them as `ticketSourceIntegrationId` / `ticketSourceProjectKey`; legacy and non-ticket-backed rows may have NULL values. These columns already exist and are not foreign keys.
+- Before resolving a ticket connector, the orchestrator compares a non-null task snapshot with the project's current binding. A changed or removed source is reported as a persisted project-reconfiguration incompatibility rather than silently routing an existing task through the replacement integration.
+
 ## Audit trail store
 
 - `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.
@@ -46,8 +51,16 @@
 The project store normalizes an absent or invalid `assignmentMode` to `manual`;
 no SQL column or migration is required. `automatic` means the reviewer provider
 adds VE idempotently on revision events, while initial open-change backfill is
-disabled. Mode changes are execution-affecting and are rejected while the
-project has active tasks.
+disabled. Mode changes are execution-affecting and use the same active-task
+confirmation as ticket-source, push-target, agent, script, and skill changes.
+
+`StateStore.updateProjectConfiguration()` returns the updated project plus an
+`executionChanged` flag. Within its write transaction it recomputes the active
+task set; callers must provide `confirmedActiveTaskIds` covering every active
+task or receive `ACTIVE_TASKS_CONFIRMATION_REQUIRED` with task summaries. If a
+new active task appeared after the UI confirmation, the transaction writes
+nothing and returns the updated list for another confirmation. A confirmed
+save leaves task states unchanged. This contract adds no column or migration.
 
 `ProjectStoreApi.getEventStreamDemand()` is an on-demand aggregate over existing
 project bindings, tasks, push targets, and per-repository changes; it adds no

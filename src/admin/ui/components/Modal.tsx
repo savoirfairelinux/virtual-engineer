@@ -89,12 +89,13 @@ export function Modal({ title, sub, onClose, children, footer, wide, width }: Mo
 
 interface FieldProps {
   label: string;
+  labelAction?: React.ReactNode | undefined;
   required?: boolean | undefined;
   children: React.ReactNode;
   hint?: string | undefined;
 }
 
-export function Field({ label, required, children, hint }: FieldProps) {
+export function Field({ label, labelAction, required, children, hint }: FieldProps) {
   const generatedId = useId();
   const childProps = isValidElement(children)
     ? children.props as { id?: string; "aria-describedby"?: string }
@@ -109,12 +110,20 @@ export function Field({ label, required, children, hint }: FieldProps) {
         } : {}),
       })
     : children;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+    const labelElement = (
       <label htmlFor={controlId} style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>
         {label}{required && <span style={{ color: "var(--danger)", marginLeft: 3 }}>*</span>}
       </label>
+    );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {labelAction === undefined ? labelElement : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 20 }}>
+            {labelElement}
+            {labelAction}
+          </div>
+        )}
       {child}
       {hint && <span id={hintId} style={{ fontSize: "11.5px", color: "var(--text-ghost)" }}>{hint}</span>}
     </div>

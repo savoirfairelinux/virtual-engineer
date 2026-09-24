@@ -45,6 +45,13 @@ back only to active `review` integrations whose descriptor declares
 with integration-scoped `ticketId`s so multiple active review-provider rows
 cannot collide on the same change number.
 
+Startup recovery and admin resume/retry rebuild a review runtime only for the
+task's persisted integration after validating its current project integration
+and any repository-qualified change id. A concrete binding mismatch transitions
+the active task to `REVIEW_FAILED`; a compatible binding with an unavailable
+runtime leaves the task unchanged. Review tasks never fall through to the
+code-generation continuation path.
+
 ## Layers
 
 ### Polling — `src/orchestrator/pollingLoop.ts`

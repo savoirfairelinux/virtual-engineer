@@ -1,4 +1,5 @@
 import { getLogger } from "../logger.js";
+import { ActiveProjectTasksConfirmationRequiredError } from "../domain/projectConfiguration.js";
 import type { IncomingMessage } from "node:http";
 import { z } from "zod";
 import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
@@ -524,24 +525,27 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
     if (data.reactToCiFailures !== undefined) updates.reactToCiFailures = data.reactToCiFailures;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
-    const reconfigured =
-      data.ticketSource !== undefined ||
-      data.pushTargets !== undefined ||
-      data.reviewConfig !== undefined ||
-      updates.agentId !== undefined ||
-      updates.agentOverrideJson !== undefined ||
-      updates.postCloneScript !== undefined ||
-      updates.skillSourcesJson !== undefined ||
-      (updates.enabled === true && existing.enabled !== true);
+    let executionChanged = false;
     try {
-      await store.updateProjectConfiguration(id, {
+      const updateResult = await store.updateProjectConfiguration(id, {
         project: updates,
         ...(data.ticketSource !== undefined ? { ticketSource: data.ticketSource } : {}),
         ...(data.pushTargets !== undefined ? { pushTargets: data.pushTargets } : {}),
         ...(data.reviewConfig !== undefined ? { reviewConfig: data.reviewConfig } : {}),
+        ...(data.confirmedActiveTaskIds !== undefined ? { confirmedActiveTaskIds: data.confirmedActiveTaskIds } : {}),
       });
+      executionChanged = updateResult.executionChanged;
     } catch (err: unknown) {
-      const status = isUniqueConflict(err) || (err as { code?: unknown }).code === "ACTIVE_TASKS" ? 409 : 500;
+      if (err instanceof ActiveProjectTasksConfirmationRequiredError) {
+        writeJson(res, 409, {
+          error: "Conflict",
+          message: err.message,
+          code: err.code,
+          activeTasks: err.activeTasks,
+        });
+        return;
+      }
+      const status = isUniqueConflict(err) ? 409 : 500;
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err, id }, "update project children failed");
       writeJson(res, status, { error: status === 409 ? "Conflict" : "Update failed", message: msg }); return;
@@ -572,7 +576,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     writeJson(res, 200, { project: detail });
     deps.onProjectChange?.();
-    if (reconfigured) {
+    if (executionChanged || (updates.enabled === true && existing.enabled !== true)) {
       await relaunchFailedTasksForProject(store, id, deps.taskControl);
     }
   }, { permission: "project.write", resourceParam: "id" });

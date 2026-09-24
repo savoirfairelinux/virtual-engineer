@@ -19,6 +19,7 @@ import {
   type Task,
 } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { ActiveProjectTasksConfirmationRequiredError } from "../../src/domain/projectConfiguration.js";
 
 registerBuiltinPlugins();
 
@@ -71,7 +72,7 @@ interface MockStoreState {
 
 function makeStore(
   state: MockStoreState,
-  opts: { project?: ProjectRecord; agent?: AgentRecord | null } = {}
+  opts: { project?: ProjectRecord; agent?: AgentRecord | null; executionChanged?: boolean } = {}
 ): ProjectsRouteStore {
   const project = opts.project ?? projectRecord();
   return {
@@ -79,7 +80,7 @@ function makeStore(
     getProjectById: vi.fn(async () => project),
     listProjects: vi.fn(async () => [project]),
     updateProject: vi.fn(async () => project),
-    updateProjectConfiguration: vi.fn(async () => project),
+    updateProjectConfiguration: vi.fn(async () => ({ project, executionChanged: opts.executionChanged ?? false })),
     deleteProject: vi.fn(),
     setProjectEnabled: vi.fn(),
     setProjectTicketSource: vi.fn(async () => ({}) as never),
@@ -123,17 +124,21 @@ function mockRequest(body: unknown): IncomingMessage {
   return stream as unknown as IncomingMessage;
 }
 
-function mockResponse(): { res: ServerResponse; done: Promise<void>; getStatus: () => number } {
+function mockResponse(): { res: ServerResponse; done: Promise<void>; getStatus: () => number; getBody: () => string | undefined } {
   let status = 0;
+  let body: string | undefined;
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => { resolveDone = resolve; });
   const res = {
     set statusCode(v: number) { status = v; },
     get statusCode() { return status; },
     setHeader: () => {},
-    end: () => { resolveDone(); },
+    end: (chunk?: string | Uint8Array) => {
+      body = typeof chunk === "string" ? chunk : chunk === undefined ? undefined : Buffer.from(chunk).toString("utf8");
+      resolveDone();
+    },
   } as unknown as ServerResponse;
-  return { res, done, getStatus: () => status };
+  return { res, done, getStatus: () => status, getBody: () => body };
 }
 
 async function dispatchProjects(
@@ -149,6 +154,91 @@ async function dispatchProjects(
 }
 
 describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
+  it("returns active tasks for confirmation before saving execution changes", async () => {
+    const state: MockStoreState = {
+      failedTasks: [],
+      retryTask: vi.fn(),
+      getFailedTasksForProject: vi.fn(async () => []),
+    };
+    const store = makeStore(state);
+    vi.mocked(store.updateProjectConfiguration).mockRejectedValueOnce(
+      new ActiveProjectTasksConfirmationRequiredError([{
+        taskId: "active-1",
+        ticketId: "TCK-1",
+        ticketTitle: "Build firmware",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+      }]),
+    );
+    const taskControl = { retryTask: vi.fn(async () => {}) };
+
+    const { res, done, getStatus, getBody } = mockResponse();
+    await dispatchProjects(
+      mockRequest({ ticketSource: { integrationId: "redmine-2", ticketProjectKey: "demo" } }),
+      res,
+      "/api/admin/projects/proj-1",
+      "PUT",
+      { projectStore: store, taskControl },
+    );
+    await done;
+
+    expect(getStatus()).toBe(409);
+    expect(JSON.parse(getBody() ?? "{}")).toMatchObject({
+      code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
+      activeTasks: [{ taskId: "active-1", state: "IN_REVIEW", ticketTitle: "Build firmware" }],
+    });
+    expect(state.getFailedTasksForProject).not.toHaveBeenCalled();
+  });
+
+  it("forwards the confirmed active task ids on the retried project update", async () => {
+    const state: MockStoreState = {
+      failedTasks: [],
+      retryTask: vi.fn(),
+      getFailedTasksForProject: vi.fn(async () => []),
+    };
+    const store = makeStore(state);
+    vi.mocked(store.updateProjectConfiguration).mockRejectedValueOnce(
+      new ActiveProjectTasksConfirmationRequiredError([{
+        taskId: "active-1",
+        ticketId: "TCK-1",
+        ticketTitle: "Build firmware",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+      }]),
+    );
+
+    const first = mockResponse();
+    await dispatchProjects(
+      mockRequest({ ticketSource: { integrationId: "redmine-2", ticketProjectKey: "demo" } }),
+      first.res,
+      "/api/admin/projects/proj-1",
+      "PUT",
+      { projectStore: store },
+    );
+    await first.done;
+    expect(first.getStatus()).toBe(409);
+
+    const second = mockResponse();
+    await dispatchProjects(
+      mockRequest({
+        ticketSource: { integrationId: "redmine-2", ticketProjectKey: "demo" },
+        confirmedActiveTaskIds: ["active-1"],
+      }),
+      second.res,
+      "/api/admin/projects/proj-1",
+      "PUT",
+      { projectStore: store },
+    );
+    await second.done;
+
+    expect(second.getStatus()).toBe(200);
+    expect(store.updateProjectConfiguration).toHaveBeenNthCalledWith(
+      2,
+      makeProjectId("proj-1"),
+      expect.objectContaining({ confirmedActiveTaskIds: ["active-1"] }),
+    );
+  });
+
   it("relaunches FAILED tasks when a coding project's ticket source is reconfigured", async () => {
     const tasks = [failedTask("task-a"), failedTask("task-b")];
     const state: MockStoreState = {
@@ -156,7 +246,7 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
       retryTask: vi.fn(async (id) => failedTask(String(id))),
       getFailedTasksForProject: vi.fn(async () => tasks),
     };
-    const store = makeStore(state);
+    const store = makeStore(state, { executionChanged: true });
     const taskControl = { retryTask: vi.fn(async () => {}) };
 
     const { res, done } = mockResponse();
@@ -175,6 +265,36 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
     expect(taskControl.retryTask).toHaveBeenCalledTimes(2);
     expect(taskControl.retryTask).toHaveBeenCalledWith(makeTaskId("task-a"));
     expect(taskControl.retryTask).toHaveBeenCalledWith(makeTaskId("task-b"));
+  });
+
+  it("keeps project-reconfiguration failures FAILED for manual retry", async () => {
+    const incompatibleTask = {
+      ...failedTask("task-incompatible"),
+      failureReason: "Project reconfiguration made this task incompatible: source changed",
+    };
+    const tasks = [incompatibleTask, failedTask("task-other")];
+    const state: MockStoreState = {
+      failedTasks: tasks,
+      retryTask: vi.fn(async (id) => failedTask(String(id))),
+      getFailedTasksForProject: vi.fn(async () => tasks),
+    };
+    const store = makeStore(state, { executionChanged: true });
+    const taskControl = { retryTask: vi.fn(async () => {}) };
+
+    const { res, done } = mockResponse();
+    await dispatchProjects(
+      mockRequest({ ticketSource: { integrationId: "redmine-2", ticketProjectKey: "demo" } }),
+      res,
+      "/api/admin/projects/proj-1",
+      "PUT",
+      { projectStore: store, taskControl },
+    );
+    await done;
+
+    expect(state.retryTask).toHaveBeenCalledTimes(1);
+    expect(state.retryTask).toHaveBeenCalledWith(makeTaskId("task-other"));
+    expect(taskControl.retryTask).toHaveBeenCalledOnce();
+    expect(taskControl.retryTask).toHaveBeenCalledWith(makeTaskId("task-other"));
   });
 
   it("does not relaunch when PUT includes enabled:true on an already-enabled project", async () => {
@@ -224,6 +344,30 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
     expect(taskControl.retryTask).not.toHaveBeenCalled();
   });
 
+  it("does not relaunch failed tasks when the submitted execution config is unchanged", async () => {
+    const tasks = [failedTask("task-a")];
+    const state: MockStoreState = {
+      failedTasks: tasks,
+      retryTask: vi.fn(async (id) => failedTask(String(id))),
+      getFailedTasksForProject: vi.fn(async () => tasks),
+    };
+    const store = makeStore(state, { executionChanged: false });
+    const taskControl = { retryTask: vi.fn(async () => {}) };
+
+    const { res, done } = mockResponse();
+    await dispatchProjects(
+      mockRequest({ ticketSource: { integrationId: "redmine-1", ticketProjectKey: "demo" } }),
+      res,
+      "/api/admin/projects/proj-1",
+      "PUT",
+      { projectStore: store, taskControl },
+    );
+    await done;
+
+    expect(state.getFailedTasksForProject).not.toHaveBeenCalled();
+    expect(taskControl.retryTask).not.toHaveBeenCalled();
+  });
+
   it("continues relaunching remaining tasks if one retry fails", async () => {
     const tasks = [failedTask("task-a"), failedTask("task-b")];
     const state: MockStoreState = {
@@ -234,7 +378,7 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
       }),
       getFailedTasksForProject: vi.fn(async () => tasks),
     };
-    const store = makeStore(state);
+    const store = makeStore(state, { executionChanged: true });
     const taskControl = { retryTask: vi.fn(async () => {}) };
 
     const { res, done } = mockResponse();

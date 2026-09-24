@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
-import { api } from "../../api.ts";
+import { ApiError, api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration, ReviewAssignmentMode } from "../../types.ts";
 import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 import { RepositoryKeyField, RepositoryKeysField, TargetBranchField, TicketProjectKeyField } from "./ProjectFormFields.tsx";
@@ -69,8 +69,63 @@ interface ProjectFormProject {
     role: "primary" | "submodule" | "dependency" | "related";
     commitOrder: number;
     localPath: string;
+    sshKeyPath?: string | null;
     reviewerEmails?: string[];
   }>;
+}
+
+interface ActiveTaskSummary {
+  taskId: string;
+  ticketId: string;
+  ticketTitle: string;
+  state: string;
+}
+
+function activeTaskSummaries(value: unknown): ActiveTaskSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate): ActiveTaskSummary[] => {
+    if (typeof candidate !== "object" || candidate === null) return [];
+    const record = candidate as Record<string, unknown>;
+    if (typeof record["taskId"] !== "string" || typeof record["state"] !== "string") return [];
+    return [{
+      taskId: record["taskId"],
+      ticketId: typeof record["ticketId"] === "string" ? record["ticketId"] : "",
+      ticketTitle: typeof record["ticketTitle"] === "string" ? record["ticketTitle"] : "",
+      state: record["state"],
+    }];
+  });
+}
+
+async function putProjectConfiguration(
+  path: string,
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  let confirmedActiveTaskIds: string[] | undefined;
+  while (true) {
+    try {
+      await api.put(
+        path,
+        confirmedActiveTaskIds === undefined ? payload : { ...payload, confirmedActiveTaskIds },
+        { signal },
+      );
+      return true;
+    } catch (error: unknown) {
+      if (!(error instanceof ApiError) || error.code !== "ACTIVE_TASKS_CONFIRMATION_REQUIRED") throw error;
+      const tasks = activeTaskSummaries(error.details);
+      const taskList = tasks.map((task) =>
+        `- ${task.ticketTitle || task.ticketId || task.taskId} (${task.taskId}, ${task.state})`
+      ).join("\n");
+      const message = [
+        "La configuration d’exécution va changer. Les tâches restent actives et poursuivent leur cycle actuel; elles échoueront avec une raison seulement si une étape devient incompatible.",
+        ...(taskList ? ["", "Tâches concernées :", taskList] : []),
+        "",
+        "Enregistrer cette configuration ?",
+      ].join("\n");
+      if (!window.confirm(message)) return false;
+      confirmedActiveTaskIds = tasks.map((task) => task.taskId);
+    }
+  }
 }
 
 export function ProjectFormModal({ agents, integrations, project, onClose, onSaved }: Props) {
@@ -147,6 +202,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         repoKey: t.repoKey,
         cloneUrl: t.cloneUrl,
         targetBranch: t.targetBranch,
+        role: t.role,
+        commitOrder: t.commitOrder,
+        sshKeyPath: t.sshKeyPath,
         localPath: t.localPath,
         localPathMode: "fixed" as const,
         origin: "manual" as const,
@@ -385,6 +443,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); setSaveCheckSources([]); return; }
         if (pushTargets.length === 0) { setError("At least one push target is required"); setSaveCheckSources([]); return; }
         setSaveCheckSources(saveCheckSourcesFromSkillSources(skillSources, "checking"));
+        let nextCommitOrder = Math.max(0, ...pushTargets.map((target) => target.commitOrder ?? 0));
         const payload = {
           type: "coding",
           name,
@@ -396,14 +455,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           postReviewLinkToTicket,
           reactToCiFailures,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
-          pushTargets: pushTargets.map((t, index) => ({
+          pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
             repoKey: t.repoKey,
             cloneUrl: t.cloneUrl,
             targetBranch: t.targetBranch,
-            role: legacyRoleForPushTarget(t),
-            commitOrder: index + 1,
+            role: t.role ?? legacyRoleForPushTarget(t),
+            commitOrder: t.commitOrder ?? ++nextCommitOrder,
             localPath: t.localPath,
+            ...(t.sshKeyPath !== undefined ? { sshKeyPath: t.sshKeyPath } : {}),
             reviewerEmails: supportsReviewerEmails(t.integrationId)
               ? t.reviewerEmails.split(",").map((e) => e.trim()).filter(Boolean)
               : [],
@@ -411,7 +471,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         };
         const vendorComponentsPayload = vendorComponents;
         if (isEditMode && project) {
-          await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
+          const saved = await putProjectConfiguration(`/api/admin/projects/${project.id}`, payload, abort.signal);
+          if (!saved) return;
           if (vendorComponentsDirtyRef.current) {
             await api.put(`/api/admin/projects/${project.id}/vendor-components`, { components: vendorComponentsPayload }, { signal: abort.signal });
           }
@@ -436,7 +497,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           },
         };
         if (isEditMode && project) {
-          await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
+          const saved = await putProjectConfiguration(`/api/admin/projects/${project.id}`, payload, abort.signal);
+          if (!saved) return;
         } else {
           await api.post("/api/admin/projects", payload, { signal: abort.signal });
         }

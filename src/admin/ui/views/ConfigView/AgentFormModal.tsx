@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
@@ -80,6 +80,8 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const [error, setError] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const modelsRequestId = useRef(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [toolAuth, setToolAuth] = useState<ToolAuthorizationState>(() =>
     loadToolAuthorization(
@@ -112,12 +114,38 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     setToolAuth(loadToolAuthorization(undefined, selectedProvider));
   }, [selectedProvider, initialProvider]);
 
+  const discoverModels = async (integrationId: string): Promise<void> => {
+    const requestId = ++modelsRequestId.current;
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      await api.post(`/api/admin/integrations/${integrationId}/models/discover`, {});
+      const response = await api.get<{ models: AvailableModel[] }>(`/api/admin/integrations/${integrationId}/models`);
+      if (requestId !== modelsRequestId.current) return;
+      const models = Array.isArray(response.models)
+        ? response.models.map((model) => typeof model === "string" ? { id: model, name: model } : model)
+        : [];
+      setAvailableModels(models);
+      setForm((previous) => previous.integrationId !== integrationId || !previous.model
+        || models.some((model) => model.id === previous.model)
+        ? previous
+        : { ...previous, model: "" });
+    } catch (error: unknown) {
+      if (requestId !== modelsRequestId.current) return;
+      setModelsError(error instanceof Error ? error.message : "Model discovery failed");
+    } finally {
+      if (requestId === modelsRequestId.current) setModelsLoading(false);
+    }
+  };
+
   // Fetch available models whenever the selected integration changes
   useEffect(() => {
     const integrationId = form.integrationId;
     if (!integrationId || nativeReview) {
+      modelsRequestId.current += 1;
       setAvailableModels([]);
       setModelsLoading(false);
+      setModelsError(null);
       return;
     }
 
@@ -125,29 +153,15 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     const integration = agentIntegrations.find((i) => i.id === integrationId);
     const cached = integration?.discoveredResources?.models;
     if (Array.isArray(cached) && cached.length > 0) {
+      modelsRequestId.current += 1;
       setAvailableModels(cached.map((model) => typeof model === "string" ? { id: model, name: model } : model));
       setModelsLoading(false);
+      setModelsError(null);
       return;
     }
 
-    // Slow path: trigger discovery on the backend then read the result
-    let cancelled = false;
-    setModelsLoading(true);
-    api.post(`/api/admin/integrations/${integrationId}/models/discover`, {})
-      .then(() => api.get<{ models: AvailableModel[] }>(`/api/admin/integrations/${integrationId}/models`))
-      .then((res) => {
-        if (cancelled) return;
-        const models = Array.isArray(res.models)
-          ? res.models.map((model) => typeof model === "string" ? { id: model, name: model } : model)
-          : [];
-        setAvailableModels(models);
-        if (models.length > 0 && form.model && !models.some((model) => model.id === form.model)) {
-          setForm((prev) => ({ ...prev, model: "" }));
-        }
-      })
-      .catch(() => { if (!cancelled) setAvailableModels([]); })
-      .finally(() => { if (!cancelled) setModelsLoading(false); });
-    return () => { cancelled = true; };
+    void discoverModels(integrationId);
+    return () => { modelsRequestId.current += 1; };
   }, [form.integrationId, nativeReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k: keyof AgentForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -168,6 +182,10 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     const integrationId = event.target.value;
     const integration = agentIntegrations.find((candidate) => candidate.id === integrationId);
     const plugin = plugins.find((candidate) => candidate.provider === integration?.provider);
+    modelsRequestId.current += 1;
+    setAvailableModels([]);
+    setModelsLoading(false);
+    setModelsError(null);
     setForm((prev) => normalizeAgentReviewForm({
       ...prev,
       integrationId,
@@ -295,7 +313,22 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        {!nativeReview && <Field label="Model" hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}>
+        {!nativeReview && <Field
+          label="Model"
+          hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}
+          labelAction={selectedIntegration?.provider === "copilot" && (
+            <button
+              type="button"
+              className="iconbtn"
+              aria-label="Refresh models"
+              title="Refresh models"
+              disabled={modelsLoading}
+              onClick={() => { void discoverModels(form.integrationId); }}
+            >
+              <Icon name="refresh" size={14} {...(modelsLoading ? { className: "spin" } : {})} />
+            </button>
+          )}
+        >
           {availableModels.length > 0 ? (
             <FieldSelect data-tour="agent-form-model" value={form.model} onChange={set("model") as React.ChangeEventHandler<HTMLSelectElement>} disabled={modelsLoading}>
               <option value="">— default (auto) —</option>
@@ -312,6 +345,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
             <FieldInput data-tour="agent-form-model" value={form.model} placeholder={modelsLoading ? "Loading models…" : "auto"} onChange={set("model")} disabled={modelsLoading} />
           )}
         </Field>}
+        {!nativeReview && modelsError && <FormError msg={modelsError} />}
 
         <Field label="Max Concurrent" hint="Maximum simultaneous agent cycles (≥1)">
           <FieldInput data-tour="agent-form-concurrency" type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />

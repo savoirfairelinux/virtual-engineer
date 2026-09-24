@@ -69,6 +69,207 @@ describe("ProjectFormModal repository integration resolution", () => {
     }
   });
 
+  it("preserves push target execution metadata on an unchanged save", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      domainCapabilities: ["source_control", "issue_tracking"],
+    };
+    const storedTarget = {
+      integrationId: integration.id,
+      repoKey: "platform/runtime",
+      cloneUrl: "ssh://gerrit.example.com/platform/runtime.git",
+      targetBranch: "stable",
+      role: "submodule" as const,
+      commitOrder: 7,
+      localPath: "layers/runtime",
+      sshKeyPath: "/app/secrets/gerrit-deploy",
+      reviewerEmails: ["reviewer@example.com"],
+    };
+    let savedTargets: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/admin/projects/project-1/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200 });
+      }
+      if (path === "/api/admin/projects/project-1" && init?.method === "PUT") {
+        const payload = JSON.parse(String(init.body)) as { pushTargets: Array<Record<string, unknown>> };
+        savedTargets = payload.pushTargets;
+        return new Response(JSON.stringify({ project: { id: "project-1" } }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-1",
+          name: "Platform",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "platform",
+          },
+          pushTargets: [storedTarget],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(savedTargets).toHaveLength(1));
+    expect(savedTargets[0]).toMatchObject({
+      role: "submodule",
+      commitOrder: 7,
+      sshKeyPath: "/app/secrets/gerrit-deploy",
+      reviewerEmails: ["reviewer@example.com"],
+    });
+  });
+
+  it("confirms active tasks before resubmitting a project execution change", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      domainCapabilities: ["source_control", "issue_tracking"],
+    };
+    const putBodies: Array<Record<string, unknown>> = [];
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/admin/projects/project-1/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200 });
+      }
+      if (path === "/api/admin/projects/project-1" && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        putBodies.push(body);
+        if (putBodies.length <= 2) {
+          const taskId = putBodies.length === 1 ? "task-1" : "task-2";
+          return new Response(JSON.stringify({
+            error: "Conflict",
+            message: "Execution configuration changed",
+            code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
+            activeTasks: [{
+              taskId,
+              ticketId: `TCK-${taskId === "task-1" ? "9" : "10"}`,
+              ticketTitle: taskId === "task-1" ? "Build firmware" : "Build bootloader",
+              taskType: "code-gen",
+              state: "IN_REVIEW",
+            }],
+          }), { status: 409 });
+        }
+        return new Response(JSON.stringify({ project: { id: "project-1" } }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    const onSaved = vi.fn();
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-1",
+          name: "Platform",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: "redmine-1", name: "Tickets", type: "redmine" },
+            ticketProjectKey: "platform",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/runtime",
+            cloneUrl: "https://gerrit.example.com/platform/runtime.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenNthCalledWith(1, expect.stringContaining("Build firmware (task-1, IN_REVIEW)"));
+    expect(confirm).toHaveBeenNthCalledWith(2, expect.stringContaining("Build bootloader (task-2, IN_REVIEW)"));
+    expect(putBodies).toHaveLength(3);
+    expect(putBodies[0]?.["confirmedActiveTaskIds"]).toBeUndefined();
+    expect(putBodies[1]?.["ticketSource"]).toEqual(putBodies[0]?.["ticketSource"]);
+    expect(putBodies[1]?.["confirmedActiveTaskIds"]).toEqual(["task-1"]);
+    expect(putBodies[2]?.["confirmedActiveTaskIds"]).toEqual(["task-2"]);
+    expect(putBodies[2]?.["ticketSource"]).toEqual(putBodies[0]?.["ticketSource"]);
+  });
+
+  it("leaves the form unchanged without an error when active-task confirmation is cancelled", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      domainCapabilities: ["source_control", "issue_tracking"],
+    };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let projectPutCount = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/admin/projects/project-1/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200 });
+      }
+      if (path === "/api/admin/projects/project-1" && init?.method === "PUT") {
+        projectPutCount++;
+        return new Response(JSON.stringify({
+          error: "Conflict",
+          message: "Execution configuration changed",
+          code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
+          activeTasks: [{ taskId: "task-1", ticketId: "TCK-9", ticketTitle: "Build firmware", taskType: "code-gen", state: "IN_REVIEW" }],
+        }), { status: 409 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-1",
+          name: "Platform",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "platform",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/runtime",
+            cloneUrl: "https://gerrit.example.com/platform/runtime.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(projectPutCount).toBe(1));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Build firmware"));
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByText("Project update was not saved.")).toBeNull();
+  });
+
   it("fills an empty push target from a unique repository match", async () => {
     const integration = gerritIntegration("gerrit-1", "Primary Gerrit");
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -758,7 +959,7 @@ describe("ProjectFormModal repository integration resolution", () => {
             repoKey: "platform/root",
             cloneUrl: "https://gerrit.example.com/platform/root.git",
             targetBranch: "main",
-            role: "related",
+            role: "primary",
             commitOrder: 1,
             localPath: ".",
           }],

@@ -171,6 +171,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       ticketUrl: row.ticketUrl ?? null,
       reviewUrl: row.reviewUrl ?? null,
       projectId: (row.projectId ?? null) as Task["projectId"],
+      ticketSourceIntegrationId: row.ticketSourceIntegrationId ?? null,
+      ticketSourceProjectKey: row.ticketSourceProjectKey ?? null,
       displayId: (row as unknown as { displayId?: string | null }).displayId ?? null,
       pushRef: (row as unknown as { pushRef?: string | null }).pushRef ?? null,
       createdAt: row.createdAt,
