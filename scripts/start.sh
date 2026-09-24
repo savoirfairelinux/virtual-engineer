@@ -7,6 +7,7 @@
 # Usage:
 #   ./scripts/start.sh                     # full setup + launch
 #   ./scripts/start.sh --no-k3s-install    # skip k3s auto-install (must already exist)
+#   ./scripts/start.sh --restore <archive> [--force] [--yes]  # stop and restore
 #
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
@@ -39,6 +40,9 @@ load_dotenv "$ROOT_DIR/.env"
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
+RESTORE_ARCHIVE=""
+RESTORE_CONFIRM_YES=false
+RESTORE_FORCE=false
 OPENSHELL_VERSION="v0.0.83"
 OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
 OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
@@ -63,13 +67,31 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-k3s-install)
       K3S_INSTALL=false; shift ;;
+    --restore)
+      [[ -z "$RESTORE_ARCHIVE" ]] || error "--restore may only be provided once."
+      [[ $# -ge 2 ]] || error "--restore requires an archive path."
+      RESTORE_ARCHIVE=$(resolve_restore_archive "$2") \
+        || error "Restore archive must be an existing regular, non-symlink file."
+      shift 2 ;;
+    --yes)
+      RESTORE_CONFIRM_YES=true; shift ;;
+    --force)
+      RESTORE_FORCE=true; shift ;;
     --help|-h)
       sed -n '2,17p' "$0"; exit 0 ;;
     *)
       error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
   esac
 done
+[[ "$RESTORE_CONFIRM_YES" != "true" || -n "$RESTORE_ARCHIVE" ]] \
+  || error "--yes can only be used with --restore."
+[[ "$RESTORE_FORCE" != "true" || -n "$RESTORE_ARCHIVE" ]] \
+  || error "--force can only be used with --restore."
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+if [[ -n "$RESTORE_ARCHIVE" ]]; then
+  confirm_backup_restore "$RESTORE_ARCHIVE" "$DATA_DIR" "$RESTORE_CONFIRM_YES" \
+    || error "Backup restore was not confirmed."
+fi
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 OPENSHELL_GW_LOCAL_PORT="${OPENSHELL_GW_LOCAL_PORT:-30808}"
 REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}") \
@@ -765,6 +787,17 @@ else
   warn "No SSH agent socket found (SSH_AUTH_SOCK not set or not a socket). Agent-based SSH auth will not be available."
 fi
 
+RESTORE_DOCKER_ARGS=()
+if [[ -n "$RESTORE_ARCHIVE" ]]; then
+  RESTORE_DOCKER_ARGS=(
+    --mount "type=bind,source=${RESTORE_ARCHIVE},target=/app/restore.tar.gz,readonly"
+    -e "VE_RESTORE_FROM=/app/restore.tar.gz"
+  )
+  if [[ "$RESTORE_FORCE" == "true" ]]; then
+    RESTORE_DOCKER_ARGS+=(-e "VE_RESTORE_FORCE=true")
+  fi
+fi
+
 DOCKER_RUN_ARGS=(
   -d
   --name ve-orchestrator
@@ -773,6 +806,7 @@ DOCKER_RUN_ARGS=(
   "${OIDC_DOCKER_HOST_ARGS[@]}"
   --env-file "$ROOT_DIR/.env"
   -e DATABASE_PATH=/app/data/virtual-engineer.db
+  "${RESTORE_DOCKER_ARGS[@]}"
   -e GH_CONFIG_DIR=/ve-gh
   --security-opt label:disable
   -v /etc/localtime:/etc/localtime:ro
@@ -792,14 +826,19 @@ RUN_CONFIG_HASH=$(run_config_hash "$ROOT_DIR/.env" "${DOCKER_RUN_ARGS[@]}" \
 RUN_CONFIG_MARKER="${DATA_DIR}/.orchestrator-run-config-hash"
 STORED_RUN_CONFIG_HASH=$(cat "$RUN_CONFIG_MARKER" 2>/dev/null || true)
 
-if should_reuse_container \
+if [[ -n "$RESTORE_ARCHIVE" ]]; then
+  info "Stopping the existing ve-orchestrator before restore..."
+  if [[ -n "$RUNNING_ID" ]]; then
+    docker rm -f ve-orchestrator
+  fi
+  RESTORE_REMAINING_ID=$(docker inspect --format='{{.Id}}' ve-orchestrator 2>/dev/null || true)
+  [[ -z "$RESTORE_REMAINING_ID" ]] || error "Could not stop the existing ve-orchestrator before restore."
+elif should_reuse_container \
   "$IS_RUNNING" "$RUNNING_ID" "$LATEST_ID" "$STORED_RUN_CONFIG_HASH" "$RUN_CONFIG_HASH"; then
   info "ve-orchestrator is already running the latest image; gateway tunnel refreshed."
   info "Logs : docker logs -f ve-orchestrator"
   exit 0
-fi
-
-if [[ -n "$RUNNING_ID" ]]; then
+elif [[ -n "$RUNNING_ID" ]]; then
   info "Removing existing ve-orchestrator container..."
   docker rm -f ve-orchestrator
 fi

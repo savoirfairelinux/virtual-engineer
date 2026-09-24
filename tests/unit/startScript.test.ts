@@ -167,6 +167,49 @@ describe("install.sh bootstrap", () => {
 });
 
 describe("start.sh helpers", () => {
+  it("accepts only an existing regular restore archive", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-restore-"));
+    tempDirs.push(dir);
+    const archivePath = join(dir, "backup.tar.gz");
+    const symlinkPath = join(dir, "backup-link.tar.gz");
+    writeFileSync(archivePath, "archive");
+    symlinkSync(archivePath, symlinkPath);
+
+    expect(runHelper('resolve_restore_archive "$1"', [archivePath])).toBe(archivePath);
+    expect(() => runHelper('resolve_restore_archive "$1"', [symlinkPath])).toThrow();
+    expect(() => runHelper('resolve_restore_archive "$1"', [join(dir, "missing.tar.gz")])).toThrow();
+  });
+
+  it("requires interactive restore confirmation or an explicit yes flag", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-restore-"));
+    tempDirs.push(dir);
+    const archivePath = join(dir, "backup.tar.gz");
+    writeFileSync(archivePath, "archive");
+
+    expect(runHelper(
+      'if confirm_backup_restore "$1" "$2" "$3"; then printf yes; fi',
+      [archivePath, join(dir, "data"), "true"],
+    )).toBe("yes");
+    expect(() => runHelper(
+      'confirm_backup_restore "$1" "$2" "$3"',
+      [archivePath, join(dir, "data"), "false"],
+    )).toThrow();
+  });
+
+  it("mounts a requested restore archive and stops the old instance first", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain("--restore <archive> [--force] [--yes]");
+    expect(script).toContain("--yes");
+    expect(script).toContain("VE_RESTORE_FROM=/app/restore.tar.gz");
+    expect(script).toContain("VE_RESTORE_FORCE=true");
+    const stopIndex = script.indexOf("Stopping the existing ve-orchestrator before restore");
+    const startIndex = script.indexOf('docker run "${DOCKER_RUN_ARGS[@]}" virtual-engineer:latest');
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
+    expect(script).toContain('docker rm -f ve-orchestrator');
+  });
+
   it.each([
     { value: "", expected: "2g" },
     { value: "512m", expected: "512m" },

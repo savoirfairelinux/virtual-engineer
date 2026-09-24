@@ -100,6 +100,44 @@ Use `./scripts/start.sh` for the complete containerized path.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, type-checking, linting, and
 database workflow.
 
+## Backups and recovery
+
+Open **Configuration → Backups** to set a UTC schedule, run a backup now, and
+list, download, or delete local archives. Scheduling is disabled by default;
+the default schedule is daily at `03:00` UTC with seven retained archives.
+`BACKUP_DIR` defaults to a `backups/` directory beside `DATABASE_PATH` (for the
+Docker launcher, `/app/data/backups`). Local retention is not off-machine
+recovery: download archives or copy them to independent storage.
+
+An archive contains an online SQLite snapshot, a verification manifest, and
+allowed prompt override Markdown files. Active admin sessions are not retained.
+It does **not** contain `ADMIN_AUTH_SECRET`, OpenShell/managed OIDC state, or
+ephemeral workspaces. Restore therefore requires the original
+`ADMIN_AUTH_SECRET` and separately preserved or reconfigured runtime/OIDC
+settings.
+
+For the Docker launcher, provide a local archive path. The script asks for
+confirmation and stops the existing `ve-orchestrator` before starting the
+replacement:
+
+```bash
+BACKUP_ARCHIVE=/secure/path/ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz
+./scripts/start.sh --restore "$BACKUP_ARCHIVE"
+```
+
+Restoring over existing database or prompt data also requires explicit
+`--force`; the previous targets are preserved in a `.pre-restore-*` directory
+under `DATA_DIR`:
+
+```bash
+./scripts/start.sh --restore "$BACKUP_ARCHIVE" --force
+```
+
+For non-interactive automation, add `--yes` only when that restore has already
+been approved. Do not persist `VE_RESTORE_FROM` or `VE_RESTORE_FORCE` in `.env`;
+clear them immediately after a successful one-shot restore. For the
+manifests-based Kubernetes deployment, follow the [PVC restore procedure](deploy/k8s/README.md#restore-from-backup).
+
 ## 📚 Documentation
 
 - [Architecture and data flow](docs/ARCHITECTURE.md)
