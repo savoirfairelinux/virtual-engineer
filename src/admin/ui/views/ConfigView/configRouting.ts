@@ -13,6 +13,7 @@ export const CONFIG_SECTIONS = [
   "policies",
   "audit",
   "exports",
+  "backups",
   "system",
 ] as const;
 
@@ -41,6 +42,7 @@ const ENTITY_SECTIONS = new Set<ConfigSectionId>([
   "users",
   "groups",
   "policies",
+  "backups",
 ]);
 
 function isConfigSection(value: string): value is ConfigSectionId {
