@@ -52,6 +52,7 @@ export const PERMISSIONS = {
   CONCURRENCY_READ: "concurrency.read",
   SYSTEM_READ: "system.read",
   SYSTEM_WRITE: "system.write",
+  SYSTEM_BACKUP_MANAGE: "system.backup.manage",
   USER_MANAGE: "user.manage",
   AUDIT_READ: "audit.read",
   POLICY_MANAGE: "policy.manage",

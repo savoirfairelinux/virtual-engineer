@@ -39,6 +39,12 @@ import type { Integration, ProjectId, ProjectRecord, ProjectReviewConfig, Task }
 import { makeTaskId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
+import { dirname, join, resolve } from "node:path";
+import { createBackupService } from "./backup/backupService.js";
+import { restoreBackupIfRequested } from "./backup/backupRestore.js";
+import { resolveBackupSettings } from "./backup/backupSettings.js";
+import { createBackupScheduler } from "./runtime/backupScheduler.js";
+import type { BackupAdminController } from "./admin/adminBackupRoutes.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -58,12 +64,30 @@ async function main(): Promise<void> {
 
   log.info({ nodeEnv: config.nodeEnv, ...getBuildInfo() }, "Virtual Engineer starting");
 
+  await restoreBackupIfRequested({
+    databasePath: config.databasePath,
+    restoreFrom: config.restoreFrom,
+    adminAuthSecret: config.adminAuthSecret,
+    force: config.restoreForce,
+  });
+
   // Ensure required directories exist
   await mkdir(config.workspaceBaseDir, { recursive: true });
 
   // ─── State Store ────────────────────────────────────────────────────────────
   const stateStore = await SqliteStateStore.create(config.databasePath);
   setLogContextResolver((kind, id) => stateStore.resolveLogContext(kind, id));
+  const databaseDir = dirname(resolve(config.databasePath));
+  const backupService = createBackupService({
+    backupDir: config.backupDir,
+    promptsDir: join(databaseDir, "prompts"),
+    stateStore,
+    adminAuthSecret: config.adminAuthSecret,
+  });
+  const backupScheduler = createBackupScheduler({
+    backupService,
+    getSettings: () => stateStore.getBackupSettings(),
+  });
 
   // A previous crash or forced restart can leave a task stuck in an "actively
   // executing" state (AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING) even
@@ -444,6 +468,20 @@ async function main(): Promise<void> {
     },
   };
 
+  const backupAdminController: BackupAdminController = {
+    getSettings: async () => resolveBackupSettings(await stateStore.getBackupSettings()),
+    updateSettings: async (patch) => {
+      const persisted = await stateStore.updateBackupSettings(patch);
+      backupScheduler.applySettings();
+      return resolveBackupSettings(persisted);
+    },
+    listBackups: () => backupService.listBackups(),
+    runNow: () => backupScheduler.runNow(),
+    deleteBackup: (filename) => backupService.deleteBackup(filename),
+    openBackup: (filename) => backupService.openBackup(filename),
+    getNextBackupAt: () => backupScheduler.getNextBackupAt(),
+  };
+
   let adminServer: Server | null = null;
   if (config.adminApiEnabled) {
     if (!config.adminAuthSecret) {
@@ -535,6 +573,7 @@ async function main(): Promise<void> {
         isWaiting: (taskId) => concurrencyTracker.isWaiting(taskId),
       },
       settings: settingsController,
+      backups: backupAdminController,
       runtimePolicyStore: stateStore,
       denialStore: stateStore,
       runtimeGateway: {
@@ -581,6 +620,7 @@ async function main(): Promise<void> {
     onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
     checkGatewayHealth: () => openShellClient.gatewayHealthy(),
   });
+  backupScheduler.start();
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
   /** Stop all subsystems and exit cleanly on SIGINT or SIGTERM. */
@@ -603,6 +643,7 @@ async function main(): Promise<void> {
     runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
+    await backupScheduler.stop();
 
     await streamReconcilePromise?.catch((err: unknown) => {
       log.error({ err }, "integration stream reconcile failed during shutdown");
