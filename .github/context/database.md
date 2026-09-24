@@ -32,6 +32,13 @@
 - `AuditEntryFilter.maxId` limits reads to the append-only `audit_log.id` high-water mark, and `AuditStoreApi.getLatestAuditId()` returns that mark or NULL for an empty trail. The CSV export captures the mark before paging and applies it to every page, excluding entries appended during the download without holding a long transaction; this adds no schema, index, or migration.
 - `AuditStoreApi.listAuditActions()`, `listAuditActors()`, `listAuditIntegrations()`, and `listAuditTargetTypes()` read distinct audit filter options for the admin UI/export page; they add no table, column, index, or migration.
 
+## Application Settings and Backups
+
+- `app_settings` is the singleton row (`id = 'global'`) for editable runtime settings. The workflow columns are nullable and fall back to configuration defaults. Backup settings add nullable `backup_enabled` (SQLite integer boolean), `backup_interval_days` (integer), `backup_time_of_day` (UTC `HH:MM` text), and `backup_retention_count` (integer); `updated_at` remains a required seconds-since-epoch timestamp. `0004_cloudy_sentry.sql` adds these columns without changing existing settings.
+- `SettingsStoreApi.getBackupSettings()` / `updateBackupSettings()` read and partially upsert those four values. The admin API resolves NULLs to disabled, every 1 day, `03:00` UTC, and 7 retained archives; interval and retention are bounded before persistence.
+- `SqliteStateStore.backupDatabaseTo(destinationPath)` uses SQLite's online backup API, then removes active `user_sessions` from the copy and converts the snapshot to a standalone DELETE-journal database. It never cleans or checkpoints the live connection as a side effect.
+- Backup archives include that SQLite snapshot and allowlisted prompt override Markdown files. Restore validates the archive manifest/checksum and the database through the normal tracked migration/schema validator before installation. The archive stores only an HMAC fingerprint of `ADMIN_AUTH_SECRET`, not the secret itself, and the original secret is required to restore encrypted provider credentials. Active sessions, OpenShell state, managed local OIDC files, and ephemeral workspaces are not included.
+
 ## Project Integration Bindings
 
 `project_integration_bindings.config_json` stores capability-specific JSON. The
@@ -84,6 +91,7 @@ measured zero and missing provider usage.
 ## Migration Path
 
 - `src/state/schema.ts` is the declarative schema source. `npm run db:generate` writes immutable SQL plus metadata under the version-controlled `drizzle/` directory; every schema, index, or constraint change must commit a newly generated migration. Never edit an already-applied migration.
+- `0004_cloudy_sentry.sql` adds the four nullable backup schedule columns to `app_settings`; the backup archive directory and one-shot restore source/force controls are environment settings, not database columns.
 - Ownership is introduced by `0003_sad_nuke.sql`: it adds `owner_user_id` and an owner index to prompts, projects, integrations, agents, and OAuth apps. Existing rows remain NULL, preserving the approved legacy-visible behavior. The migration follows the frozen two-migration compatibility bridge and is applied only by the normal Drizzle runner.
 - `runDatabaseMigrations()` in `src/state/databaseMigrations.ts` is the single executor used by automatic startup and `npm run db:migrate`. It applies tracked files with `drizzle-orm/better-sqlite3/migrator` and records exact SQL hashes and journal timestamps in `__drizzle_migrations`.
 - Fresh databases apply the tracked baseline directly. Ledger-managed databases validate their recorded hashes/timestamps against the checked-in history before pending migrations run; unknown or modified history fails closed. Every run then compares the complete SQLite schema and trigger definitions with a temporary canonical database built from the tracked migrations and runs `PRAGMA foreign_key_check`.

@@ -481,6 +481,10 @@ export const appSettings = sqliteTable(
     agentTimeoutMs: integer("agent_timeout_ms"),
     ticketCloseMaxRetries: integer("ticket_close_max_retries"),
     ticketCloseRetryMinTimeoutMs: integer("ticket_close_retry_min_timeout_ms"),
+    backupEnabled: integer("backup_enabled", { mode: "boolean" }),
+    backupIntervalDays: integer("backup_interval_days"),
+    backupTimeOfDay: text("backup_time_of_day"),
+    backupRetentionCount: integer("backup_retention_count"),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
