@@ -42,10 +42,13 @@ export function effectiveFilterValue<T>(definition: ListFilterDefinition<T>, sta
   return value !== undefined && definition.options.some((option) => option.value === value) ? value : ALL_FILTER_VALUE;
 }
 
-export function isListFiltered(state: ListFilterState): boolean {
-  return state.query.trim().length > 0
-    || state.sort !== EMPTY_LIST_FILTER.sort
-    || Object.values(state.filters).some((value) => value !== ALL_FILTER_VALUE);
+export function isListFiltered<T>(state: ListFilterState, config: ListConfig<T>): boolean {
+  const hasActiveFilter = config.filters.some((definition) =>
+    effectiveFilterValue(definition, state) !== ALL_FILTER_VALUE
+  );
+  const hasActiveSort = state.sort !== EMPTY_LIST_FILTER.sort
+    && listSortOptions(config).some((option) => option.value === state.sort);
+  return state.query.trim().length > 0 || hasActiveSort || hasActiveFilter;
 }
 
 export function listSortOptions<T>(config: ListConfig<T>): ListOption[] {

@@ -70,7 +70,7 @@ export function ListToolbar<T>({ noun, searchPlaceholder, config, state, onChang
       >
         {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
-      {isListFiltered(state) && (
+      {isListFiltered(state, config) && (
         <button className="btn ghost" onClick={() => onChange(EMPTY_LIST_FILTER)}>
           <Icon name="x" size={13} /> Clear
         </button>

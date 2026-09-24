@@ -96,11 +96,12 @@ describe("list helpers", () => {
   });
 
   it("reports whether any search, filter, or sort is active", () => {
-    expect(isListFiltered(EMPTY_LIST_FILTER)).toBe(false);
-    expect(isListFiltered({ ...EMPTY_LIST_FILTER, filters: { kind: "all" } })).toBe(false);
-    expect(isListFiltered({ ...EMPTY_LIST_FILTER, query: " x " })).toBe(true);
-    expect(isListFiltered({ ...EMPTY_LIST_FILTER, filters: { kind: "a" } })).toBe(true);
-    expect(isListFiltered({ ...EMPTY_LIST_FILTER, sort: "name-asc" })).toBe(true);
+    expect(isListFiltered(EMPTY_LIST_FILTER, rowConfig)).toBe(false);
+    expect(isListFiltered({ ...EMPTY_LIST_FILTER, filters: { kind: "all" } }, rowConfig)).toBe(false);
+    expect(isListFiltered({ ...EMPTY_LIST_FILTER, query: " x " }, rowConfig)).toBe(true);
+    expect(isListFiltered({ ...EMPTY_LIST_FILTER, filters: { kind: "a" } }, rowConfig)).toBe(true);
+    expect(isListFiltered({ ...EMPTY_LIST_FILTER, sort: "name-asc" }, rowConfig)).toBe(true);
+    expect(isListFiltered({ ...EMPTY_LIST_FILTER, filters: { kind: "removed" } }, rowConfig)).toBe(false);
   });
 });
 
