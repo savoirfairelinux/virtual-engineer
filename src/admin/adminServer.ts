@@ -29,6 +29,7 @@ import { registerProjectStatisticsRoutes } from "./adminProjectStatisticsRoutes.
 import { registerRuntimePolicyRoutes } from "./adminRuntimePolicyRoutes.js";
 import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
+import { registerBackupRoutes, type BackupAdminController } from "./adminBackupRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
@@ -184,6 +185,8 @@ export interface AdminServerDependencies {
    * persisted and hot-applied by the controller.
    */
   settings?: SettingsController | undefined;
+  /** When provided, mounts local backup inventory, settings, download and restore preparation routes. */
+  backups?: BackupAdminController | undefined;
   /** When provided, mounts runtime-policy CRUD + binding routes. */
   runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
   /** When provided, mounts the policy-denial audit-log routes. */
@@ -521,6 +524,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     agentStore: dependencies.agentStore,
   });
   registerSettingsRoutes(router, { settings: dependencies.settings });
+  registerBackupRoutes(router, { backups: dependencies.backups, auditStore });
   registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore, gateway: dependencies.runtimeGateway });
   registerDenialRoutes(router, { denialStore: dependencies.denialStore });
   registerWebhookRoutes(router, {
