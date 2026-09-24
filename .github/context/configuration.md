@@ -21,7 +21,14 @@ All variables are optional. Only system/infra settings remain in the environment
 | `LOG_LEVEL` | `info` | Pino level. Log records are enriched from the database (wired in `src/index.ts`): `integrationId`, `projectId`, `agentId`, `userId`, `promptId` gain `integrationName` / `projectName` / `agentName` / `userName` / `promptName`; `taskId` gains `ticketId`, `ticketTitle` (≤80 chars), `projectId`, and `projectName`. Explicit fields win. |
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. Its directory also holds `ssh/known_hosts`, the VE-managed trust-on-first-use file used for SSH hosts without a configured known_hosts path. |
 
+| `BACKUP_DIR` | `<DATABASE_PATH directory>/backups` | Local `.tar.gz` archive directory; defaults beside the database file. Admin UI controls scheduling/retention, not this path. Download or copy archives to separate storage for disaster recovery. |
+| `VE_RESTORE_FROM` | — | One-shot archive path read at startup before SQLite opens. Archives do not contain `ADMIN_AUTH_SECRET`; restore requires the original secret and the deployment's OIDC/runtime configuration. Do not leave this set in a persistent environment after restore. |
+| `VE_RESTORE_FORCE` | `false` | Explicitly permit replacement of existing database/prompt targets; existing targets are preserved in a `.pre-restore-*` directory. Use only with a requested restore and clear it immediately afterward, or every restart can reapply the archive. |
+
 ### Admin server
+
+Backup creation and restore also require the same `ADMIN_AUTH_SECRET` used to
+create the archive; the manifest contains only its HMAC fingerprint.
 
 | Var | Default | Notes |
 |---|---|---|
@@ -55,7 +62,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image the OpenShell sandbox is created from (`sandbox create --from`). It ships only Copilot; every other engine uses `<name>-<engine>:<tag>` derived from it (`agentEngineImage()` in `src/agents/agentEngines.ts`). `scripts/start.sh` builds images under the same names; a digest-pinned value is treated as externally managed (no local builds or pruning). |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
 
-There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
+There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 24 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
 
 ### Read outside `ConfigSchema`
 
@@ -88,6 +95,19 @@ failure. Set, for example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun
 the existing run-config hash, so changing it recreates the orchestrator
 container. This setting does not change OpenShell sandbox limits or Kubernetes
 deployment storage.
+
+### Restore launcher
+
+`./scripts/start.sh --restore <archive> [--force] [--yes]` validates the local
+archive, asks the operator to type `restore`, then stops/removes the existing
+`ve-orchestrator` before starting its replacement with the archive mounted
+read-only. `--yes` skips only the interactive confirmation and is intended for
+explicit automation. `--force` is separate: use it only when replacing a
+populated database or prompt directory is intended; the old targets are
+quarantined under the data directory. The launcher-based restore works with
+either OpenShell compute driver because the orchestrator remains a Docker
+container. For the manifests-based Kubernetes deployment, follow the PVC
+procedure in [deploy/k8s/README.md](../../deploy/k8s/README.md).
 
 ## Boot-time validation
 

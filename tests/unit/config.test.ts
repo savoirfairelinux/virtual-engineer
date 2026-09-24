@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { resolve } from "node:path";
 import { getConfig, resetConfig } from "../../src/config.js";
 
 describe("getConfig", () => {
@@ -10,6 +11,9 @@ describe("getConfig", () => {
       "NODE_ENV",
       "LOG_LEVEL",
       "DATABASE_PATH",
+      "BACKUP_DIR",
+      "VE_RESTORE_FROM",
+      "VE_RESTORE_FORCE",
       "AGENT_MODE",
       "ADMIN_API_ENABLED",
       "ADMIN_API_HOST",
@@ -118,6 +122,15 @@ describe("getConfig", () => {
       expect(getConfig().databasePath).toBe("./data/virtual-engineer.db");
     });
 
+    it("places backups beside the database by default", () => {
+      expect(getConfig().backupDir).toBe(resolve("data/backups"));
+    });
+
+    it("disables restore by default", () => {
+      expect(getConfig().restoreFrom).toBeUndefined();
+      expect(getConfig().restoreForce).toBe(false);
+    });
+
     it("agentContainerImage defaults to virtual-engineer-workspace:latest", () => {
       expect(getConfig().agentContainerImage).toBe("virtual-engineer-workspace:latest");
     });
@@ -164,6 +177,35 @@ describe("getConfig", () => {
       process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"] = "10000";
       resetConfig();
       expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(10_000);
+    });
+
+    it("resolves backup and restore paths and parses the force flag", () => {
+      process.env["BACKUP_DIR"] = "./custom-backups";
+      process.env["VE_RESTORE_FROM"] = "./restore/ve-backup.tar.gz";
+      process.env["VE_RESTORE_FORCE"] = "true";
+      resetConfig();
+
+      const config = getConfig();
+      expect(config.backupDir).toBe(resolve("./custom-backups"));
+      expect(config.restoreFrom).toBe(resolve("./restore/ve-backup.tar.gz"));
+      expect(config.restoreForce).toBe(true);
+    });
+
+    it("derives the backup directory from a custom database path", () => {
+      process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
+      resetConfig();
+      expect(getConfig().backupDir).toBe("/var/lib/ve/backups");
+    });
+
+    it("treats empty backup and restore paths as unset", () => {
+      process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
+      process.env["BACKUP_DIR"] = "";
+      process.env["VE_RESTORE_FROM"] = "";
+      resetConfig();
+
+      const config = getConfig();
+      expect(config.backupDir).toBe("/var/lib/ve/backups");
+      expect(config.restoreFrom).toBeUndefined();
     });
   });
 
