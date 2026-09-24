@@ -18,6 +18,8 @@ import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
 import type { AuditStoreApi } from "./stores/auditStore.js";
 import { createAuditStore } from "./stores/auditStore.js";
+import type { AuthSourceStoreApi } from "./stores/authSourceStore.js";
+import { createAuthSourceStore } from "./stores/authSourceStore.js";
 import type { CostStoreApi } from "./stores/costStore.js";
 import { createCostStore } from "./stores/costStore.js";
 import type { ProjectStatisticsStoreApi } from "./stores/projectStatisticsStore.js";
@@ -79,7 +81,8 @@ type ComposedStoreApi =
   & PolicyStoreApi
   & RuntimePolicyStoreApi
   & DenialStoreApi
-  & OpenShellProviderStoreApi;
+  & OpenShellProviderStoreApi
+  & AuthSourceStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -102,6 +105,7 @@ export class SqliteStateStore {
   private readonly runtimePolicyStore: RuntimePolicyStoreApi;
   private readonly denialStore: DenialStoreApi;
   private readonly openShellProviderStore: OpenShellProviderStoreApi;
+  private readonly authSourceStore: AuthSourceStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
   private readonly logContextStatements = new Map<LogEntityKind, Database.Statement>();
 
@@ -135,6 +139,7 @@ export class SqliteStateStore {
     this.runtimePolicyStore = createRuntimePolicyStore({ db: this.db });
     this.denialStore = createDenialStore({ db: this.db });
     this.openShellProviderStore = createOpenShellProviderStore({ db: this.db });
+    this.authSourceStore = createAuthSourceStore({ db: this.db });
 
     Object.assign(
       this,
@@ -153,7 +158,8 @@ export class SqliteStateStore {
       this.policyStore,
       this.runtimePolicyStore,
       this.denialStore,
-      this.openShellProviderStore
+      this.openShellProviderStore,
+      this.authSourceStore
     );
   }
 
