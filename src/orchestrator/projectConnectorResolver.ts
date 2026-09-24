@@ -7,8 +7,8 @@ import type {
   Task,
   TicketConnector,
 } from "../interfaces.js";
-import type { ExternalChangeId } from "../domain/identifiers.js";
 import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
+import { selectReviewRepository } from "../domain/reviewRepository.js";
 import { getLogger } from "../logger.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
@@ -17,34 +17,6 @@ import type { ProjectModeDeps } from "./projectMode.js";
 import { parseIntegrationIdFromSourceLabel } from "../utils/ticketSourceLabel.js";
 
 const log = getLogger("project-connector-resolver");
-
-interface ReviewRepositorySelection {
-  repoKey: string | undefined;
-  hasQualifiedRepository: boolean;
-}
-
-function selectReviewRepository(
-  externalChangeId: ExternalChangeId | null | undefined,
-  repositories: readonly string[],
-): ReviewRepositorySelection {
-  const rawChangeId = externalChangeId === null || externalChangeId === undefined
-    ? ""
-    : String(externalChangeId).trim();
-  const hashIndex = rawChangeId.indexOf("#");
-
-  if (hashIndex > 0) {
-    const requestedRepoKey = rawChangeId.slice(0, hashIndex);
-    return {
-      repoKey: repositories.includes(requestedRepoKey) ? requestedRepoKey : undefined,
-      hasQualifiedRepository: true,
-    };
-  }
-
-  return {
-    repoKey: repositories.length === 1 ? repositories[0] : undefined,
-    hasQualifiedRepository: false,
-  };
-}
 
 export interface ProjectConnectorResolverDependencies {
   getProjectMode: () => ProjectModeDeps | null;

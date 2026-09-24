@@ -29,7 +29,7 @@ import { buildAdminProviderSummaries } from "./admin/providerSummary.js";
 import { buildRuntimeDependencies, buildOrchestratorConfig, configureAgentAdapters } from "./bootstrap/runtimeBuilder.js";
 import { buildReviewBundle, buildReviewTrigger } from "./review/reviewBootstrap.js";
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
-import { recoverActiveReviews } from "./review/reviewRecovery.js";
+import { recoverActiveReviews, runReviewTask } from "./review/reviewRecovery.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { Integration, ProjectId, ProjectRecord, ProjectReviewConfig, Task } from "./interfaces.js";
@@ -446,38 +446,38 @@ async function main(): Promise<void> {
         resumeTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(
-              pluginManager,
-              config.workspaceBaseDir,
-              stateStore,
-              workspaceRunner,
-              concurrencyTracker,
-              task,
-              taskLifecycleCoordinator,
-            );
-            if (bundle.orchestrator) {
-              await bundle.orchestrator.runReview(task.taskId);
-              return;
-            }
+            await runReviewTask(stateStore, task, async (reviewTask) => {
+              const bundle = await buildReviewBundle(
+                pluginManager,
+                config.workspaceBaseDir,
+                stateStore,
+                workspaceRunner,
+                concurrencyTracker,
+                reviewTask,
+                taskLifecycleCoordinator,
+              );
+              return bundle.orchestrator;
+            });
+            return;
           }
           await orchestrator.continueTask(taskId);
         },
         retryTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(
-              pluginManager,
-              config.workspaceBaseDir,
-              stateStore,
-              workspaceRunner,
-              concurrencyTracker,
-              task,
-              taskLifecycleCoordinator,
-            );
-            if (bundle.orchestrator) {
-              await bundle.orchestrator.runReview(task.taskId);
-              return;
-            }
+            await runReviewTask(stateStore, task, async (reviewTask) => {
+              const bundle = await buildReviewBundle(
+                pluginManager,
+                config.workspaceBaseDir,
+                stateStore,
+                workspaceRunner,
+                concurrencyTracker,
+                reviewTask,
+                taskLifecycleCoordinator,
+              );
+              return bundle.orchestrator;
+            });
+            return;
           }
           await orchestrator.continueTask(taskId);
         },

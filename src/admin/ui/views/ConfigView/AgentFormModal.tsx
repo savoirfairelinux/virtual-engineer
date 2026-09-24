@@ -182,6 +182,10 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     const integrationId = event.target.value;
     const integration = agentIntegrations.find((candidate) => candidate.id === integrationId);
     const plugin = plugins.find((candidate) => candidate.provider === integration?.provider);
+    modelsRequestId.current += 1;
+    setAvailableModels([]);
+    setModelsLoading(false);
+    setModelsError(null);
     setForm((prev) => normalizeAgentReviewForm({
       ...prev,
       integrationId,
