@@ -463,6 +463,43 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
       advance: "continue",
     },
   ],
+  "auth-sources": [
+    {
+      target: '[data-tour="auth-sources-new"]',
+      title: "Connect a directory",
+      body: "Add an LDAP source so directory users can sign in to the admin UI.",
+      placement: "bottom",
+      optional: true,
+    },
+    {
+      target: '[data-tour="auth-source-form-name"]',
+      title: "Name the source",
+      body: "Use a name that identifies the directory, such as the company domain.",
+      placement: "right",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="auth-source-form-url"]',
+      title: "Point at the directory",
+      body: "Use an ldaps:// URL, or an ldap:// URL with StartTLS. Paste a private CA certificate when the directory does not use a public one.",
+      placement: "right",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="auth-source-form-bind"]',
+      title: "Set the service account",
+      body: "The service account only needs to read user entries under the search base. Its password is stored encrypted.",
+      placement: "right",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="auth-source-form-test"]',
+      title: "Test before saving",
+      body: "Test connection binds with the service account and reads the user search base without storing anything.",
+      placement: "top",
+      advance: "continue",
+    },
+  ],
   users: [
     {
       target: '[data-tour="users-new"]',
