@@ -6,40 +6,167 @@ import type { ApiAuditEntry, ApiAuditPage } from "../../types.ts";
 
 const PAGE_SIZE = 50;
 
-const filterInputStyle: React.CSSProperties = {
+/** Actor names that denote unauthenticated identities (legacy + current fallback). */
+const UNAUTHENTICATED_ACTORS = new Set(["unknown", "unauthenticated"]);
+/** Actor name for the unauthenticated bootstrap phase before any user exists. */
+const BOOTSTRAP_ACTOR = "bootstrap";
+
+const filterControlStyle: React.CSSProperties = {
   padding: "7px 10px", fontSize: "12.5px", fontFamily: "var(--font-sans)",
   border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
   background: "var(--panel-2)", color: "var(--text)", outline: "none",
   width: "200px",
 };
 
-function formatDetails(details: Record<string, unknown>): string {
+const clickableStyle: React.CSSProperties = {
+  cursor: "pointer",
+};
+
+const filterButtonStyle: React.CSSProperties = {
+  ...clickableStyle,
+  border: "none",
+  padding: 0,
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+  textAlign: "left",
+};
+
+const expandButtonStyle: React.CSSProperties = {
+  ...filterButtonStyle,
+  display: "grid",
+  placeItems: "center",
+  width: "24px",
+  height: "24px",
+};
+
+interface AuditSectionProps {
+  onExport?: () => void;
+}
+
+/** Short technical tokens rendered as acronyms rather than capitalized words. */
+const ACRONYMS = new Set(["ip", "url", "id", "api", "ssh", "http", "https", "json", "uri"]);
+
+/** Humanize a details key for display: "sourceIp" → "Source IP". */
+function humanizeKey(key: string): string {
+  const spaced = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return spaced
+    .split(/\s+/)
+    .map((word) => ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/** Compact inline JSON for non-primitive detail values. */
+function formatInlineJson(value: unknown): string {
   try {
-    return JSON.stringify(details, null, 2);
+    return JSON.stringify(value);
   } catch {
-    return String(details);
+    return String(value);
   }
 }
 
-export function AuditSection() {
+/** Resolve the human-readable target label recorded by admin mutations. */
+function targetName(details: Record<string, unknown>): string | null {
+  for (const key of ["name", "username", "label", "ticketId"]) {
+    const value = details[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return ["string", "number", "boolean"].includes(typeof value) || value === null;
+}
+
+/** Render the masked details blob as a labeled key/value table. */
+function DetailsTable({ details, targetId }: { details: Record<string, unknown>; targetId: string | null }) {
+  const rows = Object.entries(details);
+  if (rows.length === 0 && targetId === null) return null;
+  return (
+    <div style={{ padding: "10px 16px 14px", background: "var(--panel-2)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, max-content) 1fr", gap: "6px 20px", fontSize: "12px" }}>
+        {targetId !== null && (
+          <div style={{ display: "contents" }}>
+            <span style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>ID</span>
+            <span className="mono" style={{ color: "var(--text-dim)", wordBreak: "break-word" }}>{targetId}</span>
+          </div>
+        )}
+        {rows.map(([key, value]) => (
+          <div key={key} style={{ display: "contents" }}>
+            <span style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>{humanizeKey(key)}</span>
+            {isPrimitive(value) ? (
+              <span className="mono" style={{ color: "var(--text-dim)", wordBreak: "break-word" }}>
+                {value === null ? "—" : String(value)}
+              </span>
+            ) : (
+              <span className="mono" style={{ color: "var(--text-dim)", fontSize: "11.5px", wordBreak: "break-all" }}>
+                {formatInlineJson(value)}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Actor cell: real usernames plain; unauthenticated/bootstrap actors as badges. */
+function ActorCell({ actorUserId, name, onFilter }: { actorUserId: string | null; name: string; onFilter: (actor: string) => void }) {
+  if (actorUserId === null && UNAUTHENTICATED_ACTORS.has(name)) {
+    return (
+      <span title={`Unauthenticated identity (actor name: ${name})`}>
+        <Tag tone="muted">UNAUTHENTICATED</Tag>
+      </span>
+    );
+  }
+  if (actorUserId === null && name === BOOTSTRAP_ACTOR) {
+    return (
+      <span title="Initial bootstrap (no users existed yet)">
+        <Tag tone="muted">SYSTEM</Tag>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-label={`Filter by actor ${name}`}
+      onClick={(e) => { e.stopPropagation(); onFilter(name); }}
+      style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...filterButtonStyle }}
+      title={`Filter by ${name}`}
+    >
+      {name}
+    </button>
+  );
+}
+
+export function AuditSection({ onExport }: AuditSectionProps = {}) {
   const [entries, setEntries] = useState<ApiAuditEntry[]>([]);
+  const [actions, setActions] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [actionFilter, setActionFilter] = useState("");
   const [actorFilter, setActorFilter] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const load = useCallback(async (nextOffset: number, action: string, actor: string) => {
+  const load = useCallback(async (nextOffset: number, action: string, actor: string, from: string, to: string) => {
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(nextOffset) });
       if (action.trim()) params.set("action", action.trim());
       if (actor.trim()) params.set("actor", actor.trim());
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
       const page = await api.get<ApiAuditPage>(`/api/admin/audit?${params.toString()}`);
       setEntries(page.entries);
+      setActions(page.actions);
       setTotal(page.total);
       setOffset(page.offset);
     } catch (e) {
@@ -51,9 +178,9 @@ export function AuditSection() {
 
   // Reload on filter change (debounced) — filters reset pagination.
   useEffect(() => {
-    const id = setTimeout(() => { void load(0, actionFilter, actorFilter); }, 300);
+    const id = setTimeout(() => { void load(0, actionFilter, actorFilter, startDate, endDate); }, 300);
     return () => clearTimeout(id);
-  }, [actionFilter, actorFilter, load]);
+  }, [actionFilter, actorFilter, endDate, load, startDate]);
 
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + entries.length, total);
@@ -67,26 +194,57 @@ export function AuditSection() {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Audit trail</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Timestamped record of every admin configuration change.</p>
           </div>
-          <button className="btn" data-tour="audit-refresh" onClick={() => void load(offset, actionFilter, actorFilter)} disabled={loading}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {onExport && (
+              <button className="btn primary" onClick={onExport}>
+                <Icon name="file" size={14} /> Export CSV
+              </button>
+            )}
+            <button className="btn" data-tour="audit-refresh" onClick={() => void load(offset, actionFilter, actorFilter, startDate, endDate)} disabled={loading}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
         </div>
       </div>
 
       {/* filters */}
       <div data-tour="audit-filters" style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
-        <input
+        <select
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
-          placeholder="Filter by action (e.g. integration.update)…"
-          style={{ ...filterInputStyle, width: "260px" }}
-        />
+          aria-label="Filter by action"
+          style={{ ...filterControlStyle, width: "260px" }}
+        >
+          <option value="">All actions</option>
+          {actions.map((action) => <option key={action} value={action}>{action}</option>)}
+        </select>
         <input
           value={actorFilter}
           onChange={(e) => setActorFilter(e.target.value)}
           placeholder="Filter by actor…"
-          style={filterInputStyle}
+          style={filterControlStyle}
         />
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
+          From (UTC)
+          <input
+            type="date"
+            aria-label="Start date (UTC)"
+            value={startDate}
+            onChange={(event) => setStartDate(event.target.value)}
+            style={{ ...filterControlStyle, width: "150px" }}
+          />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-faint)" }}>
+          To (UTC)
+          <input
+            type="date"
+            aria-label="End date (UTC)"
+            value={endDate}
+            min={startDate || undefined}
+            onChange={(event) => setEndDate(event.target.value)}
+            style={{ ...filterControlStyle, width: "150px" }}
+          />
+        </label>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>
           {loading ? "Loading…" : `${from}–${to} of ${total}`}
@@ -117,7 +275,7 @@ export function AuditSection() {
             textTransform: "uppercase", color: "var(--text-ghost)",
           }}
         >
-          <span>Time</span><span>Actor</span><span>Action</span><span>Target</span><span />
+          <span>Time (UTC)</span><span>Actor</span><span>Action</span><span>Target</span><span />
         </div>
 
         {entries.length === 0 && !loading && (
@@ -126,48 +284,58 @@ export function AuditSection() {
 
         {entries.map((e) => {
           const expanded = expandedId === e.id;
-          const hasDetails = Object.keys(e.details ?? {}).length > 0;
+          const hasDetails = Object.keys(e.details ?? {}).length > 0 || e.targetId !== null;
+          const targetLabel = targetName(e.details);
           return (
             <div key={e.id} style={{ borderBottom: "1px solid var(--border-soft)" }}>
               <div
-                onClick={() => { if (hasDetails) setExpandedId(expanded ? null : e.id); }}
                 style={{
                   display: "grid", gridTemplateColumns: "170px 140px 1fr 220px 32px",
                   gap: "0 12px", padding: "10px 16px", alignItems: "center",
-                  cursor: hasDetails ? "pointer" : "default", fontSize: "12.5px",
+                  fontSize: "12.5px",
                 }}
               >
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>
-                  {new Date(e.createdAt).toLocaleString()}
+                  {new Date(e.createdAt).toLocaleString(undefined, { timeZone: "UTC" })}
                 </span>
-                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {e.actorName}
+                <ActorCell actorUserId={e.actorUserId} name={e.actorName} onFilter={(actor) => setActorFilter(actor)} />
+                <span>
+                  <button
+                    type="button"
+                    aria-label={`Filter by action ${e.action}`}
+                    onClick={(e2) => { e2.stopPropagation(); setActionFilter(e.action); }}
+                    style={filterButtonStyle}
+                    title={`Filter by ${e.action}`}
+                  >
+                    <Tag tone="info">{e.action}</Tag>
+                  </button>
                 </span>
-                <span><Tag tone="info">{e.action}</Tag></span>
                 <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {e.targetType ? `${e.targetType}${e.targetId ? ` · ${e.targetId}` : ""}` : "—"}
+                  {e.targetType ? `${e.targetType}${targetLabel ? ` · ${targetLabel}` : ""}` : "—"}
                 </span>
                 <span style={{ display: "grid", placeItems: "center" }}>
                   {hasDetails && (
-                    <Icon
-                      name="chevdown"
-                      size={13}
-                      style={{ color: "var(--text-faint)", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
-                    />
+                    <button
+                      type="button"
+                      aria-label={`${expanded ? "Collapse" : "Expand"} audit entry ${e.id}`}
+                      aria-expanded={expanded}
+                      aria-controls={`audit-details-${e.id}`}
+                      onClick={() => setExpandedId(expanded ? null : e.id)}
+                      style={expandButtonStyle}
+                    >
+                      <Icon
+                        name="chevdown"
+                        size={13}
+                        style={{ color: "var(--text-faint)", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+                      />
+                    </button>
                   )}
                 </span>
               </div>
-              {expanded && (
-                <pre
-                  className="mono"
-                  style={{
-                    margin: 0, padding: "10px 16px 14px",
-                    fontSize: "11.5px", lineHeight: 1.6, color: "var(--text-dim)",
-                    background: "var(--panel-2)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  }}
-                >
-                  {formatDetails(e.details)}
-                </pre>
+              {expanded && hasDetails && (
+                <div id={`audit-details-${e.id}`}>
+                  <DetailsTable details={e.details} targetId={e.targetId} />
+                </div>
               )}
             </div>
           );
@@ -179,14 +347,14 @@ export function AuditSection() {
         <button
           className="btn"
           disabled={loading || offset === 0}
-          onClick={() => void load(Math.max(0, offset - PAGE_SIZE), actionFilter, actorFilter)}
+          onClick={() => void load(Math.max(0, offset - PAGE_SIZE), actionFilter, actorFilter, startDate, endDate)}
         >
           Newer
         </button>
         <button
           className="btn"
           disabled={loading || offset + entries.length >= total}
-          onClick={() => void load(offset + PAGE_SIZE, actionFilter, actorFilter)}
+          onClick={() => void load(offset + PAGE_SIZE, actionFilter, actorFilter, startDate, endDate)}
         >
           Older
         </button>

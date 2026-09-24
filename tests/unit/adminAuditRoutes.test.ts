@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import { makeAgentId, makeTaskId, makeTicketId, type AuditEntry } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
@@ -132,6 +132,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       });
       const payload = (await response.json()) as {
         entries: Array<Record<string, unknown>>;
+        actions: string[];
         total: number;
         limit: number;
         offset: number;
@@ -139,12 +140,13 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(payload.limit).toBe(50);
       expect(payload.offset).toBe(0);
       expect(payload.total).toBeGreaterThanOrEqual(1); // auth.setup
+      expect(payload.actions).toContain("auth.setup");
       const setupEntry = payload.entries.find((e) => e["action"] === "auth.setup");
       expect(setupEntry).toBeDefined();
       expect(setupEntry).toMatchObject({
-        actorName: "bootstrap",
+        actorName: "root",
         targetType: "user",
-        details: { username: "root", role: "admin" },
+        details: expect.objectContaining({ username: "root", role: "admin" }),
       });
       expect(typeof setupEntry?.["id"]).toBe("number");
       expect(typeof setupEntry?.["createdAt"]).toBe("string");
@@ -161,6 +163,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       );
       const payload = (await filtered.json()) as {
         entries: Array<Record<string, unknown>>;
+        actions: string[];
         total: number;
         limit: number;
         offset: number;
@@ -169,6 +172,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       expect(payload.limit).toBe(2);
       expect(payload.offset).toBe(1);
       expect(payload.entries).toHaveLength(2);
+      expect(payload.actions).toEqual(expect.arrayContaining(["auth.setup", "seed.action"]));
       // Newest-first: entries 3 and 2 after skipping entry 4.
       expect(payload.entries.map((e) => (e["details"] as { i: number }).i)).toEqual([3, 2]);
       expect(payload.entries.every((e) => e["actorName"] === "seed-actor")).toBe(true);
@@ -179,6 +183,112 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const empty = (await noMatch.json()) as { entries: unknown[]; total: number };
       expect(empty.entries).toHaveLength(0);
       expect(empty.total).toBe(0);
+    });
+
+    it("filters by inclusive calendar dates and rejects invalid ranges", async () => {
+      const future = await fetch(
+        `${baseUrl}/api/admin/audit?from=2099-01-01&to=2099-01-31`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(future.status).toBe(200);
+      expect((await future.json() as { entries: unknown[] }).entries).toHaveLength(0);
+
+      const invalid = await fetch(
+        `${baseUrl}/api/admin/audit?from=2026-09-23&to=2026-09-22`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({ error: "from must be before or equal to 'to'" });
+    });
+
+    it("returns filter options and exports a quoted CSV", async () => {
+      await store.appendAuditEntry({
+        actorName: "alice",
+        action: "integration.update",
+        targetType: "integration",
+        targetId: "int-1",
+        details: { name: "GitLab, primary", note: 'changed "token"' },
+      });
+      const optionsResponse = await fetch(`${baseUrl}/api/admin/audit/options`, {
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(optionsResponse.status).toBe(200);
+      expect(await optionsResponse.json()).toMatchObject({
+        actions: expect.arrayContaining(["integration.update"]),
+        actors: expect.arrayContaining(["alice"]),
+        targetTypes: expect.arrayContaining(["integration"]),
+        integrations: [{ id: "int-1", name: "GitLab, primary" }],
+        dateRange: {
+          from: expect.any(String),
+          to: expect.any(String),
+        },
+      });
+
+      const csvResponse = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?actor=alice&integration=int-1`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(csvResponse.status).toBe(200);
+      expect(csvResponse.headers.get("content-type")).toContain("text/csv");
+      expect(csvResponse.headers.get("content-disposition")).toContain("attachment");
+      const csv = await csvResponse.text();
+      expect(csv).toContain('"id","createdAt","actorUserId","actorName","action","targetType","targetId","details"');
+      expect(csv).toContain('"alice"');
+      expect(csv).toContain('""name"":""GitLab, primary""');
+      expect(csv).toContain('changed \\""token\\"""');
+    });
+
+    it("neutralizes formula-like values in CSV cells", async () => {
+      await store.appendAuditEntry({
+        actorName: "=HYPERLINK(\"https://example.test\")",
+        action: "audit.csv_formula",
+        targetType: "integration",
+        targetId: "+target",
+        details: { note: "@SUM(1,1)" },
+      });
+      const response = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?action=audit.csv_formula`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(response.status).toBe(200);
+      const csv = await response.text();
+      expect(csv).toContain('"\'=HYPERLINK(""https://example.test"")"');
+      expect(csv).toContain('"\'+target"');
+      expect(csv).toContain('"{""note"":""@SUM(1,1)""}"');
+    });
+
+    it("exports a stable snapshot when entries are appended between pages", async () => {
+      for (let index = 0; index <= 200; index++) {
+        await store.appendAuditEntry({
+          actorName: "snapshot-user",
+          action: "audit.snapshot",
+          details: { index },
+        });
+      }
+      const listEntries = store.listAuditEntries.bind(store);
+      let appendedDuringExport = false;
+      vi.spyOn(store, "listAuditEntries").mockImplementation(async (filter) => {
+        const result = await listEntries(filter);
+        if (!appendedDuringExport && filter?.action === "audit.snapshot" && filter.offset === 0) {
+          appendedDuringExport = true;
+          await store.appendAuditEntry({
+            actorName: "snapshot-user",
+            action: "audit.snapshot",
+            details: { index: 999 },
+          });
+        }
+        return result;
+      });
+
+      const response = await fetch(
+        `${baseUrl}/api/admin/audit/export.csv?action=audit.snapshot`,
+        { headers: { authorization: `Bearer ${adminToken}` } },
+      );
+      expect(response.status).toBe(200);
+      const csv = await response.text();
+      expect(csv.trimEnd().split("\r\n")).toHaveLength(202);
+      expect(csv).toContain('""index"":200');
+      expect(csv).not.toContain('""index"":999');
     });
   });
 

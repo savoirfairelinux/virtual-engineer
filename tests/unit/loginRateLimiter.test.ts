@@ -75,6 +75,43 @@ describe("LoginRateLimiter", () => {
     expect(limiter.check("user:bob", now).allowed).toBe(true);
     expect(limiter.check("ip:1.2.3.4", now).allowed).toBe(true);
   });
+
+  it("reports firstBlocked=true only once per lockout episode", () => {
+    const limiter = new LoginRateLimiter();
+    const now = 1_000_000;
+    for (let i = 0; i < 5; i++) limiter.recordFailure("user:alice", now);
+    // First blocked attempt of this lockout window → firstBlocked true.
+    const first = limiter.check("user:alice", now);
+    expect(first.allowed).toBe(false);
+    expect(first.firstBlocked).toBe(true);
+    // Subsequent attempts inside the same lockout → already audited.
+    const second = limiter.check("user:alice", now + 100);
+    expect(second.allowed).toBe(false);
+    expect(second.firstBlocked).toBe(false);
+  });
+
+  it("reports firstBlocked=true again after a re-lockout episode", () => {
+    const limiter = new LoginRateLimiter();
+    let now = 1_000_000;
+    for (let i = 0; i < 5; i++) limiter.recordFailure("user:alice", now);
+    expect(limiter.check("user:alice", now).firstBlocked).toBe(true);
+    // Lockout expires; a fresh failure re-locks with a new lockedUntil.
+    const retry = limiter.check("user:alice", now).retryAfterMs ?? 0;
+    now += retry + 1;
+    limiter.recordFailure("user:alice", now);
+    expect(limiter.check("user:alice", now).firstBlocked).toBe(true);
+  });
+
+  it("resets the audited flag when the lockout expires without a re-lock", () => {
+    const limiter = new LoginRateLimiter();
+    let now = 1_000_000;
+    for (let i = 0; i < 5; i++) limiter.recordFailure("user:alice", now);
+    expect(limiter.check("user:alice", now).firstBlocked).toBe(true);
+    now += 16 * 60_000;
+    // Far past the lockout: allowed again, and a new episode starts clean.
+    const later = limiter.check("user:alice", now);
+    expect(later.allowed).toBe(true);
+  });
 });
 
 describe("clientIpKey / usernameKey", () => {

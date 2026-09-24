@@ -525,9 +525,28 @@ export interface ApiAuditEntry {
 
 export interface ApiAuditPage {
   entries: ApiAuditEntry[];
+  actions: string[];
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface ApiAuditIntegrationOption {
+  id: string;
+  name: string;
+}
+
+export interface ApiAuditDateRange {
+  from: string | null;
+  to: string | null;
+}
+
+export interface ApiAuditOptions {
+  actions: string[];
+  actors: string[];
+  targetTypes: string[];
+  integrations: ApiAuditIntegrationOption[];
+  dateRange: ApiAuditDateRange;
 }
 
 /* ─── Bootstrap injected by the server ────────────────────────────────── */

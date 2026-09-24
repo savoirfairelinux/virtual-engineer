@@ -134,8 +134,9 @@ describe("adminAuthRoutes", () => {
 
       const { entries } = await store.listAuditEntries({ action: "auth.setup" });
       expect(entries).toHaveLength(1);
-      expect(entries[0]?.actorName).toBe("bootstrap");
-      expect(entries[0]?.details).toEqual({ username: "root", role: "admin" });
+      expect(entries[0]?.actorName).toBe("root");
+      expect(entries[0]?.actorUserId).toBe(session.user.id);
+      expect(entries[0]?.details).toEqual(expect.objectContaining({ username: "root", role: "admin" }));
     });
 
     it("rejects setup once a user exists", async () => {
@@ -185,6 +186,18 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too weak") });
     });
+
+    it("normalizes usernames by trimming whitespace and lowercasing", async () => {
+      await runSetup(baseUrl, "  Root  ", "Str0ng-Pass-1x");
+      const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "ROOT", password: "Str0ng-Pass-1x" }),
+      });
+      expect(login.status).toBe(200);
+      const session = (await login.json()) as SessionResponse;
+      expect(session.user.username).toBe("root");
+    });
   });
 
   describe("login / me / logout", () => {
@@ -219,7 +232,25 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(401);
     });
 
-    it("records a login_failed audit entry (without the password) on bad credentials", async () => {
+    it("records an auth.login audit entry with the verified user as actor on successful login", async () => {
+      await runSetup(baseUrl);
+      const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+      });
+      expect(login.status).toBe(200);
+      const session = (await login.json()) as SessionResponse;
+      const { entries } = await store.listAuditEntries({ action: "auth.login" });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.actorName).toBe("root");
+      expect(entries[0]?.actorUserId).toBe(session.user.id);
+      expect(entries[0]?.targetType).toBe("user");
+      expect(entries[0]?.targetId).toBe(session.user.id);
+      expect(entries[0]?.details).toEqual(expect.objectContaining({ username: "root", sourceIp: "127.0.0.1" }));
+    });
+
+    it("records auth.login_failed without secrets, unauthenticated actor, and sourceIp on bad credentials", async () => {
       await runSetup(baseUrl);
       await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
@@ -228,31 +259,96 @@ describe("adminAuthRoutes", () => {
       });
       const { entries } = await store.listAuditEntries({ action: "auth.login_failed" });
       expect(entries).toHaveLength(1);
-      expect(entries[0]?.details).toEqual({ username: "root" });
+      expect(entries[0]?.actorName).toBe("unauthenticated");
+      expect(entries[0]?.actorUserId).toBeNull();
+      expect(entries[0]?.details).toEqual(expect.objectContaining({ username: "root", sourceIp: "127.0.0.1" }));
+      expect(entries[0]?.details).not.toHaveProperty("password");
     });
 
-    it("records an auth.login audit entry (without credentials) on successful login", async () => {
-      await runSetup(baseUrl);
-      await fetch(`${baseUrl}/api/admin/auth/login`, {
+    it("records the authenticated user as actor on logout", async () => {
+      const session = await runSetup(baseUrl);
+      const logout = await fetch(`${baseUrl}/api/admin/auth/logout`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+        headers: { authorization: `Bearer ${session.token}` },
       });
-      const { entries } = await store.listAuditEntries({ action: "auth.login" });
+      expect(logout.status).toBe(204);
+      const { entries } = await store.listAuditEntries({ action: "auth.logout" });
       expect(entries).toHaveLength(1);
-      expect(entries[0]?.details).toEqual({ username: "root" });
+      expect(entries[0]?.actorName).toBe("root");
+      expect(entries[0]?.actorUserId).toBe(session.user.id);
     });
 
-    it("normalizes usernames (case + whitespace) consistently on setup and login", async () => {
-      await runSetup(baseUrl, "  Root  ", "Str0ng-Pass-1x");
-      const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+    it("does not record another auth.logout when the token was already revoked", async () => {
+      const session = await runSetup(baseUrl);
+      const first = await fetch(`${baseUrl}/api/admin/auth/logout`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+      expect(first.status).toBe(204);
+      // The revoked token no longer passes the auth gate → 401, no second entry.
+      const second = await fetch(`${baseUrl}/api/admin/auth/logout`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+      expect(second.status).toBe(401);
+      const { entries } = await store.listAuditEntries({ action: "auth.logout" });
+      expect(entries).toHaveLength(1);
+    });
+
+    it("records exactly one auth.login_rate_limited audit entry per lockout episode", async () => {
+      await runSetup(baseUrl);
+      // 5 failures cross the threshold → lockout; failures auditing as login_failed.
+      for (let i = 0; i < 5; i++) {
+        await fetch(`${baseUrl}/api/admin/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "root", password: "wrong-password" }),
+        });
+      }
+      // 6th and 7th attempts are blocked with 429 but audited as rate-limited only once.
+      for (let i = 0; i < 2; i++) {
+        const blocked = await fetch(`${baseUrl}/api/admin/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+        });
+        expect(blocked.status).toBe(429);
+      }
+      const { entries } = await store.listAuditEntries({ action: "auth.login_rate_limited" });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.actorName).toBe("unauthenticated");
+      expect(entries[0]?.details).toEqual(expect.objectContaining({
+        username: "root",
+        sourceIp: "127.0.0.1",
+      }));
+      expect(entries[0]?.details?.["retryAfterMs"]).toBeGreaterThan(0);
+    });
+
+    it("records exactly one auth.setup_rate_limited audit entry per lockout episode", async () => {
+      // Setup stays available (no users yet); a warm username axis then blocks it.
+      // Exhaust the username axis with failed logins for a non-existent user so
+      // the setup route's rate-limit branch triggers on the same key.
+      for (let i = 0; i < 5; i++) {
+        await fetch(`${baseUrl}/api/admin/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "wizard", password: "wrong-password" }),
+        });
+      }
+      const blocked = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "ROOT", password: "Str0ng-Pass-1x" }),
+        body: JSON.stringify({ username: "wizard", password: "Str0ng-Pass-1x" }),
       });
-      expect(login.status).toBe(200);
-      const session = (await login.json()) as SessionResponse;
-      expect(session.user.username).toBe("root");
+      expect(blocked.status).toBe(429);
+      const { entries } = await store.listAuditEntries({ action: "auth.setup_rate_limited" });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.actorName).toBe("unauthenticated");
+      expect(entries[0]?.details).toEqual(expect.objectContaining({
+        username: "wizard",
+        sourceIp: "127.0.0.1",
+        retryAfterMs: expect.any(Number),
+      }));
     });
 
     it("locks out login after repeated failures from the same IP/username and sets Retry-After", async () => {

@@ -30,6 +30,7 @@ export function canAccessConfigSection(hasPermission: HasPermission, section: Co
 export function canAccessConfigRoute(can: Can, hasPermission: HasPermission, route: ConfigRoute): boolean {
   if (!canAccessConfigSection(hasPermission, route.section)) return false;
   if (route.mode === "list" || route.mode === "detail") return true;
+  if (route.section === "audit" && route.mode === "export") return hasPermission("audit.read");
   if (route.section === "projects" && route.mode === "statistics") return hasPermission("project.statistics.read");
   if (route.section === "oauth") return route.mode === "create" ? can("oauth.create") : true;
   if (route.section === "users") return can("user.manage");
