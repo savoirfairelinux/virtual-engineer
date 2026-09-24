@@ -255,6 +255,19 @@ export class SqliteStateStore {
     return Object.keys(context).length > 0 ? context : undefined;
   }
 
+  async backupDatabaseTo(destinationPath: string): Promise<void> {
+    await this.raw.backup(destinationPath);
+    const snapshot = new Database(destinationPath);
+    try {
+      snapshot.prepare("DELETE FROM user_sessions").run();
+      snapshot.exec("VACUUM");
+      snapshot.pragma("wal_checkpoint(TRUNCATE)");
+      snapshot.pragma("journal_mode = DELETE");
+    } finally {
+      snapshot.close();
+    }
+  }
+
   /** Convenience helper: fetch the ProjectRecord bound to a task via its projectId. */
   async getProjectForTask(task: Task): Promise<ProjectRecord | null> {
     if (!task.projectId) return null;

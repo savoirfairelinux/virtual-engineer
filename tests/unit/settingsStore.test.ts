@@ -85,4 +85,36 @@ describe("SqliteStateStore — app settings", () => {
     expect(cleared.maxAgentCycles).toBe(4);
     expect(cleared.agentTimeoutMs).toBe(900000);
   });
+
+  it("returns unset backup settings when no backup settings exist", async () => {
+    await expect(store.getBackupSettings()).resolves.toEqual({
+      enabled: null,
+      intervalDays: null,
+      timeOfDay: null,
+      retentionCount: null,
+    });
+  });
+
+  it("persists partial backup settings without clobbering other values", async () => {
+    const first = await store.updateBackupSettings({
+      enabled: true,
+      intervalDays: 5,
+      timeOfDay: "03:30",
+      retentionCount: 12,
+    });
+    expect(first).toEqual({
+      enabled: true,
+      intervalDays: 5,
+      timeOfDay: "03:30",
+      retentionCount: 12,
+    });
+
+    const merged = await store.updateBackupSettings({ intervalDays: 2 });
+    expect(merged).toEqual({
+      enabled: true,
+      intervalDays: 2,
+      timeOfDay: "03:30",
+      retentionCount: 12,
+    });
+  });
 });

@@ -79,6 +79,10 @@ function removePostBridgeSchema(raw: Database.Database): void {
     ALTER TABLE projects DROP COLUMN owner_user_id;
     ALTER TABLE prompts DROP COLUMN owner_user_id;
     ALTER TABLE tasks DROP COLUMN deleted_at;
+    ALTER TABLE app_settings DROP COLUMN backup_enabled;
+    ALTER TABLE app_settings DROP COLUMN backup_interval_days;
+    ALTER TABLE app_settings DROP COLUMN backup_time_of_day;
+    ALTER TABLE app_settings DROP COLUMN backup_retention_count;
   `);
 }
 
