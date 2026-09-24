@@ -68,14 +68,13 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function triggerDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
+function triggerDownload(url: string): void {
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.rel = "noreferrer";
+  link.referrerPolicy = "no-referrer";
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
 }
 
 function errorMessage(reason: unknown, fallback: string): string {
@@ -87,7 +86,10 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
   const [baseline, setBaseline] = useState<BackupSettingsForm>(INITIAL_SETTINGS);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [nextBackupAt, setNextBackupAt] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [backupsLoading, setBackupsLoading] = useState(true);
+  const [backupsLoaded, setBackupsLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -97,26 +99,37 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      api.get<{ settings: BackupSettings }>(SETTINGS_PATH),
-      api.get<BackupListResponse>(BACKUPS_PATH),
-    ])
-      .then(([settingsResponse, backupsResponse]) => {
+    void api.get<{ settings: BackupSettings }>(SETTINGS_PATH)
+      .then((settingsResponse) => {
         if (!active) return;
         const loadedSettings = toForm(settingsResponse.settings);
         setForm(loadedSettings);
         setBaseline(loadedSettings);
-        setBackups(backupsResponse.backups);
-        setNextBackupAt(backupsResponse.nextBackupAt);
+        setSettingsLoaded(true);
       })
       .catch((reason: unknown) => {
         if (active) setError(errorMessage(reason, "Failed to load backup settings"));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) setSettingsLoading(false);
+      });
+    void api.get<BackupListResponse>(BACKUPS_PATH)
+      .then((backupsResponse) => {
+        if (!active) return;
+        setBackups(backupsResponse.backups);
+        setNextBackupAt(backupsResponse.nextBackupAt);
+        setBackupsLoaded(true);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(errorMessage(reason, "Failed to load backup inventory"));
+      })
+      .finally(() => {
+        if (active) setBackupsLoading(false);
       });
     return () => { active = false; };
   }, []);
+
+  const loading = settingsLoading || backupsLoading;
 
   const dirty = form.enabled !== baseline.enabled
     || form.intervalDays !== baseline.intervalDays
@@ -135,9 +148,14 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
   }
 
   async function refreshBackups(): Promise<void> {
-    const response = await api.get<BackupListResponse>(BACKUPS_PATH);
-    setBackups(response.backups);
-    setNextBackupAt(response.nextBackupAt);
+    try {
+      const response = await api.get<BackupListResponse>(BACKUPS_PATH);
+      setBackups(response.backups);
+      setNextBackupAt(response.nextBackupAt);
+      setBackupsLoaded(true);
+    } catch (reason: unknown) {
+      setError(errorMessage(reason, "Failed to refresh backup inventory"));
+    }
   }
 
   async function saveSettings(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -170,8 +188,8 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
       const savedSettings = toForm(response.settings);
       setForm(savedSettings);
       setBaseline(savedSettings);
-      await refreshBackups();
       setNotice("Backup schedule saved.");
+      await refreshBackups();
     } catch (reason: unknown) {
       setError(errorMessage(reason, "Failed to save backup settings"));
     } finally {
@@ -199,8 +217,15 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
     setError(null);
     setNotice(null);
     try {
-      const blob = await api.download(`${BACKUPS_PATH}/${encodeURIComponent(backup.filename)}/download`);
-      triggerDownload(blob, backup.filename);
+      const response = await api.post<{ token: string }>(
+        `${BACKUPS_PATH}/${encodeURIComponent(backup.filename)}/download-token`,
+      );
+      if (!/^[0-9a-f]{64}$/.test(response.token)) {
+        throw new Error("Failed to prepare backup download");
+      }
+      triggerDownload(
+        `${BACKUPS_PATH}/${encodeURIComponent(backup.filename)}/download?t=${encodeURIComponent(response.token)}`,
+      );
     } catch (reason: unknown) {
       setError(errorMessage(reason, "Failed to download backup"));
     } finally {
@@ -215,8 +240,8 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
     setNotice(null);
     try {
       await api.delete(`${BACKUPS_PATH}/${encodeURIComponent(backup.filename)}`);
-      await refreshBackups();
       setNotice("Backup deleted.");
+      await refreshBackups();
     } catch (reason: unknown) {
       setError(errorMessage(reason, "Failed to delete backup"));
     } finally {
@@ -252,10 +277,10 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
           <div>
             <h2 id="backup-schedule-title" style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>Schedule</h2>
             <p style={{ margin: "5px 0 0", color: "var(--text-faint)", fontSize: "12.5px" }}>
-              Next backup: {form.enabled ? formatTimestamp(nextBackupAt) : "Disabled"}
+              Next backup: {!settingsLoaded ? "Unavailable" : !form.enabled ? "Disabled" : backupsLoaded ? formatTimestamp(nextBackupAt) : "Unavailable"}
             </p>
             <p style={{ margin: "4px 0 0", color: "var(--text-faint)", fontSize: "12.5px" }}>
-              Last backup: {newestBackup ? formatTimestamp(newestBackup.createdAt) : "None yet"}
+              Last backup: {!backupsLoaded ? "Unavailable" : newestBackup ? formatTimestamp(newestBackup.createdAt) : "None yet"}
             </p>
           </div>
           <button className="btn" type="button" data-tour="backups-run-now" onClick={() => void runBackup()} disabled={loading || running}>
@@ -270,7 +295,7 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
                 type="checkbox"
                 aria-label="Enable scheduled backups"
                 checked={form.enabled}
-                disabled={loading || saving}
+                disabled={settingsLoading || !settingsLoaded || saving}
                 onChange={(event) => updateForm("enabled", event.target.checked)}
               />
               Enable scheduled backups
@@ -283,7 +308,7 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
                 step={1}
                 aria-label="Interval (days)"
                 value={form.intervalDays}
-                disabled={loading || saving}
+                disabled={settingsLoading || !settingsLoaded || saving}
                 onChange={(event) => updateForm("intervalDays", event.target.value)}
               />
             </Field>
@@ -292,7 +317,7 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
                 type="time"
                 aria-label="Backup time (UTC)"
                 value={form.timeOfDay}
-                disabled={loading || saving}
+                disabled={settingsLoading || !settingsLoaded || saving}
                 onChange={(event) => updateForm("timeOfDay", event.target.value)}
               />
             </Field>
@@ -304,13 +329,13 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
                 step={1}
                 aria-label="Retention (archives)"
                 value={form.retentionCount}
-                disabled={loading || saving}
+                disabled={settingsLoading || !settingsLoaded || saving}
                 onChange={(event) => updateForm("retentionCount", event.target.value)}
               />
             </Field>
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "18px" }}>
-            <button className="btn primary" type="submit" disabled={loading || saving}>
+            <button className="btn primary" type="submit" disabled={settingsLoading || !settingsLoaded || saving}>
               <Icon name="check" size={14} /> {saving ? "Saving…" : "Save schedule"}
             </button>
           </div>
@@ -322,8 +347,8 @@ export function BackupsSection({ onDirtyChange }: BackupsSectionProps) {
           <h2 id="backup-archives-title" style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>Archives</h2>
           <span className="mono" style={{ color: "var(--text-faint)", fontSize: "11.5px" }}>{backups.length} total</span>
         </div>
-        {loading ? (
-          <p style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading backups…</p>
+        {!backupsLoaded ? (
+          <p style={{ color: "var(--text-faint)", fontSize: "13px" }}>{backupsLoading ? "Loading backups…" : "Backup inventory unavailable."}</p>
         ) : backups.length === 0 ? (
           <p style={{ color: "var(--text-faint)", fontSize: "13px" }}>No backup archives yet.</p>
         ) : (

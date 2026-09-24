@@ -107,15 +107,21 @@ before SQLite closes. `BACKUP_DIR` defaults to a `backups/` directory beside
 Each private `.tar.gz` archive contains an online SQLite snapshot with active
 admin sessions removed, a checksum/compatibility manifest, and allowlisted
 prompt override Markdown files. It excludes `ADMIN_AUTH_SECRET`, local OIDC and
-OpenShell state, and ephemeral workspaces. The manifest stores only an HMAC
-fingerprint; the original `ADMIN_AUTH_SECRET` is required to verify the archive
-and decrypt stored provider credentials.
+OpenShell state, and ephemeral workspaces. Manifest format v2 uses HMAC-SHA256
+with `ADMIN_AUTH_SECRET` to authenticate the SQLite checksum and deterministically
+code-unit-sorted prompt filename/hash inventory without storing the secret. The
+original secret is required to verify the archive and decrypt stored provider
+credentials; older v1 archives are rejected by the v2 restore path.
 
 When `VE_RESTORE_FROM` is set, `src/index.ts` validates and restores the archive
 before creating `SqliteStateStore` or opening SQLite. Restore checks archive
-paths, database SHA-256, secret fingerprint, migrations, and SQLite integrity.
+paths, manifest authentication, database and prompt hashes/inventory, tracked
+migrations, and SQLite integrity.
 Existing database/prompt targets are refused unless `VE_RESTORE_FORCE` is true;
-forced replacement quarantines them under the database directory. Remove the
+forced replacement quarantines them under the database directory. A v2 restore
+marker binds idempotency to the source path, full archive SHA-256, archive
+metadata, and secret fingerprint; an unchanged archive with both targets still
+installed is not reapplied on restart, even when force remains set. Remove the
 one-shot restore variables after a successful restore. Local retention is not
 off-site disaster recovery: copy or download archives to independent storage.
 

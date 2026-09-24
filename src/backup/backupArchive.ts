@@ -3,13 +3,22 @@ import { createReadStream } from "node:fs";
 
 export const BACKUP_ARCHIVE_FORMAT = "virtual-engineer-backup";
 export const BACKUP_FILENAME_PATTERN = /^ve-backup-(\d{8}T\d{9}Z)-([a-f\d]{8})\.tar\.gz$/;
+export const MAX_BACKUP_PROMPT_FILES = 256;
+export const MAX_BACKUP_PROMPT_OVERRIDE_BYTES = 2 * 1024 * 1024;
+export const MAX_BACKUP_ARCHIVE_ENTRIES = MAX_BACKUP_PROMPT_FILES + 3;
+
+export interface BackupPromptOverride {
+  filename: string;
+  sha256: string;
+}
 
 export interface BackupManifest {
   format: typeof BACKUP_ARCHIVE_FORMAT;
-  formatVersion: 1;
+  formatVersion: 2;
   createdAt: string;
   databaseSha256: string;
-  adminAuthSecretFingerprint: string;
+  promptOverrides: BackupPromptOverride[];
+  authenticationTag: string;
 }
 
 export interface BackupInfo {
@@ -21,14 +30,19 @@ export interface BackupInfo {
 export function createBackupManifest(
   createdAt: string,
   databaseSha256: string,
+  promptOverrides: readonly BackupPromptOverride[],
   adminAuthSecret: string
 ): BackupManifest {
-  return {
+  const authenticatedFields: Omit<BackupManifest, "authenticationTag"> = {
     format: BACKUP_ARCHIVE_FORMAT,
-    formatVersion: 1,
+    formatVersion: 2,
     createdAt,
     databaseSha256,
-    adminAuthSecretFingerprint: fingerprintAdminAuthSecret(adminAuthSecret),
+    promptOverrides: normalizePromptOverrides(promptOverrides),
+  };
+  return {
+    ...authenticatedFields,
+    authenticationTag: authenticateManifestFields(authenticatedFields, adminAuthSecret),
   };
 }
 
@@ -38,12 +52,13 @@ export function verifyBackupManifest(value: unknown, adminAuthSecret: string | u
   }
   if (!isRecord(value)
     || value["format"] !== BACKUP_ARCHIVE_FORMAT
-    || value["formatVersion"] !== 1
+    || value["formatVersion"] !== 2
     || typeof value["createdAt"] !== "string"
     || typeof value["databaseSha256"] !== "string"
     || !/^[a-f\d]{64}$/.test(value["databaseSha256"])
-    || typeof value["adminAuthSecretFingerprint"] !== "string"
-    || !/^[a-f\d]{64}$/.test(value["adminAuthSecretFingerprint"])) {
+    || !isBackupPromptOverrideList(value["promptOverrides"])
+    || typeof value["authenticationTag"] !== "string"
+    || !/^[a-f\d]{64}$/.test(value["authenticationTag"])) {
     throw new Error("Backup manifest is invalid or unsupported.");
   }
 
@@ -52,19 +67,64 @@ export function verifyBackupManifest(value: unknown, adminAuthSecret: string | u
     throw new Error("Backup manifest contains an invalid creation timestamp.");
   }
 
-  const expectedFingerprint = Buffer.from(fingerprintAdminAuthSecret(adminAuthSecret), "hex");
-  const actualFingerprint = Buffer.from(value["adminAuthSecretFingerprint"], "hex");
-  if (!timingSafeEqual(expectedFingerprint, actualFingerprint)) {
-    throw new Error("Backup requires the original ADMIN_AUTH_SECRET.");
+  const authenticatedFields: Omit<BackupManifest, "authenticationTag"> = {
+    format: BACKUP_ARCHIVE_FORMAT,
+    formatVersion: 2,
+    createdAt: value["createdAt"],
+    databaseSha256: value["databaseSha256"],
+    promptOverrides: normalizePromptOverrides(value["promptOverrides"]),
+  };
+  const expectedTag = Buffer.from(authenticateManifestFields(authenticatedFields, adminAuthSecret), "hex");
+  const actualTag = Buffer.from(value["authenticationTag"], "hex");
+  if (!timingSafeEqual(expectedTag, actualTag)) {
+    throw new Error("Backup manifest authentication failed; check ADMIN_AUTH_SECRET and archive integrity.");
   }
 
   return {
-    format: BACKUP_ARCHIVE_FORMAT,
-    formatVersion: 1,
-    createdAt: value["createdAt"],
-    databaseSha256: value["databaseSha256"],
-    adminAuthSecretFingerprint: value["adminAuthSecretFingerprint"],
+    ...authenticatedFields,
+    authenticationTag: value["authenticationTag"],
   };
+}
+
+function isBackupPromptOverrideList(value: unknown): value is BackupPromptOverride[] {
+  if (!Array.isArray(value) || value.length > MAX_BACKUP_PROMPT_FILES) return false;
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+    const record = entry as Record<string, unknown>;
+    if (typeof record["filename"] !== "string"
+      || !/^[A-Za-z0-9_-]+\.md$/.test(record["filename"])
+      || seen.has(record["filename"])
+      || typeof record["sha256"] !== "string"
+      || !/^[a-f\d]{64}$/.test(record["sha256"])) {
+      return false;
+    }
+    seen.add(record["filename"]);
+  }
+  return true;
+}
+
+function normalizePromptOverrides(promptOverrides: readonly BackupPromptOverride[]): BackupPromptOverride[] {
+  return promptOverrides
+    .map(({ filename, sha256 }) => ({ filename, sha256 }))
+    .sort((left, right) => left.filename < right.filename ? -1 : left.filename > right.filename ? 1 : 0);
+}
+
+function authenticateManifestFields(
+  fields: Pick<BackupManifest, "format" | "formatVersion" | "createdAt" | "databaseSha256" | "promptOverrides">,
+  adminAuthSecret: string
+): string {
+  const canonicalFields = {
+    format: fields.format,
+    formatVersion: fields.formatVersion,
+    createdAt: fields.createdAt,
+    databaseSha256: fields.databaseSha256,
+    promptOverrides: normalizePromptOverrides(fields.promptOverrides),
+  };
+  return createHmac("sha256", adminAuthSecret)
+    .update("virtual-engineer-backup-manifest-v2\0", "utf8")
+    .update(JSON.stringify(canonicalFields), "utf8")
+    .digest("hex");
 }
 
 export function isBackupFilename(value: string): boolean {

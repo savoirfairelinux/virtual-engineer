@@ -58,6 +58,28 @@ describe("BackupsSection", () => {
     expect(screen.getByText(/stop the existing instance before restoring/i)).toBeDefined();
   });
 
+  it("preserves loaded schedule settings when archive inventory loading fails", async () => {
+    getMock
+      .mockReset()
+      .mockResolvedValueOnce({ settings })
+      .mockRejectedValueOnce(new Error("Archive inventory unavailable"))
+      .mockRejectedValueOnce(new Error("Archive inventory unavailable"));
+    render(<BackupsSection onDirtyChange={vi.fn()} />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Archive inventory unavailable");
+    expect((screen.getByLabelText("Interval (days)") as HTMLInputElement).value).toBe("2");
+    fireEvent.change(screen.getByLabelText("Interval (days)"), { target: { value: "4" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+
+    await waitFor(() => expect(putMock).toHaveBeenCalledWith("/api/admin/backups/settings", {
+      enabled: true,
+      intervalDays: 4,
+      timeOfDay: "03:00",
+      retentionCount: 7,
+    }));
+    expect((await screen.findByRole("status")).textContent).toContain("Backup schedule saved.");
+  });
+
   it("registers unsaved schedule changes with the configuration navigation guard", async () => {
     const onDirtyChange = vi.fn();
     render(<BackupsSection onDirtyChange={onDirtyChange} />);
@@ -83,10 +105,21 @@ describe("BackupsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run backup now" }));
     await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/admin/backups"));
 
+    const token = "d".repeat(64);
+    postMock.mockResolvedValueOnce({ token });
+    const clickedUrls: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clickedUrls.push(this.getAttribute("href") ?? "");
+    });
     fireEvent.click(screen.getByRole("button", { name: /download/i }));
-    await waitFor(() => expect(downloadMock).toHaveBeenCalledWith(
-      `/api/admin/backups/${encodeURIComponent(backup.filename)}/download`,
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+      `/api/admin/backups/${encodeURIComponent(backup.filename)}/download-token`,
     ));
+    await waitFor(() => expect(clickedUrls).toContain(
+      `/api/admin/backups/${encodeURIComponent(backup.filename)}/download?t=${token}`,
+    ));
+    expect(downloadMock).not.toHaveBeenCalled();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
 
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));

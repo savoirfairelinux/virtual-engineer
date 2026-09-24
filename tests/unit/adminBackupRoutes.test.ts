@@ -168,6 +168,41 @@ describe("Admin API — backup routes", () => {
     }
   });
 
+  it("streams backups through a single-use token scoped to the archive filename", async () => {
+    const tokenResponse = await fetch(`${baseUrl}/api/admin/backups/${SAMPLE_BACKUP.filename}/download-token`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(tokenResponse.status).toBe(200);
+    expect(tokenResponse.headers.get("cache-control")).toContain("no-store");
+    const { token } = await tokenResponse.json() as { token: string };
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    const downloadUrl = `/api/admin/backups/${encodeURIComponent(SAMPLE_BACKUP.filename)}/download?t=${token}`;
+
+    const mismatched = await fetch(new URL(
+      `/api/admin/backups/ve-backup-20260924T030000000Z-c3d4e5f6.tar.gz/download?t=${token}`,
+      baseUrl,
+    ));
+    expect(mismatched.status).toBe(401);
+
+    const download = await fetch(new URL(downloadUrl, baseUrl));
+    expect(download.status).toBe(401);
+
+    const secondTokenResponse = await fetch(`${baseUrl}/api/admin/backups/${SAMPLE_BACKUP.filename}/download-token`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const secondToken = await secondTokenResponse.json() as { token: string };
+    const secondDownloadUrl = `/api/admin/backups/${encodeURIComponent(SAMPLE_BACKUP.filename)}/download?t=${secondToken.token}`;
+    const streamed = await fetch(new URL(secondDownloadUrl, baseUrl));
+    expect(streamed.status).toBe(200);
+    expect(streamed.headers.get("content-disposition")).toContain(SAMPLE_BACKUP.filename);
+    await expect(streamed.text()).resolves.toBe("archive-bytes");
+
+    const reused = await fetch(new URL(secondDownloadUrl, baseUrl));
+    expect(reused.status).toBe(401);
+  });
+
   it("rejects invalid backup names before download or deletion", async () => {
     for (const method of ["GET", "DELETE"]) {
       const response = await fetch(`${baseUrl}/api/admin/backups/%2e%2e%2fsecrets/download`, {
@@ -198,6 +233,12 @@ describe("Admin API — backup routes", () => {
       headers: { authorization: `Bearer ${operatorToken}` },
     });
     expect(response.status).toBe(403);
+
+    const tokenResponse = await fetch(
+      `${baseUrl}/api/admin/backups/${SAMPLE_BACKUP.filename}/download-token`,
+      { method: "POST", headers: { authorization: `Bearer ${operatorToken}` } },
+    );
+    expect(tokenResponse.status).toBe(403);
     expect(backups.listBackups).not.toHaveBeenCalled();
   });
 });
