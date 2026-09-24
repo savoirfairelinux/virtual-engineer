@@ -21,14 +21,17 @@ import { getLogger } from "../logger.js";
 import {
   createBackupManifest,
   isBackupFilename,
+  MAX_BACKUP_ARCHIVE_ENTRIES,
+  MAX_BACKUP_PROMPT_FILES,
+  MAX_BACKUP_PROMPT_OVERRIDE_BYTES,
   parseBackupCreatedAt,
   sha256File,
+  type BackupPromptOverride,
   type BackupInfo,
 } from "./backupArchive.js";
 
 const log = getLogger("backup");
 const MIN_SECRET_LENGTH = 32;
-const MAX_PROMPT_OVERRIDE_BYTES = 2 * 1024 * 1024;
 const PROMPT_FILENAME_PATTERN = /^[A-Za-z0-9_-]+\.md$/;
 
 export interface BackupStateStore {
@@ -121,9 +124,9 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       await deps.stateStore.backupDatabaseTo(databasePath);
       await chmod(databasePath, 0o600);
 
-      const promptFiles = await copyPromptOverrides(promptsDir, stagingDir);
+      const promptOverrides = await copyPromptOverrides(promptsDir, stagingDir);
       const databaseSha256 = await sha256File(databasePath);
-      const manifest = createBackupManifest(createdAt, databaseSha256, secret);
+      const manifest = createBackupManifest(createdAt, databaseSha256, promptOverrides, secret);
       await writeFile(join(stagingDir, "manifest.json"), `${JSON.stringify(manifest)}\n`, {
         encoding: "utf8",
         flag: "wx",
@@ -131,7 +134,11 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       });
 
       const archiveEntries = ["manifest.json", "database.sqlite"];
-      if (promptFiles.length > 0) archiveEntries.push("prompts");
+      if (promptOverrides.length > 0) archiveEntries.push("prompts");
+      const entryCount = archiveEntries.length + promptOverrides.length;
+      if (entryCount > MAX_BACKUP_ARCHIVE_ENTRIES) {
+        throw new Error("Prompt overrides exceed the backup archive entry limit.");
+      }
       await createTar({ cwd: stagingDir, file: partialPath, gzip: true, strict: true }, archiveEntries);
       await chmod(partialPath, 0o600);
       await rename(partialPath, finalPath);
@@ -197,7 +204,7 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
   return { createBackup, listBackups, deleteBackup, prune, openBackup };
 }
 
-async function copyPromptOverrides(promptsDir: string, stagingDir: string): Promise<string[]> {
+async function copyPromptOverrides(promptsDir: string, stagingDir: string): Promise<BackupPromptOverride[]> {
   let entries;
   try {
     entries = await readdir(promptsDir, { withFileTypes: true });
@@ -207,19 +214,26 @@ async function copyPromptOverrides(promptsDir: string, stagingDir: string): Prom
   }
 
   const promptTargetDir = join(stagingDir, "prompts");
-  const copied: string[] = [];
+  const copied: BackupPromptOverride[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !PROMPT_FILENAME_PATTERN.test(entry.name)) continue;
+    if (copied.length >= MAX_BACKUP_PROMPT_FILES) {
+      throw new Error("Prompt overrides exceed the backup file count limit.");
+    }
     const sourcePath = join(promptsDir, entry.name);
     const sourceStat = await stat(sourcePath);
-    if (sourceStat.size > MAX_PROMPT_OVERRIDE_BYTES) {
+    if (sourceStat.size > MAX_BACKUP_PROMPT_OVERRIDE_BYTES) {
       throw new Error(`Prompt override '${entry.name}' exceeds the backup size limit.`);
     }
     if (copied.length === 0) await mkdir(promptTargetDir, { mode: 0o700 });
     const targetPath = join(promptTargetDir, entry.name);
     await copyFile(sourcePath, targetPath);
     await chmod(targetPath, 0o600);
-    copied.push(entry.name);
+    const copiedStat = await stat(targetPath);
+    if (copiedStat.size > MAX_BACKUP_PROMPT_OVERRIDE_BYTES) {
+      throw new Error(`Prompt override '${entry.name}' exceeds the backup size limit.`);
+    }
+    copied.push({ filename: entry.name, sha256: await sha256File(targetPath) });
   }
   return copied;
 }

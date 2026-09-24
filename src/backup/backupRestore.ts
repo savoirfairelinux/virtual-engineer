@@ -1,22 +1,23 @@
 import Database from "better-sqlite3";
+import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { extract as extractTar, list as listTar } from "tar";
+import { extract as extractTar, Parser, ReadEntry } from "tar";
 import { getLogger } from "../logger.js";
 import { runDatabaseMigrations } from "../state/databaseMigrations.js";
 import {
   fingerprintAdminAuthSecret,
+  MAX_BACKUP_ARCHIVE_ENTRIES,
+  MAX_BACKUP_PROMPT_FILES,
+  MAX_BACKUP_PROMPT_OVERRIDE_BYTES,
   verifyBackupManifest,
   sha256File,
 } from "./backupArchive.js";
 
 const log = getLogger("backup-restore");
-const MAX_ARCHIVE_ENTRIES = 258;
 const MAX_DATABASE_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
-const MAX_PROMPT_OVERRIDE_BYTES = 2 * 1024 * 1024;
-const MAX_PROMPT_FILES = 256;
 
 interface ArchiveEntry {
   path: string;
@@ -26,10 +27,11 @@ interface ArchiveEntry {
 
 interface RestoreMarker {
   format: "virtual-engineer-restore-marker";
-  version: 1;
+  version: 2;
   archivePath: string;
   archiveSize: number;
   archiveMtimeMs: number;
+  archiveSha256: string;
   databaseSha256: string;
   adminAuthSecretFingerprint: string;
 }
@@ -68,16 +70,20 @@ export async function restoreBackupIfRequested(
     throw new Error("Restore source must be a regular archive file.");
   }
   const archiveStat = await stat(archivePath);
+  const archiveSha256 = await sha256File(archivePath);
 
-  if (!options.force) {
-    const marker = await readRestoreMarker(markerPath);
-    if (markerMatches(marker, archivePath, archiveStat, options.adminAuthSecret)) {
+  const marker = await readRestoreMarker(markerPath);
+  if (markerMatches(marker, archivePath, archiveStat, archiveSha256, options.adminAuthSecret)) {
+    if (await hasInstalledRestoreTargets(databasePath, promptsPath)) {
       log.info({ archivePath, databaseSha256: marker.databaseSha256 }, "backup restore already applied");
       return {
         status: "already-restored",
         databaseSha256: marker.databaseSha256,
         previousDataDirectory: null,
       };
+    }
+    if (!options.force) {
+      throw new Error("Restore marker exists but the installed database or prompts are missing; set VE_RESTORE_FORCE=true to reapply the archive.");
     }
   }
 
@@ -113,19 +119,22 @@ export async function restoreBackupIfRequested(
       options.adminAuthSecret
     );
     const stagedDatabasePath = join(stagingDir, "database.sqlite");
+    await chmod(stagedDatabasePath, 0o600);
     const actualDatabaseSha256 = await sha256File(stagedDatabasePath);
     if (actualDatabaseSha256 !== manifest.databaseSha256) {
       throw new Error("Backup database checksum does not match its manifest.");
     }
-    migrateAndValidateDatabase(stagedDatabasePath);
 
     const stagedPromptsPath = join(stagingDir, "prompts");
     await mkdir(stagedPromptsPath, { recursive: true, mode: 0o700 });
+    await chmod(stagedPromptsPath, 0o700);
+    await verifyPromptOverrides(archiveEntries, stagingDir, manifest.promptOverrides);
     for (const entry of archiveEntries) {
       const entryPath = normalizedEntryPath(entry.path);
       if (!entryPath.startsWith("prompts/")) continue;
       await chmod(join(stagingDir, entryPath), 0o600);
     }
+    migrateAndValidateDatabase(stagedDatabasePath);
 
     try {
       if (existingTargets.length > 0) {
@@ -145,10 +154,11 @@ export async function restoreBackupIfRequested(
       installedPrompts = true;
       await writeRestoreMarker(markerPath, {
         format: "virtual-engineer-restore-marker",
-        version: 1,
+        version: 2,
         archivePath,
         archiveSize: archiveStat.size,
         archiveMtimeMs: archiveStat.mtimeMs,
+        archiveSha256,
         databaseSha256: manifest.databaseSha256,
         adminAuthSecretFingerprint: fingerprintAdminAuthSecret(options.adminAuthSecret ?? ""),
       });
@@ -188,18 +198,40 @@ export async function restoreBackupIfRequested(
 
 async function inspectArchive(archivePath: string): Promise<ArchiveEntry[]> {
   const entries: ArchiveEntry[] = [];
-  await listTar({
-    file: archivePath,
-    strict: true,
-    onReadEntry: (entry) => {
+  const parser = new Parser({ strict: true });
+  const archiveStream = createReadStream(archivePath);
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const rejectOnce = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      archiveStream.destroy();
+      rejectPromise(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    parser.once("error", rejectOnce);
+    parser.once("end", () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise();
+    });
+    parser.once("abort", () => archiveStream.destroy());
+    parser.on("entry", (entry: ReadEntry) => {
+      if (entries.length >= MAX_BACKUP_ARCHIVE_ENTRIES) {
+        parser.abort(new Error("Backup archive contains too many files."));
+        return;
+      }
       entries.push({ path: entry.path, type: entry.type, size: entry.size });
-    },
+      entry.resume();
+    });
+    archiveStream.once("error", rejectOnce);
+    archiveStream.pipe(parser);
   });
   return entries;
 }
 
 function validateArchiveEntries(entries: readonly ArchiveEntry[]): void {
-  if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error("Backup archive contains too many files.");
+  if (entries.length > MAX_BACKUP_ARCHIVE_ENTRIES) throw new Error("Backup archive contains too many files.");
   const seen = new Set<string>();
   let manifestFound = false;
   let databaseFound = false;
@@ -230,7 +262,7 @@ function validateArchiveEntries(entries: readonly ArchiveEntry[]): void {
     }
     if (path.startsWith("prompts/")) {
       promptCount += 1;
-      if (promptCount > MAX_PROMPT_FILES || entry.size > MAX_PROMPT_OVERRIDE_BYTES) {
+      if (promptCount > MAX_BACKUP_PROMPT_FILES || entry.size > MAX_BACKUP_PROMPT_OVERRIDE_BYTES) {
         throw new Error("Backup prompt overrides exceed the allowed size or count.");
       }
       continue;
@@ -239,6 +271,28 @@ function validateArchiveEntries(entries: readonly ArchiveEntry[]): void {
   }
 
   if (!manifestFound || !databaseFound) throw new Error("Backup archive is missing its manifest or database.");
+}
+
+async function verifyPromptOverrides(
+  archiveEntries: readonly ArchiveEntry[],
+  stagingDir: string,
+  promptOverrides: readonly { filename: string; sha256: string }[],
+): Promise<void> {
+  const archivedPromptPaths = archiveEntries
+    .map((entry) => normalizedEntryPath(entry.path))
+    .filter((path) => path.startsWith("prompts/"));
+  const expectedPromptPaths = new Set(promptOverrides.map(({ filename }) => `prompts/${filename}`));
+  if (archivedPromptPaths.length !== expectedPromptPaths.size
+    || archivedPromptPaths.some((path) => !expectedPromptPaths.has(path))) {
+    throw new Error("Backup prompt inventory does not match its authenticated manifest.");
+  }
+
+  for (const prompt of promptOverrides) {
+    const promptPath = join(stagingDir, "prompts", prompt.filename);
+    if (await sha256File(promptPath) !== prompt.sha256) {
+      throw new Error(`Backup prompt checksum does not match its manifest: ${prompt.filename}`);
+    }
+  }
 }
 
 function isAllowedArchivePath(entryPath: string): boolean {
@@ -301,6 +355,19 @@ async function existingRestoreTargets(databasePath: string, promptsPath: string,
   return existing;
 }
 
+async function hasInstalledRestoreTargets(databasePath: string, promptsPath: string): Promise<boolean> {
+  try {
+    const [databaseInfo, promptsInfo] = await Promise.all([lstat(databasePath), lstat(promptsPath)]);
+    return databaseInfo.isFile()
+      && !databaseInfo.isSymbolicLink()
+      && promptsInfo.isDirectory()
+      && !promptsInfo.isSymbolicLink();
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function readRestoreMarker(markerPath: string): Promise<RestoreMarker | null> {
   try {
     const info = await lstat(markerPath);
@@ -318,6 +385,7 @@ function markerMatches(
   marker: RestoreMarker | null,
   archivePath: string,
   archiveStat: Awaited<ReturnType<typeof stat>>,
+  archiveSha256: string,
   adminAuthSecret: string | undefined
 ): marker is RestoreMarker {
   if (!marker || !adminAuthSecret || adminAuthSecret.length < 32) return false;
@@ -326,6 +394,7 @@ function markerMatches(
   return marker.archivePath === archivePath
     && marker.archiveSize === archiveStat.size
     && marker.archiveMtimeMs === archiveStat.mtimeMs
+    && marker.archiveSha256 === archiveSha256
     && timingSafeEqual(expected, actual);
 }
 
@@ -333,10 +402,12 @@ function isRestoreMarker(value: unknown): value is RestoreMarker {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return record["format"] === "virtual-engineer-restore-marker"
-    && record["version"] === 1
+    && record["version"] === 2
     && typeof record["archivePath"] === "string"
     && typeof record["archiveSize"] === "number"
     && typeof record["archiveMtimeMs"] === "number"
+    && typeof record["archiveSha256"] === "string"
+    && /^[a-f\d]{64}$/.test(record["archiveSha256"])
     && typeof record["databaseSha256"] === "string"
     && /^[a-f\d]{64}$/.test(record["databaseSha256"])
     && typeof record["adminAuthSecretFingerprint"] === "string"

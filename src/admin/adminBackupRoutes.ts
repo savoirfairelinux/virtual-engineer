@@ -1,11 +1,13 @@
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
+import type { ServerResponse } from "node:http";
 import { writeJson, readBody, requireStore } from "./adminRouteUtils.js";
 import type { AuditCapableStore } from "./adminAudit.js";
 import { recordAudit } from "./adminAudit.js";
 import type { Router } from "./router.js";
 import { isBackupFilename, type BackupInfo } from "../backup/backupArchive.js";
 import type { EffectiveBackupSettings } from "../backup/backupSettings.js";
+import { mintBackupDownloadToken } from "./backupDownloadTokenStore.js";
 
 export interface BackupSettingsPatch {
   enabled?: boolean | null;
@@ -111,35 +113,26 @@ export function registerBackupRoutes(router: Router, deps: BackupRoutesDeps): vo
     writeJson(res, 201, { backup });
   }, { permission: "system.backup.manage" });
 
-  router.add("GET", "/api/admin/backups/:filename/download", async (_req, res, params) => {
+  router.add("POST", "/api/admin/backups/:filename/download-token", async (_req, res, params) => {
     if (!requireStore(deps.backups, res, "Backup service not available")) return;
     const filename = params["filename"] ?? "";
     if (!isBackupFilename(filename)) {
       writeJson(res, 400, { error: "Invalid backup filename" });
       return;
     }
-    let opened: { info: BackupInfo; stream: Readable };
-    try {
-      opened = await deps.backups.openBackup(filename);
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        writeJson(res, 404, { error: "Backup not found" });
-      } else {
-        throw error;
-      }
+    const backups = await deps.backups.listBackups();
+    if (!backups.some((backup) => backup.filename === filename)) {
+      writeJson(res, 404, { error: "Backup not found" });
       return;
     }
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/gzip");
-    res.setHeader("content-length", String(opened.info.sizeBytes));
-    res.setHeader("content-disposition", `attachment; filename="${opened.info.filename}"`);
-    res.setHeader("cache-control", "no-store");
-    res.setHeader("x-content-type-options", "nosniff");
-    try {
-      await pipeline(opened.stream, res);
-    } catch (error) {
-      res.destroy(error instanceof Error ? error : undefined);
-    }
+    const { token, expiresAt } = mintBackupDownloadToken(filename);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    writeJson(res, 200, { token, expiresAt });
+  }, { permission: "system.backup.manage" });
+
+  router.add("GET", "/api/admin/backups/:filename/download", async (_req, res, params) => {
+    await serveBackupDownloadResponse(deps.backups, res, params["filename"] ?? "");
   }, { permission: "system.backup.manage" });
 
   router.add("DELETE", "/api/admin/backups/:filename", async (req, res, params) => {
@@ -162,6 +155,40 @@ export function registerBackupRoutes(router: Router, deps: BackupRoutesDeps): vo
     res.statusCode = 204;
     res.end();
   }, { permission: "system.backup.manage" });
+}
+
+export async function serveBackupDownloadResponse(
+  backups: BackupAdminController | undefined,
+  res: ServerResponse,
+  filename: string
+): Promise<void> {
+  if (!requireStore(backups, res, "Backup service not available")) return;
+  if (!isBackupFilename(filename)) {
+    writeJson(res, 400, { error: "Invalid backup filename" });
+    return;
+  }
+  let opened: { info: BackupInfo; stream: Readable };
+  try {
+    opened = await backups.openBackup(filename);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      writeJson(res, 404, { error: "Backup not found" });
+    } else {
+      throw error;
+    }
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader("content-type", "application/gzip");
+  res.setHeader("content-length", String(opened.info.sizeBytes));
+  res.setHeader("content-disposition", `attachment; filename="${opened.info.filename}"`);
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("x-content-type-options", "nosniff");
+  try {
+    await pipeline(opened.stream, res);
+  } catch (error) {
+    res.destroy(error instanceof Error ? error : undefined);
+  }
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
