@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { getAgentTokenForReview } from "../../src/review/reviewBootstrap.js";
+import { getAgentTokenForReview, resolveReviewIntegration } from "../../src/review/reviewBootstrap.js";
 import { encryptToken } from "../../src/utils/encryption.js";
 import { resetConfig } from "../../src/config.js";
-import type { Integration, ProviderId } from "../../src/interfaces.js";
+import type { Integration, ProviderId, Task } from "../../src/interfaces.js";
 import type { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
 const TEST_ADMIN_AUTH_SECRET = "test-secret-32-bytes-min-padding!";
 
@@ -86,5 +87,21 @@ describe("getAgentTokenForReview", () => {
     expect(() => getAgentTokenForReview(pluginManager, integration)).toThrow(
       "Stored token cannot be decrypted; reconnect OAuth."
     );
+  });
+});
+
+describe("resolveReviewIntegration", () => {
+  it("does not route an old review task to a different active integration", () => {
+    registerBuiltinPlugins();
+    const replacement = makeIntegration("gerrit", {});
+    replacement.id = "gerrit-new";
+    const pluginManager = {
+      getActiveIntegrationById: () => null,
+      getActiveIntegrationsByCapability: () => [replacement],
+    } as unknown as PluginManager;
+
+    expect(resolveReviewIntegration(pluginManager, {
+      ticketSourceLabel: "gerrit:gerrit-removed",
+    } as Task)).toBeNull();
   });
 });

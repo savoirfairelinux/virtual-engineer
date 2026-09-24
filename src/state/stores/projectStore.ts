@@ -7,6 +7,7 @@ import type {
   DomainCapability,
   EventStreamDemand,
   ProjectId,
+  ProjectConfigurationUpdateResult,
   ProjectIntegrationBindingRecord,
   ProjectPushTargetRecord,
   ProjectRecord,
@@ -17,6 +18,7 @@ import type {
   ProjectVendorComponentRecord,
   PushTargetRole,
 } from "../../interfaces.js";
+import { ActiveProjectTasksConfirmationRequiredError, type ActiveProjectTaskSummary } from "../../domain/projectConfiguration.js";
 import {
   DEFAULT_REVIEW_ASSIGNMENT_MODE,
   isReviewAssignmentMode,
@@ -74,8 +76,9 @@ export interface ProjectStoreApi {
         repoKeys: string[];
         assignmentMode?: ProjectReviewConfig["assignmentMode"];
       } | undefined;
+      confirmedActiveTaskIds?: string[] | undefined;
     }
-  ): Promise<ProjectRecord>;
+  ): Promise<ProjectConfigurationUpdateResult>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -287,17 +290,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentId !== undefined) {
       const agent = raw.prepare("SELECT 1 FROM agents WHERE id = ?").get(partial.agentId);
       if (!agent) throw new Error(`Cannot update project: agent not found: ${partial.agentId}`);
-      if (partial.agentId !== existing.agent_id) {
-        const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
-        const activeTask = raw.prepare(
-          `SELECT 1 FROM tasks WHERE project_id = ? AND state NOT IN (${terminalPlaceholders}) LIMIT 1`
-        ).get(id, ...TERMINAL_STATES);
-        if (activeTask) {
-          const error = new Error("Cannot change the project agent while tasks are active") as Error & { code: string };
-          error.code = "ACTIVE_TASKS";
-          throw error;
-        }
-      }
     }
 
     const assignments = ["updated_at = ?"];
@@ -333,7 +325,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
   async function updateProjectConfiguration(
     id: ProjectId,
     input: Parameters<ProjectStoreApi["updateProjectConfiguration"]>[1]
-  ): Promise<ProjectRecord> {
+  ): Promise<ProjectConfigurationUpdateResult> {
+    let executionChanged = false;
     raw.transaction(() => {
       const currentProject = raw.prepare(
         "SELECT agent_id, agent_override_json, post_clone_script, skill_sources_json FROM projects WHERE id = ?"
@@ -416,15 +409,17 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           JSON.stringify([...input.reviewConfig.repoKeys].sort()) !==
             JSON.stringify(readStringArray(reviewConfig["repos"]).sort())
         ));
+      executionChanged = changesExecutionIdentity;
       if (changesExecutionIdentity) {
         const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
-        const activeTask = raw.prepare(
-          `SELECT 1 FROM tasks WHERE project_id = ? AND state NOT IN (${terminalPlaceholders}) LIMIT 1`
-        ).get(id, ...TERMINAL_STATES);
-        if (activeTask) {
-          const error = new Error("Cannot reconfigure a project while tasks are active") as Error & { code: string };
-          error.code = "ACTIVE_TASKS";
-          throw error;
+        const activeTasks = raw.prepare(
+          `SELECT task_id AS taskId, ticket_id AS ticketId, ticket_title AS ticketTitle, ` +
+          `task_type AS taskType, state FROM tasks WHERE project_id = ? ` +
+          `AND state NOT IN (${terminalPlaceholders}) ORDER BY created_at, task_id`
+        ).all(id, ...TERMINAL_STATES) as ActiveProjectTaskSummary[];
+        const confirmedTaskIds = new Set(input.confirmedActiveTaskIds ?? []);
+        if (activeTasks.some((task) => !confirmedTaskIds.has(task.taskId))) {
+          throw new ActiveProjectTasksConfirmationRequiredError(activeTasks);
         }
       }
       updateProjectRow(id, input.project);
@@ -515,7 +510,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
     const updated = await getProjectById(id);
     if (!updated) throw new Error(`Project disappeared after update: ${id}`);
-    return updated;
+    return { project: updated, executionChanged };
   }
 
   function deleteProject(id: ProjectId): Promise<void> {

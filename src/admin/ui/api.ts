@@ -73,9 +73,14 @@ function authHeaders(token = getStoredToken()): Record<string, string> {
 /* ─── HTTP fetch helpers ──────────────────────────────────────────────── */
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  readonly code: string | undefined;
+  readonly details: unknown;
+
+  constructor(public readonly status: number, message: string, code?: string, details?: unknown) {
     super(message);
     this.name = "ApiError";
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -102,15 +107,19 @@ async function request<T>(
   });
   if (!res.ok) {
     let msg = res.statusText;
+    let code: string | undefined;
+    let details: unknown;
     try {
-      const j = (await res.json()) as { error?: unknown; message?: unknown };
+      const j = (await res.json()) as { error?: unknown; message?: unknown; code?: unknown; activeTasks?: unknown };
       if (typeof j.message === "string" && j.message) msg = j.message;
       else if (typeof j.error === "string" && j.error) msg = j.error;
+      if (typeof j.code === "string") code = j.code;
+      details = j.activeTasks;
     } catch { /* ignore */ }
     // 401 = session expired/revoked → drop to login. 403 (insufficient role)
     // must NOT log out — it surfaces as a normal error message.
     if (res.status === 401) notifyUnauthorized(requestToken);
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, code, details);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;

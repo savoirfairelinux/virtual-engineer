@@ -109,6 +109,8 @@ export interface Task {
   ticketUrl: string | null;
   reviewUrl: string | null;
   projectId?: ProjectId | null | undefined;
+  ticketSourceIntegrationId?: string | null | undefined;
+  ticketSourceProjectKey?: string | null | undefined;
   displayId: string | null;
   pushRef?: string | null;
 }

@@ -55,10 +55,9 @@ function getIntegrationIdFromSourceLabel(sourceLabel: string | null | undefined)
 
 /**
  * Resolve an active review integration that has a `createReviewer`
- * descriptor hook.  When `target` is a `Task`, the integration referenced by
- * `ticketSourceLabel` is tried first; when it is a plain string it is treated
- * as an explicit integration id.  Falls back to the most-recently-updated
- * active review-category integration that supports the factory.
+ * descriptor hook. When a task or string explicitly identifies an integration,
+ * never route it through another integration if that source is unavailable.
+ * Untargeted triggers may use the most-recently-updated active reviewer.
  */
 export function resolveReviewIntegration(
   pluginManager: PluginManager,
@@ -67,15 +66,16 @@ export function resolveReviewIntegration(
   const explicitIntegrationId = typeof target === "string"
     ? target
     : getIntegrationIdFromSourceLabel(target?.ticketSourceLabel);
-  const candidates: Integration[] = [];
 
   if (explicitIntegrationId) {
     const explicitIntegration = pluginManager.getActiveIntegrationById(explicitIntegrationId);
-    if (explicitIntegration && getProviderDescriptor(explicitIntegration.provider)?.capabilities.code_review?.createReviewer) {
-      candidates.push(explicitIntegration);
-    }
+    return explicitIntegration &&
+      getProviderDescriptor(explicitIntegration.provider)?.capabilities.code_review?.createReviewer
+      ? explicitIntegration
+      : null;
   }
 
+  const candidates: Integration[] = [];
   for (const integration of pluginManager.getActiveIntegrationsByCapability("code_review")) {
     if (!candidates.some((c) => c.id === integration.id)) {
       if (getProviderDescriptor(integration.provider)?.capabilities.code_review?.createReviewer) {

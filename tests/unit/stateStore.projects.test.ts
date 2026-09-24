@@ -208,7 +208,7 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
   });
 
-  it("atomically rejects agent reassignment and other parent updates while tasks are active", async () => {
+  it("allows direct agent updates while the active task continues", async () => {
     const originalAgent = await makeAgent(store, { name: "Original" });
     const replacementAgent = await makeAgent(store, { name: "Replacement" });
     const project = await store.createProject({ name: "Before", type: "coding", agentId: originalAgent.id });
@@ -226,13 +226,13 @@ describe("SqliteStateStore — Phase 2: projects", () => {
 
     await expect(store.updateProject(project.id, {
       agentId: replacementAgent.id,
-      name: "Must not persist",
-    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
-    expect(await store.getProjectById(project.id)).toMatchObject({ agentId: originalAgent.id, name: "Before" });
+      name: "After",
+    })).resolves.toMatchObject({ agentId: replacementAgent.id, name: "After" });
+    expect(await store.getTask(task.taskId)).toMatchObject({ state: "DETECTED" });
 
     await store.transition(task.taskId, "FAILED");
-    await expect(store.updateProject(project.id, { agentId: replacementAgent.id })).resolves.toMatchObject({
-      agentId: replacementAgent.id,
+    await expect(store.updateProject(project.id, { agentId: originalAgent.id })).resolves.toMatchObject({
+      agentId: originalAgent.id,
     });
   });
 
@@ -255,7 +255,7 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(await store.getProjectTicketSource(candidate.id)).toBeNull();
   });
 
-  it("atomically rejects ticket-source changes while tasks are active", async () => {
+  it("requires confirmation before changing a ticket source while tasks are active", async () => {
     const agent = await makeAgent(store);
     await makeIntegration(store, "redmine-before", "redmine");
     await makeIntegration(store, "redmine-after", "redmine");
@@ -279,13 +279,67 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     await expect(store.updateProjectConfiguration(project.id, {
       project: { name: "Must not persist" },
       ticketSource: { integrationId: "redmine-after", ticketProjectKey: "AFTER" },
-    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
+    })).rejects.toMatchObject({ code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED" });
 
     expect((await store.getProjectById(project.id))?.name).toBe("Before");
     expect(await store.getProjectTicketSource(project.id)).toMatchObject({
       integrationId: "redmine-before",
       ticketProjectKey: "BEFORE",
     });
+
+    await expect(store.updateProjectConfiguration(project.id, {
+      project: { name: "After" },
+      ticketSource: { integrationId: "redmine-after", ticketProjectKey: "AFTER" },
+      confirmedActiveTaskIds: [makeTaskId("active-ticket-source")],
+    })).resolves.toMatchObject({ project: { name: "After" }, executionChanged: true });
+    expect(await store.getTask(makeTaskId("active-ticket-source"))).toMatchObject({ state: "DETECTED" });
+  });
+
+  it("requires confirmation before changing an active project's execution configuration", async () => {
+    const agent = await makeAgent(store);
+    await makeIntegration(store, "redmine-confirm-before", "redmine");
+    await makeIntegration(store, "redmine-confirm-after", "redmine");
+    const project = await store.createProject({ name: "Before", type: "coding", agentId: agent.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-confirm-before",
+      ticketProjectKey: "BEFORE",
+    });
+    const task = await store.createTask(
+      makeTaskId("active-project-confirmation"),
+      makeTicketId("43-confirmation"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { integrationId: "redmine-confirm-before", ticketProjectKey: "BEFORE" },
+      project.id,
+    );
+    const input = {
+      project: { name: "After" },
+      ticketSource: { integrationId: "redmine-confirm-after", ticketProjectKey: "AFTER" },
+    };
+
+    await expect(store.updateProjectConfiguration(project.id, input)).rejects.toMatchObject({
+      code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
+      activeTasks: [expect.objectContaining({ taskId: task.taskId, state: "DETECTED" })],
+    });
+    expect(await store.getProjectById(project.id)).toMatchObject({ name: "Before" });
+
+    await expect(store.updateProjectConfiguration(project.id, {
+      ...input,
+      confirmedActiveTaskIds: [makeTaskId("different-task")],
+    })).rejects.toMatchObject({
+      code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
+      activeTasks: [expect.objectContaining({ taskId: task.taskId })],
+    });
+    expect(await store.getProjectById(project.id)).toMatchObject({ name: "Before" });
+
+    await expect(store.updateProjectConfiguration(project.id, {
+      ...input,
+      confirmedActiveTaskIds: [task.taskId],
+    })).resolves.toMatchObject({ project: { name: "After" }, executionChanged: true });
+    expect(await store.getTask(task.taskId)).toMatchObject({ state: "DETECTED" });
   });
 
   it("allows a name edit with an idempotent full execution payload while tasks are active", async () => {
@@ -313,7 +367,7 @@ describe("SqliteStateStore — Phase 2: projects", () => {
       project.id,
     );
 
-    await expect(store.updateProjectConfiguration(project.id, {
+    const result = await store.updateProjectConfiguration(project.id, {
       project: {
         name: "After",
         agentId: agent.id,
@@ -322,7 +376,25 @@ describe("SqliteStateStore — Phase 2: projects", () => {
       },
       ticketSource: { integrationId: "redmine-idempotent", ticketProjectKey: "SAME" },
       pushTargets: [],
-    })).resolves.toMatchObject({ name: "After" });
+    });
+    expect(result).toMatchObject({ project: { name: "After" }, executionChanged: false });
+  });
+
+  it("reports execution-affecting configuration changes", async () => {
+    const agent = await makeAgent(store);
+    await makeIntegration(store, "redmine-change-detected", "redmine");
+    const project = await store.createProject({ name: "Before", type: "coding", agentId: agent.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-change-detected",
+      ticketProjectKey: "BEFORE",
+    });
+
+    const result = await store.updateProjectConfiguration(project.id, {
+      project: { name: "After" },
+      ticketSource: { integrationId: "redmine-change-detected", ticketProjectKey: "AFTER" },
+    });
+
+    expect(result).toMatchObject({ project: { name: "After" }, executionChanged: true });
   });
 
   it("createProject throws when agent does not exist", async () => {
@@ -838,7 +910,7 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     expect(automatic?.assignmentMode).toBe("automatic");
   });
 
-  it("rejects changing review assignment mode while a project task is active", async () => {
+  it("requires confirmation to change review assignment mode while a project task is active", async () => {
     const a = await makeAgent(store, { type: "review" });
     const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });
     await makeIntegration(store, "g1", "gerrit");
@@ -858,8 +930,15 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     await expect(store.updateProjectConfiguration(p.id, {
       project: {},
       reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
-    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
+    })).rejects.toMatchObject({ code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED" });
     expect((await store.getProjectReviewConfig(p.id))?.assignmentMode).toBe("manual");
+
+    await expect(store.updateProjectConfiguration(p.id, {
+      project: {},
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
+      confirmedActiveTaskIds: [makeTaskId("active-review-mode")],
+    })).resolves.toMatchObject({ executionChanged: true });
+    expect((await store.getProjectReviewConfig(p.id))?.assignmentMode).toBe("automatic");
   });
 
   it("multiple projects can share the same (integrationId, repoKey)", async () => {

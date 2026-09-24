@@ -74,6 +74,32 @@ describe("ProjectConnectorResolver", () => {
     );
   });
 
+  it("fails closed when the project's ticket source no longer matches the task snapshot", async () => {
+    const createConnectorForCapability = vi.fn().mockResolvedValue({} as TicketConnector);
+    const projectMode = makeProjectMode({
+      getProjectTicketSource: vi.fn().mockResolvedValue({
+        id: 2,
+        projectId: makeProjectId("project-1"),
+        integrationId: "ticket-integration-new",
+        ticketProjectKey: "PLATFORM-V2",
+        createdAt: new Date(),
+      }),
+      createConnectorForCapability,
+    });
+    const resolver = new ProjectConnectorResolver(makeDependencies(() => projectMode));
+    const task = {
+      taskId: makeTaskId("task-1"),
+      projectId: makeProjectId("project-1"),
+      ticketSourceIntegrationId: "ticket-integration-old",
+      ticketSourceProjectKey: "PLATFORM",
+    };
+
+    await expect(resolver.resolveTicketConnector(task)).rejects.toMatchObject({
+      code: "PROJECT_RECONFIGURATION_INCOMPATIBLE",
+    });
+    expect(createConnectorForCapability).not.toHaveBeenCalled();
+  });
+
   it("selects the repository-qualified review connector from push targets", async () => {
     const reviewConnector = {} as TicketConnector;
     const createConnectorForCapability = vi.fn().mockResolvedValue(reviewConnector);
@@ -120,5 +146,30 @@ describe("ProjectConnectorResolver", () => {
         externalChangeId: makeExternalChangeId("other#123"),
       }),
     ).rejects.toThrow("does not match a repository push target");
+  });
+
+  it("fails closed when a review task's source integration was replaced", async () => {
+    const createConnectorForCapability = vi.fn().mockResolvedValue({} as TicketConnector);
+    const projectMode = makeProjectMode({
+      getProjectReviewConfig: vi.fn().mockResolvedValue({
+        integrationId: "review-integration-new",
+        repos: ["core"],
+        assignmentMode: "manual",
+      }),
+      createConnectorForCapability,
+    });
+    const resolver = new ProjectConnectorResolver(makeDependencies(() => projectMode));
+    const task = {
+      taskId: makeTaskId("task-review"),
+      projectId: makeProjectId("project-1"),
+      externalChangeId: makeExternalChangeId("core#123"),
+      taskType: "code-review" as const,
+      ticketSourceLabel: "gerrit:review-integration-old",
+    };
+
+    await expect(resolver.resolveReviewConnector(task)).rejects.toMatchObject({
+      code: "PROJECT_RECONFIGURATION_INCOMPATIBLE",
+    });
+    expect(createConnectorForCapability).not.toHaveBeenCalled();
   });
 });
