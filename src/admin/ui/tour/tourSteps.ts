@@ -593,6 +593,36 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
       optional: true,
     },
   ],
+  backups: [
+    {
+      target: '[data-tour="backups-schedule"]',
+      title: "Schedule recovery snapshots",
+      body: "Choose the UTC schedule and how many local archives to retain. Scheduled backups are disabled until you turn them on.",
+      placement: "bottom",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="backups-run-now"]',
+      title: "Create a snapshot now",
+      body: "Run an on-demand backup independently of the scheduled interval.",
+      placement: "bottom",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="backups-archives"]',
+      title: "Download or remove archives",
+      body: "Download archives and copy them off this machine. Restore only after stopping the existing instance, using the same ADMIN_AUTH_SECRET.",
+      placement: "top",
+      advance: "continue",
+    },
+    {
+      target: '[data-tour="backups-recovery-guidance"]',
+      title: "Keep a copy elsewhere",
+      body: "Local retention cannot protect against losing this machine; keep at least one archive on separate storage.",
+      placement: "top",
+      advance: "continue",
+    },
+  ],
   system: [
     {
       target: '[data-tour="system-settings"]',
