@@ -28,6 +28,44 @@ load_dotenv() {
   done < "$env_file"
 }
 
+resolve_restore_archive() {
+  local archive="${1:-}"
+  local resolved
+  if [[ -z "$archive" || ! -f "$archive" || -L "$archive" ]]; then
+    printf 'Restore source must be an existing regular, non-symlink file.\n' >&2
+    return 1
+  fi
+  resolved=$(realpath -e -- "$archive") || {
+    printf 'Could not resolve restore archive path.\n' >&2
+    return 1
+  }
+  if [[ "$resolved" == *","* ]]; then
+    printf 'Restore archive paths must not contain commas.\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+confirm_backup_restore() {
+  local archive="$1"
+  local data_dir="$2"
+  local assume_yes="$3"
+  local response
+  [[ "$assume_yes" == "true" ]] && return 0
+  if [[ ! -t 0 ]]; then
+    printf 'Restore requires interactive confirmation; pass --yes to acknowledge it.\n' >&2
+    return 1
+  fi
+  printf 'This will stop the existing Virtual Engineer instance and restore %s into %s.\n' \
+    "$archive" "$data_dir" >&2
+  printf 'Type restore to continue: ' >&2
+  IFS= read -r response || return 1
+  if [[ "$response" != "restore" ]]; then
+    printf 'Restore cancelled.\n' >&2
+    return 1
+  fi
+}
+
 oidc_mode() {
   local issuer="$1"
   local client_secret="$2"

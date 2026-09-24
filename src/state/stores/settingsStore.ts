@@ -16,6 +16,13 @@ export interface AppSettings {
   ticketCloseRetryMinTimeoutMs: number | null;
 }
 
+export interface BackupSettings {
+  enabled: boolean | null;
+  intervalDays: number | null;
+  timeOfDay: string | null;
+  retentionCount: number | null;
+}
+
 export interface SettingsStoreApi {
   /** Read the persisted workflow settings. Missing row → all fields `null`. */
   getAppSettings(): Promise<AppSettings>;
@@ -25,6 +32,8 @@ export interface SettingsStoreApi {
    * `null` clears a value (reverting to the config default on next boot).
    */
   updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
+  getBackupSettings(): Promise<BackupSettings>;
+  updateBackupSettings(patch: Partial<BackupSettings>): Promise<BackupSettings>;
 }
 
 interface SettingsStoreContext {
@@ -38,6 +47,13 @@ const EMPTY: AppSettings = {
   agentTimeoutMs: null,
   ticketCloseMaxRetries: null,
   ticketCloseRetryMinTimeoutMs: null,
+};
+
+const EMPTY_BACKUP: BackupSettings = {
+  enabled: null,
+  intervalDays: null,
+  timeOfDay: null,
+  retentionCount: null,
 };
 
 export function createSettingsStore(context: SettingsStoreContext): SettingsStoreApi {
@@ -87,8 +103,44 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
     return getAppSettings();
   }
 
+  async function getBackupSettings(): Promise<BackupSettings> {
+    const row = await db.query.appSettings.findFirst({ where: eq(appSettings.id, "global") });
+    if (!row) return { ...EMPTY_BACKUP };
+    return {
+      enabled: row.backupEnabled ?? null,
+      intervalDays: row.backupIntervalDays ?? null,
+      timeOfDay: row.backupTimeOfDay ?? null,
+      retentionCount: row.backupRetentionCount ?? null,
+    };
+  }
+
+  async function updateBackupSettings(patch: Partial<BackupSettings>): Promise<BackupSettings> {
+    const now = new Date();
+    const conflictSet: Record<string, unknown> = { updatedAt: now };
+    if (patch.enabled !== undefined) conflictSet["backupEnabled"] = patch.enabled;
+    if (patch.intervalDays !== undefined) conflictSet["backupIntervalDays"] = patch.intervalDays;
+    if (patch.timeOfDay !== undefined) conflictSet["backupTimeOfDay"] = patch.timeOfDay;
+    if (patch.retentionCount !== undefined) conflictSet["backupRetentionCount"] = patch.retentionCount;
+
+    await db
+      .insert(appSettings)
+      .values({
+        id: "global",
+        backupEnabled: patch.enabled ?? null,
+        backupIntervalDays: patch.intervalDays ?? null,
+        backupTimeOfDay: patch.timeOfDay ?? null,
+        backupRetentionCount: patch.retentionCount ?? null,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({ target: appSettings.id, set: conflictSet });
+
+    return getBackupSettings();
+  }
+
   return {
     getAppSettings,
     updateAppSettings,
+    getBackupSettings,
+    updateBackupSettings,
   };
 }

@@ -85,7 +85,7 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 - `src/domain/tasks.ts` — task state constants/types plus persisted task, per-repository change, and transition contracts
 - `stateMachine.ts` — pure transition map
 - `stateStore.ts` — typed SQLite store facade and domain-store composition
-- `schema.ts` — `tasks`, `state_transitions`, `agent_cycles`, `processed_comments`, `posted_review_comments`, `review_thread_replies`, `integrations`, `oauth_apps`, `gitlab_oauth_apps`, `prompts`, `change_per_repository`, `agents`, `projects`, `project_integration_bindings`, `project_push_targets`, `app_concurrency`
+- `schema.ts` — `tasks`, `state_transitions`, `agent_cycles`, `processed_comments`, `posted_review_comments`, `review_thread_replies`, `integrations`, `oauth_apps`, `gitlab_oauth_apps`, `prompts`, `change_per_repository`, `agents`, `projects`, `project_integration_bindings`, `project_push_targets`, `app_settings`, `app_concurrency`
 - `databaseMigrations.ts` — canonical tracked migration runner plus frozen pre-ledger adoption bridge
 - `migrate.ts` — explicit migration CLI entry; startup delegates to the same runner
 
@@ -94,6 +94,36 @@ The former `project_ticket_source` / `project_review_integration` / `project_rev
 See [state-machine.md](state-machine.md) and [database.md](database.md).
 
 `src/interfaces.ts` remains the compatibility facade for domain exports while new state/orchestrator code can depend directly on the narrower domain modules.
+
+### Backups and recovery — `src/backup/`, `src/runtime/backupScheduler.ts`
+
+The backup schedule is stored in the `app_settings` singleton and managed from
+Configuration → Backups (`system.backup.manage`). Backups are disabled by
+default; the defaults are every 1 day at `03:00` UTC with 7 retained archives.
+The scheduler checks every 15 minutes, coalesces overlapping runs, and stops
+before SQLite closes. `BACKUP_DIR` defaults to a `backups/` directory beside
+`DATABASE_PATH`.
+
+Each private `.tar.gz` archive contains an online SQLite snapshot with active
+admin sessions removed, a checksum/compatibility manifest, and allowlisted
+prompt override Markdown files. It excludes `ADMIN_AUTH_SECRET`, local OIDC and
+OpenShell state, and ephemeral workspaces. Manifest format v2 uses HMAC-SHA256
+with `ADMIN_AUTH_SECRET` to authenticate the SQLite checksum and deterministically
+code-unit-sorted prompt filename/hash inventory without storing the secret. The
+original secret is required to verify the archive and decrypt stored provider
+credentials; older v1 archives are rejected by the v2 restore path.
+
+When `VE_RESTORE_FROM` is set, `src/index.ts` validates and restores the archive
+before creating `SqliteStateStore` or opening SQLite. Restore checks archive
+paths, manifest authentication, database and prompt hashes/inventory, tracked
+migrations, and SQLite integrity.
+Existing database/prompt targets are refused unless `VE_RESTORE_FORCE` is true;
+forced replacement quarantines them under the database directory. A v2 restore
+marker binds idempotency to the source path, full archive SHA-256, archive
+metadata, and secret fingerprint; an unchanged archive with both targets still
+installed is not reapplied on restart, even when force remains set. Remove the
+one-shot restore variables after a successful restore. Local retention is not
+off-site disaster recovery: copy or download archives to independent storage.
 
 ### Agents — `src/agents/`
 
@@ -193,6 +223,7 @@ Pino, module-scoped via `getLogger(...)`. Pretty in development, JSON in product
 - Orchestrator: long-running host Node process (`npm run dev`, systemd, PM2, or containerized orchestrator image)
 - Agent runtime: per-cycle OpenShell sandbox from the image built by [Dockerfile.agent](../../Dockerfile.agent) (`AGENT_CONTAINER_IMAGE`, default `virtual-engineer-workspace:latest`); the image must contain a `sandbox` user/group whose home is `/sandbox`
 - Optional [scripts/start.sh](../../scripts/start.sh) containerises the orchestrator and brings up the OpenShell gateway. `OPENSHELL_COMPUTE_DRIVER` defaults to `docker` (gateway-owned `openshell-docker` bridge); `kubernetes` (k3s/Helm) is experimental. Docker appears only as the gateway's compute driver — VE never runs `docker run` for an agent.
+- `scripts/start.sh --restore <archive> [--force] [--yes]` stops the existing orchestrator before mounting an archive read-only into the replacement. The manifests-based Kubernetes deployment restores through its existing SQLite PVC; see [deploy/k8s/README.md](../../deploy/k8s/README.md).
 
 ## Related docs
 

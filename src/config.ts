@@ -8,7 +8,7 @@
  */
 import { z } from "zod";
 import { readFileSync } from "fs";
-import { resolve } from "path";
+import { dirname, join, resolve } from "path";
 
 
 const booleanFromEnv = z.preprocess((value) => {
@@ -19,6 +19,11 @@ const booleanFromEnv = z.preprocess((value) => {
   }
   return value;
 }, z.boolean());
+
+const optionalPathFromEnv = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(1).optional(),
+);
 
 // ─── Load .env file if present ────────────────────────────────────────────────
 
@@ -52,6 +57,9 @@ const ConfigSchema = z.object({
     nodeEnv: z.enum(["development", "production", "test"]).default("development"),
     logLevel: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     databasePath: z.string().default("./data/virtual-engineer.db"),
+    backupDir: optionalPathFromEnv,
+    restoreFrom: optionalPathFromEnv,
+    restoreForce: z.preprocess((value) => value === "" ? false : value, booleanFromEnv).default(false),
     adminApiEnabled: booleanFromEnv.default(true),
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
@@ -98,7 +106,11 @@ const ConfigSchema = z.object({
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
   });
 
-export type AppConfig = z.infer<typeof ConfigSchema>;
+type ParsedAppConfig = z.infer<typeof ConfigSchema>;
+export type AppConfig = Omit<ParsedAppConfig, "backupDir" | "restoreFrom"> & {
+  backupDir: string;
+  restoreFrom: string | undefined;
+};
 
 /** Map environment variables to the keys expected by `ConfigSchema`. */
 function fromEnv(): Record<string, string | undefined> {
@@ -106,6 +118,9 @@ function fromEnv(): Record<string, string | undefined> {
     nodeEnv: process.env["NODE_ENV"],
     logLevel: process.env["LOG_LEVEL"],
     databasePath: process.env["DATABASE_PATH"],
+    backupDir: process.env["BACKUP_DIR"],
+    restoreFrom: process.env["VE_RESTORE_FROM"],
+    restoreForce: process.env["VE_RESTORE_FORCE"],
     adminApiEnabled: process.env["ADMIN_API_ENABLED"],
     adminApiHost: process.env["ADMIN_API_HOST"],
     adminApiPort: process.env["ADMIN_API_PORT"],
@@ -141,7 +156,11 @@ export function getConfig(): AppConfig {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
 
-  _config = result.data;
+  _config = {
+    ...result.data,
+    backupDir: resolve(result.data.backupDir ?? join(dirname(result.data.databasePath), "backups")),
+    restoreFrom: result.data.restoreFrom === undefined ? undefined : resolve(result.data.restoreFrom),
+  };
   return _config;
 }
 

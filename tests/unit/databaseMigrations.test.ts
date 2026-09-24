@@ -67,6 +67,10 @@ function removePostBridgeOwnershipSchema(raw: Database.Database): void {
     ALTER TABLE oauth_apps DROP COLUMN owner_user_id;
     ALTER TABLE projects DROP COLUMN owner_user_id;
     ALTER TABLE prompts DROP COLUMN owner_user_id;
+    ALTER TABLE app_settings DROP COLUMN backup_enabled;
+    ALTER TABLE app_settings DROP COLUMN backup_interval_days;
+    ALTER TABLE app_settings DROP COLUMN backup_time_of_day;
+    ALTER TABLE app_settings DROP COLUMN backup_retention_count;
   `);
 }
 
