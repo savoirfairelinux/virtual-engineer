@@ -6,7 +6,8 @@
 
 1. **Environment variables** populate `AppConfig` (system/infra settings only).
 2. **All provider config** (Redmine, Gerrit, GitLab, GitHub, Copilot, Claude, Aider, Goose, Codex, Gemini, OpenCode, and Cursor credentials) lives exclusively in the `integrations` database table, managed via the admin UI.
-3. `src/index.ts` hot-refreshes runtime dependencies after integration changes, so admin edits are picked up without a process restart.
+3. **Admin authentication sources** (LDAP directories for dashboard sign-in) live in the `auth_sources` table and are managed under Configuration → Authentication. There are no LDAP environment variables; storing a bind password requires `ADMIN_AUTH_SECRET`.
+4. `src/index.ts` hot-refreshes runtime dependencies after integration changes, so admin edits are picked up without a process restart.
 
 ## Environment variables
 
@@ -27,7 +28,7 @@ All variables are optional. Only system/infra settings remain in the environment
 | `ADMIN_API_ENABLED` | `true` | Boolean. |
 | `ADMIN_API_HOST` | `127.0.0.1` | Bind host. |
 | `ADMIN_API_PORT` | `3100` | Port. |
-| `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the documented generation command produces a 64-character value. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
+| `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials or LDAP bind passwords are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the documented generation command produces a 64-character value. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, derive the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Enable only behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
 
 There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value exists only as an optional dependency field wired into the admin server (used to render webhook URLs), not as configuration parsed by `src/config.ts`.
