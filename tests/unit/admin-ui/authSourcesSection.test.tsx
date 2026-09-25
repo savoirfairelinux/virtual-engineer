@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthSourcesSection } from "../../../src/admin/ui/views/ConfigView/AuthSourcesSection.js";
+import { CurrentUserProvider, makeCan } from "../../../src/admin/ui/authContext.js";
+import type { ApiMe } from "../../../src/admin/ui/types.js";
 import { SqliteStateStore } from "../../../src/state/stateStore.js";
 import { tempDatabasePath } from "../helpers/tempDatabase.js";
 import { setupAdmin, startAdminHttpServer, type AdminHttpServer } from "../helpers/adminHttp.js";
@@ -92,5 +94,55 @@ describe.skipIf(!ldapAvailable)("AuthSourcesSection against the admin API and sl
     expect(await screen.findByText("Connection succeeded")).toBeDefined();
     const [stored] = await store.listAuthSources();
     expect(JSON.parse(stored?.configJson ?? "{}")).toMatchObject({ timeoutMs: 3000 });
+  });
+
+  it("maps a directory group, enables provisioning, and previews a user lookup", async () => {
+    await directory.addUser("erin", "erin-Pass-1");
+    await directory.addGroup("qa-devs", ["erin"]);
+    const token = sessionStorage.getItem("ve-admin-token") ?? "";
+    const post = (path: string, body: unknown): Promise<Response> => nodeFetch(`${admin.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    expect((await post("/api/admin/auth-sources", { name: "QA", kind: "ldap", config: directory.config() })).status).toBe(201);
+    expect((await post("/api/admin/groups", { name: "Developers" })).status).toBe(201);
+    const adminUser: ApiMe = { id: "root", username: "root", role: "admin", capabilities: { superuser: true, grants: {} } };
+
+    const user = userEvent.setup();
+    render(
+      <CurrentUserProvider value={{ user: adminUser, isAdmin: true, canOperate: true, can: makeCan(adminUser) }}>
+        <AuthSourcesSection />
+      </CurrentUserProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Group mappings for QA" }));
+    const mappings = await screen.findByRole("dialog");
+    expect(await within(mappings).findByText("No group mappings yet.")).toBeDefined();
+    fireEvent.change(within(mappings).getByLabelText(/^Directory group DN/), { target: { value: "CN=qa-devs,OU=groups,DC=ve,DC=test" } });
+    await within(mappings).findByRole("option", { name: "Developers" });
+    fireEvent.change(within(mappings).getByRole("combobox", { name: "VE group" }), { target: { value: (await store.listGroups())[0]?.id } });
+    await user.click(within(mappings).getByRole("button", { name: "Add mapping" }));
+    expect(await within(mappings).findByText("cn=qa-devs,ou=groups,dc=ve,dc=test")).toBeDefined();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "Edit QA" }));
+    const editor = await screen.findByRole("dialog");
+    await user.click(within(editor).getByLabelText("Create a user on first sign-in"));
+    fireEvent.change(within(editor).getByLabelText(/^Role for new users/), { target: { value: "operator" } });
+    await user.click(within(editor).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("auto-provision · operator")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Look up a user in QA" }));
+    const lookup = await screen.findByRole("dialog");
+    fireEvent.change(within(lookup).getByRole("textbox", { name: "Directory username" }), { target: { value: "erin" } });
+    await user.click(within(lookup).getByRole("button", { name: "Look up" }));
+    expect(await within(lookup).findByText("Developers")).toBeDefined();
+    expect(within(lookup).getByText("Created on first sign-in as operator")).toBeDefined();
+
+    expect((await post("/api/admin/users", { username: "erin", password: "local-Pass-12", role: "viewer" })).status).toBe(201);
+    await user.click(within(lookup).getByRole("button", { name: "Look up" }));
+    expect(await within(lookup).findByText(/a local account already uses this username/)).toBeDefined();
   });
 });

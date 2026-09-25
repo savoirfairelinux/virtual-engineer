@@ -509,6 +509,8 @@ export interface ApiGroupMember {
 
 export interface ApiGroupDetail extends ApiGroup {
   members: ApiGroupMember[];
+  /** Members through a directory group mapping; managed by the directory, not editable here. */
+  directoryMembers?: ApiGroupMember[];
 }
 
 export interface ApiPolicy {
