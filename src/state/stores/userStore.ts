@@ -2,8 +2,9 @@ import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole, UserSession } from "../../interfaces.js";
-import { users, userSessions, policyBindings, policies } from "../schema.js";
+import { users, userSessions, userIdentities, policyBindings, policies } from "../schema.js";
 import * as schema from "../schema.js";
+import { countEnabledLocalAdminsIn } from "./userIdentityStore.js";
 
 /**
  * True when `err` is a SQLite UNIQUE-constraint violation (better-sqlite3 sets
@@ -35,6 +36,24 @@ function setupAlreadyCompletedError(): Error & { code: string } {
   });
 }
 
+function codedError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+type UserTransaction = Pick<BetterSQLite3Database<typeof schema>, "select">;
+
+/** Throws when `user` is the last enabled admin, or the last one without a directory link. */
+function assertNotLastAdmin(tx: UserTransaction, user: typeof users.$inferSelect): void {
+  if (user.role !== "admin" || user.enabled !== 1) return;
+  const admins = tx.select({ total: sql<number>`COUNT(*)` }).from(users)
+    .where(and(eq(users.role, "admin"), eq(users.enabled, 1))).get()?.total ?? 0;
+  if (admins <= 1) throw codedError("LAST_ADMIN", "Cannot remove the last enabled admin");
+  if (tx.select({ id: userIdentities.id }).from(userIdentities).where(eq(userIdentities.userId, user.id)).get()) return;
+  if (countEnabledLocalAdminsIn(tx) <= 1) {
+    throw codedError("LAST_LOCAL_ADMIN", "Cannot remove the last enabled local admin");
+  }
+}
+
 export interface UserStoreApi {
   /** Create a user. Throws an Error with `code = "DUPLICATE"` on duplicate username. */
   createUser(input: {
@@ -54,13 +73,21 @@ export interface UserStoreApi {
   getUserByUsername(username: string): Promise<AdminUser | null>;
   /** All users ordered by username. Rows include passwordHash — strip it at the route layer. */
   listUsers(): Promise<AdminUser[]>;
+  /**
+   * Throws `LAST_ADMIN` / `LAST_LOCAL_ADMIN` when demoting or disabling the last
+   * enabled admin, or the last one without a directory link.
+   */
   updateUser(id: string, partial: { role?: UserRole; enabled?: boolean }): Promise<AdminUser | null>;
   updateUserPassword(id: string, passwordHash: string): Promise<boolean>;
-  /** Delete a user and all of their sessions. Returns false when the user does not exist. */
+  /** Delete a user and all of their sessions. Returns false when the user does not exist. Same admin guards as `updateUser`. */
   deleteUser(id: string): Promise<boolean>;
   countUsers(): Promise<number>;
   countEnabledAdmins(): Promise<number>;
-  createSession(input: { tokenHash: string; userId: string; expiresAt: Date }): Promise<UserSession>;
+  /**
+   * When `identityId` is given, the session is created only while it is still the
+   * user's directory link (`null` = no link); otherwise rejects with `IDENTITY_CHANGED`.
+   */
+  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null }): Promise<UserSession>;
   /** Resolve a live session: null when unknown, expired, or the user is disabled/missing. */
   getSessionByTokenHash(tokenHash: string): Promise<(UserSession & { user: AdminUser }) | null>;
   /** Sliding-expiry update of an existing session. */
@@ -191,6 +218,9 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
       const updated = db.transaction((tx) => {
         const existing = tx.select().from(users).where(eq(users.id, id)).get();
         if (!existing) return null;
+        if ((partial.role !== undefined && partial.role !== "admin") || partial.enabled === false) {
+          assertNotLastAdmin(tx, existing);
+        }
         tx.update(users).set(update).where(eq(users.id, id)).run();
         if (partial.role !== undefined && partial.role !== existing.role) {
           const defaults = tx.select().from(policies)
@@ -230,12 +260,15 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
   function deleteUser(id: string): Promise<boolean> {
     try {
       const deleted = db.transaction((tx) => {
+        const existing = tx.select().from(users).where(eq(users.id, id)).get();
+        if (!existing) return false;
+        assertNotLastAdmin(tx, existing);
         tx.delete(userSessions).where(eq(userSessions.userId, id)).run();
         tx.delete(policyBindings)
           .where(and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, id)))
           .run();
         return tx.delete(users).where(eq(users.id, id)).run().changes > 0;
-      });
+      }, { behavior: "immediate" });
       return Promise.resolve(deleted);
     } catch (err) {
       if (isForeignKeyConstraintViolation(err)) {
@@ -260,24 +293,34 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     return rows[0]?.total ?? 0;
   }
 
-  async function createSession(input: {
+  function createSession(input: {
     tokenHash: string;
     userId: string;
     expiresAt: Date;
+    identityId?: string | null;
   }): Promise<UserSession> {
-    const now = new Date();
-    await db.insert(userSessions).values({
-      tokenHash: input.tokenHash,
-      userId: input.userId,
-      createdAt: now,
-      expiresAt: input.expiresAt,
-      lastSeenAt: now,
-    });
-    const row = await db.query.userSessions.findFirst({
-      where: eq(userSessions.tokenHash, input.tokenHash),
-    });
-    if (!row) throw new Error("Failed to create session");
-    return rowToSession(row);
+    try {
+      const row = db.transaction((tx) => {
+        if (input.identityId !== undefined) {
+          const current = tx.select({ id: userIdentities.id }).from(userIdentities)
+            .where(eq(userIdentities.userId, input.userId)).get();
+          if ((current?.id ?? null) !== input.identityId) {
+            throw codedError("IDENTITY_CHANGED", "The account's sign-in method changed during login");
+          }
+        }
+        const now = new Date();
+        return tx.insert(userSessions).values({
+          tokenHash: input.tokenHash,
+          userId: input.userId,
+          createdAt: now,
+          expiresAt: input.expiresAt,
+          lastSeenAt: now,
+        }).returning().get();
+      }, { behavior: "immediate" });
+      return Promise.resolve(rowToSession(row));
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   async function getSessionByTokenHash(

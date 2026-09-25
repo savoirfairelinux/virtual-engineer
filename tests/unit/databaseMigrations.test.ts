@@ -58,6 +58,7 @@ function openMemoryDatabase(): Database.Database {
 /** Strip every tracked migration after the frozen bridge so the fixture looks ledgerless-legacy. */
 function removePostBridgeSchema(raw: Database.Database): void {
   raw.exec(`
+    DROP TABLE user_identities;
     DROP TABLE auth_sources;
     DROP INDEX uq_posted_review_comments_task_active_hash;
     ALTER TABLE posted_review_comments DROP COLUMN provider_comment_url;
