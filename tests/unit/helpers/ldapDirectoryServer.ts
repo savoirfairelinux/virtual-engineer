@@ -118,6 +118,8 @@ export interface LdapDirectoryServer {
   /** Add a groupOfNames under ou=groups whose members are the given uids; returns its DN. */
   addGroup(cn: string, memberUids: string[]): Promise<string>;
   replaceAttribute(dn: string, attribute: string, values: string[]): Promise<void>;
+  /** Rename an entry in place (the old RDN value is removed) and return its new DN. */
+  renameEntry(dn: string, newRdn: string): Promise<string>;
   deleteEntry(dn: string): Promise<void>;
   stop(): Promise<void>;
 }
@@ -305,6 +307,10 @@ export async function startLdapDirectoryServer(): Promise<LdapDirectoryServer> {
         operation: "replace",
         modification: new Attribute({ type: attribute, values }),
       })));
+    },
+    async renameEntry(dn, newRdn) {
+      await asDirectoryAdmin((client) => client.modifyDN(dn, newRdn));
+      return `${newRdn},${dn.slice(dn.indexOf(",") + 1)}`;
     },
     async deleteEntry(dn) {
       await asDirectoryAdmin((client) => client.del(dn));

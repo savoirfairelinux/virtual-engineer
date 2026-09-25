@@ -13,7 +13,7 @@ export function createLocalPasswordAuthenticator(store: LocalPasswordUserStore):
       const user = await store.getUserByUsername(username);
       if (!user || !user.enabled) return { status: "rejected" };
       if (!(await verifyPassword(password, user.passwordHash))) return { status: "rejected" };
-      return { status: "authenticated", user };
+      return { status: "authenticated", user, authSourceId: null, identityId: null };
     },
   };
 }
