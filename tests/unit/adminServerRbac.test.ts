@@ -1118,6 +1118,158 @@ describe("adminServer PBAC project scoping", () => {
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskId}`, authed(delegate.token))).status).toBe(403);
   });
 
+  it("automatically shares linked resources with project groups and keeps old links after agent changes", async () => {
+    const admin = await setupAdmin();
+    const member = await createUserAndLogin(admin, "linked-resource-member", "operator");
+    registerBuiltinPlugins();
+
+    const oldAgentIntegration = await store.upsertIntegration({
+      id: "snapshot-agent-old",
+      provider: "copilot",
+      name: "Old agent integration",
+      configJson: "{}",
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const ticketIntegration = await store.upsertIntegration({
+      id: "snapshot-ticket",
+      provider: "redmine",
+      name: "Ticket integration",
+      configJson: "{}",
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const pushIntegration = await store.upsertIntegration({
+      id: "snapshot-push",
+      provider: "gerrit",
+      name: "Push integration",
+      configJson: "{}",
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const oldSystemPrompt = await store.createPrompt("Old system", "old system", "system", admin.user.id);
+    const oldInstructionsPrompt = await store.createPrompt("Old instructions", "old instructions", "instructions", admin.user.id);
+    const oldAgent = await store.createAgent({
+      name: "Old linked agent",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: oldAgentIntegration.id,
+      systemPromptId: oldSystemPrompt.id,
+      instructionsPromptId: oldInstructionsPrompt.id,
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const project = await store.createProject({
+      name: "Linked resource project",
+      type: "coding",
+      agentId: oldAgent.id,
+      ownerUserId: admin.user.id,
+    });
+    await store.setProjectTicketSource(project.id, { integrationId: ticketIntegration.id, ticketProjectKey: "JAMI" });
+    await store.replaceProjectPushTargets(project.id, [{
+      integrationId: pushIntegration.id,
+      repoKey: "jami/client",
+      cloneUrl: "ssh://gerrit.example.com/jami/client",
+      targetBranch: "main",
+      role: "primary",
+      commitOrder: 1,
+      localPath: ".",
+    }]);
+
+    const group = await store.createGroup({ name: "Linked resource readers" });
+    await store.addUserToGroup(group.id, member.user.id);
+    const access = await fetch(`${baseUrl}/api/admin/projects/${project.id}/access/groups/${group.id}`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ permissions: ["project.read", "task.read"] }),
+    });
+    expect(access.status).toBe(200);
+
+    const policyId = `project-access:${project.id}:group:${group.id}`;
+    const oldLinkedRules = await store.listPolicyRules(policyId);
+    const expectedOldResources = [
+      ["agent.read", oldAgent.id], ["agent.write", oldAgent.id],
+      ["integration.read", oldAgentIntegration.id], ["integration.write", oldAgentIntegration.id],
+      ["integration.read", ticketIntegration.id], ["integration.write", ticketIntegration.id],
+      ["integration.read", pushIntegration.id], ["integration.write", pushIntegration.id],
+      ["prompt.read", oldSystemPrompt.id], ["prompt.write", oldSystemPrompt.id],
+      ["prompt.read", oldInstructionsPrompt.id], ["prompt.write", oldInstructionsPrompt.id],
+    ];
+    expect(oldLinkedRules).toEqual(expect.arrayContaining(expectedOldResources.map(([permission, resourceId]) =>
+      expect.objectContaining({ permission, resourceId })
+    )));
+
+    for (const path of [
+      `/api/admin/agents/${oldAgent.id}`,
+      `/api/admin/integrations/${oldAgentIntegration.id}`,
+      `/api/admin/integrations/${ticketIntegration.id}`,
+      `/api/admin/integrations/${pushIntegration.id}`,
+      `/api/admin/prompts/${oldSystemPrompt.id}`,
+      `/api/admin/prompts/${oldInstructionsPrompt.id}`,
+    ]) {
+      expect((await fetch(`${baseUrl}${path}`, authed(member.token))).status).toBe(200);
+    }
+    const agentEdit = await fetch(`${baseUrl}/api/admin/agents/${oldAgent.id}`, {
+      method: "PUT",
+      headers: { ...authed(member.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Edited linked agent" }),
+    });
+    expect(agentEdit.status).toBe(200);
+    const promptEdit = await fetch(`${baseUrl}/api/admin/prompts/${oldSystemPrompt.id}`, {
+      method: "PUT",
+      headers: { ...authed(member.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ content: "Updated by linked-resource group member" }),
+    });
+    expect(promptEdit.status).toBe(200);
+
+    const newAgentIntegration = await store.upsertIntegration({
+      id: "snapshot-agent-new",
+      provider: "copilot",
+      name: "New agent integration",
+      configJson: "{}",
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const newSystemPrompt = await store.createPrompt("New system", "new system", "system", admin.user.id);
+    const newInstructionsPrompt = await store.createPrompt("New instructions", "new instructions", "instructions", admin.user.id);
+    const newAgent = await store.createAgent({
+      name: "New linked agent",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: newAgentIntegration.id,
+      systemPromptId: newSystemPrompt.id,
+      instructionsPromptId: newInstructionsPrompt.id,
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const update = await fetch(`${baseUrl}/api/admin/projects/${project.id}`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ agentId: newAgent.id }),
+    });
+    expect(update.status).toBe(200);
+
+    const allLinkedRules = await store.listPolicyRules(policyId);
+    const expectedAllResources = [
+      ...expectedOldResources,
+      ["agent.read", newAgent.id], ["agent.write", newAgent.id],
+      ["integration.read", newAgentIntegration.id], ["integration.write", newAgentIntegration.id],
+      ["prompt.read", newSystemPrompt.id], ["prompt.write", newSystemPrompt.id],
+      ["prompt.read", newInstructionsPrompt.id], ["prompt.write", newInstructionsPrompt.id],
+    ];
+    expect(allLinkedRules).toEqual(expect.arrayContaining(expectedAllResources.map(([permission, resourceId]) =>
+      expect.objectContaining({ permission, resourceId })
+    )));
+    for (const path of [
+      `/api/admin/agents/${newAgent.id}`,
+      `/api/admin/integrations/${newAgentIntegration.id}`,
+      `/api/admin/prompts/${newSystemPrompt.id}`,
+      `/api/admin/prompts/${newInstructionsPrompt.id}`,
+    ]) {
+      expect((await fetch(`${baseUrl}${path}`, authed(member.token))).status).toBe(200);
+    }
+  });
+
   it("fails closed when a task project owner cannot be resolved", async () => {
     const admin = await setupAdmin();
     const owner = await createUserAndLogin(admin, "unresolved-task-owner", "operator");
@@ -1263,7 +1415,7 @@ describe("adminServer PBAC project scoping", () => {
     ]);
   });
 
-  it("masks private agent and integration metadata in a shared project", async () => {
+  it("shares linked metadata without exposing integration configuration", async () => {
     const admin = await setupAdmin();
     const owner = await createUserAndLogin(admin, "project-mask-owner", "operator");
     const peer = await createUserAndLogin(admin, "project-mask-peer", "viewer");
@@ -1310,17 +1462,27 @@ describe("adminServer PBAC project scoping", () => {
 
     const detail = await fetch(`${baseUrl}/api/admin/projects/${project.id}`, authed(peer.token));
     expect(detail.status).toBe(200);
-    await expect(detail.json()).resolves.toMatchObject({
+    const body = (await detail.json()) as {
       project: {
-        ownerUserId: owner.user.id,
-        agentId: null,
-        agentName: null,
+        ownerUserId: string;
+        agentId: string | null;
+        agentName: string | null;
         ticketSource: {
-          integration: null,
-          ticketProjectKey: "PRIVATE",
-        },
+          integration: { id: string; name: string; provider: string } | null;
+          ticketProjectKey: string;
+        } | null;
+      };
+    };
+    expect(body.project).toMatchObject({
+      ownerUserId: owner.user.id,
+      agentId: agent.id,
+      agentName: "Secret agent name",
+      ticketSource: {
+        integration: { id: integration.id, name: "Secret Redmine", provider: "redmine" },
+        ticketProjectKey: "PRIVATE",
       },
     });
+    expect(body.project.ticketSource?.integration).not.toHaveProperty("configJson");
   });
 
   it("does not expose another user's projects to a new viewer", async () => {
