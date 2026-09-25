@@ -62,6 +62,7 @@ function removePostBridgeSchema(raw: Database.Database): void {
     DROP TABLE auth_source_group_mappings;
     DROP TABLE user_identities;
     DROP TABLE auth_sources;
+    ALTER TABLE user_sessions DROP COLUMN validated_at;
     DROP INDEX uq_posted_review_comments_task_active_hash;
     ALTER TABLE posted_review_comments DROP COLUMN provider_comment_url;
     ALTER TABLE posted_review_comments DROP COLUMN disposition;

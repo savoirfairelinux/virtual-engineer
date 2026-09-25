@@ -609,6 +609,8 @@ export const userSessions = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
     lastSeenAt: integer("last_seen_at", { mode: "timestamp" }).notNull(),
+    /** Last time a directory confirmed the account behind this session; NULL for local sessions. */
+    validatedAt: integer("validated_at", { mode: "timestamp" }),
   },
   (table) => ({
     idxUserSessionsUserId: index("idx_user_sessions_user_id").on(table.userId),
@@ -732,6 +734,10 @@ export const authSources = sqliteTable(
     autoProvision: integer("auto_provision").notNull().default(0),
     /** Role given to auto-provisioned users; validated to `viewer` or `operator` (never `admin`). */
     defaultRole: text("default_role").$type<UserRole>().notNull().default("viewer"),
+    /** Absolute lifetime of a session signed in through this source, regardless of activity. */
+    sessionMaxAgeHours: integer("session_max_age_hours").notNull().default(24),
+    /** How often an active session re-checks its directory account; 0 = on every request. */
+    revalidateIntervalMinutes: integer("revalidate_interval_minutes").notNull().default(15),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },

@@ -235,6 +235,8 @@ export interface UserSession {
   createdAt: Date;
   expiresAt: Date;
   lastSeenAt: Date;
+  /** Last directory confirmation of the account; null for local-password sessions. */
+  validatedAt: Date | null;
 }
 
 /** One append-only audit-trail entry recording an admin mutation. */
