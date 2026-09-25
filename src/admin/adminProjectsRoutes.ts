@@ -1,9 +1,10 @@
 import { getLogger } from "../logger.js";
 import { ActiveProjectTasksConfirmationRequiredError } from "../domain/projectConfiguration.js";
+import { BUILT_IN_PROMPT_IDS } from "../domain/prompts.js";
 import type { IncomingMessage } from "node:http";
 import { z } from "zod";
 import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
-import { makeAgentId, makeProjectId, type AgentRecord, type Permission, type ProjectRecord } from "../interfaces.js";
+import { makeAgentId, makeProjectId, type AgentRecord, type Permission, type PolicyRule, type ProjectRecord } from "../interfaces.js";
 import type { Router } from "./router.js";
 import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
 import { canAccessResource } from "./authorization/policyEngine.js";
@@ -48,6 +49,18 @@ const PROJECT_ACCESS_PERMISSIONS = [
   "task.operate",
   "task.read",
 ] as const;
+const PROJECT_ACCESS_PERMISSION_SET = new Set<string>(PROJECT_ACCESS_PERMISSIONS);
+const PROJECT_LINKED_RESOURCE_PERMISSIONS = new Set<Permission>([
+  "agent.read",
+  "agent.write",
+  "integration.read",
+  "integration.write",
+  "prompt.read",
+  "prompt.write",
+]);
+
+type ProjectPolicyRule = Pick<PolicyRule, "permission" | "resourceId">;
+type ProjectLinkedRule = { permission: Permission; resourceId: string };
 
 const projectAccessSchema = z.object({
   permissions: z.array(z.enum(PROJECT_ACCESS_PERMISSIONS)).min(1),
@@ -72,6 +85,91 @@ function overridePromptIds(json: string | null | undefined): string[] {
       .filter((value): value is string => typeof value === "string" && value.length > 0);
   } catch {
     return [];
+  }
+}
+
+function mergePolicyRules(groups: readonly (readonly ProjectPolicyRule[])[]): ProjectPolicyRule[] {
+  const merged = new Map<string, ProjectPolicyRule>();
+  for (const group of groups) {
+    for (const rule of group) {
+      merged.set(`${rule.permission}\u0000${rule.resourceId ?? ""}`, rule);
+    }
+  }
+  return [...merged.values()];
+}
+
+async function collectProjectLinkedRules(
+  projectId: string,
+  store: ProjectsRouteStore
+): Promise<ProjectLinkedRule[]> {
+  const project = await store.getProjectById(makeProjectId(projectId));
+  if (!project) return [];
+
+  const [agent, ticketSource, reviewConfig, pushTargets] = await Promise.all([
+    store.getAgentById(project.agentId),
+    store.getProjectTicketSource(project.id),
+    store.getProjectReviewConfig(project.id),
+    store.listProjectPushTargets(project.id),
+  ]);
+  const agentIds = new Set<string>();
+  const integrationIds = new Set<string>();
+  const promptIds = new Set<string>();
+
+  if (agent) {
+    agentIds.add(agent.id);
+    if (agent.integrationId) integrationIds.add(agent.integrationId);
+    for (const promptId of [
+      agent.systemPromptId,
+      agent.instructionsPromptId,
+      agent.feedbackInstructionsPromptId,
+    ]) {
+      if (promptId && !BUILT_IN_PROMPT_IDS.has(promptId)) promptIds.add(promptId);
+    }
+  }
+  for (const promptId of overridePromptIds(project.agentOverrideJson)) {
+    if (!BUILT_IN_PROMPT_IDS.has(promptId)) promptIds.add(promptId);
+  }
+  if (ticketSource) integrationIds.add(ticketSource.integrationId);
+  if (reviewConfig) integrationIds.add(reviewConfig.integrationId);
+  for (const target of pushTargets) integrationIds.add(target.integrationId);
+
+  const rules: ProjectLinkedRule[] = [
+    ...[...agentIds].flatMap((resourceId) => [
+      { permission: "agent.read", resourceId },
+      { permission: "agent.write", resourceId },
+    ]),
+    ...[...integrationIds].flatMap((resourceId) => [
+      { permission: "integration.read", resourceId },
+      { permission: "integration.write", resourceId },
+    ]),
+    ...[...promptIds].flatMap((resourceId) => [
+      { permission: "prompt.read", resourceId },
+      { permission: "prompt.write", resourceId },
+    ]),
+  ];
+  return rules.sort((left, right) =>
+    left.permission.localeCompare(right.permission) || left.resourceId.localeCompare(right.resourceId)
+  );
+}
+
+async function syncProjectLinkedRules(
+  projectId: string,
+  projectStore: ProjectsRouteStore,
+  projectAccessStore: NonNullable<ProjectsRouteDeps["projectAccessStore"]>
+): Promise<void> {
+  const linkedRules = await collectProjectLinkedRules(projectId, projectStore);
+  if (linkedRules.length === 0) return;
+
+  const prefix = projectAccessPolicyPrefix(projectId);
+  const policies = (await projectAccessStore.listPolicies())
+    .filter((policy) => policy.id.startsWith(prefix));
+  for (const policy of policies) {
+    const existingRules = (await projectAccessStore.listPolicyRules(policy.id))
+      .map(({ permission, resourceId }) => ({ permission, resourceId }));
+    await projectAccessStore.setPolicyRules(
+      policy.id,
+      mergePolicyRules([existingRules, linkedRules])
+    );
   }
 }
 
@@ -330,7 +428,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       return {
         groupId,
         groupName: group?.name ?? groupId,
-        permissions: (rules ?? []).map((rule) => rule.permission).sort(),
+        permissions: (rules ?? [])
+          .map((rule) => rule.permission)
+          .filter((permission) => PROJECT_ACCESS_PERMISSION_SET.has(permission))
+          .sort(),
       };
     }));
     const availableGroups = (await deps.projectAccessStore.listGroups()).map((group) => ({
@@ -351,6 +452,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project access payload"));
       return;
     }
+    const linkedRules = deps.projectStore
+      ? await collectProjectLinkedRules(projectId, deps.projectStore)
+      : [];
     const policyId = projectAccessPolicyId(projectId, groupId);
     let policy = await deps.projectAccessStore.getPolicyById(policyId);
     if (!policy) {
@@ -371,10 +475,21 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         throw err;
       }
     }
+    const existingRules = await deps.projectAccessStore.listPolicyRules(policy.id);
+    const preservedLinkedRules: ProjectLinkedRule[] = [];
+    for (const rule of existingRules) {
+      if (rule.resourceId !== null && PROJECT_LINKED_RESOURCE_PERMISSIONS.has(rule.permission)) {
+        preservedLinkedRules.push({ permission: rule.permission, resourceId: rule.resourceId });
+      }
+    }
     const permissions = [...new Set(parsed.data.permissions)].sort();
     await deps.projectAccessStore.setPolicyRules(
       policy.id,
-      permissions.map((permission) => ({ permission, resourceId: projectId }))
+      mergePolicyRules([
+        preservedLinkedRules,
+        linkedRules,
+        permissions.map((permission) => ({ permission, resourceId: projectId })),
+      ])
     );
     recordAudit(deps.auditStore, req, {
       action: "project.access_set",
@@ -550,6 +665,17 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       log.warn({ err, id }, "update project children failed");
       writeJson(res, status, { error: status === 409 ? "Conflict" : "Update failed", message: msg }); return;
     }
+    let accessSyncFailed = false;
+    let accessSyncError: unknown;
+    if (deps.projectAccessStore) {
+      try {
+        await syncProjectLinkedRules(id, store, deps.projectAccessStore);
+      } catch (err: unknown) {
+        accessSyncFailed = true;
+        accessSyncError = err;
+        log.error({ err, id }, "project updated but linked-resource access synchronization failed");
+      }
+    }
     const refreshed = await store.getProjectById(id);
     if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
     const integrations = await readableIntegrationLookup(req);
@@ -573,6 +699,18 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     if (data.agentId !== undefined) {
       recordAudit(deps.auditStore, req, { action: "project.agent_assign", targetType: "project", targetId: id, details: { agentId: data.agentId } });
+    }
+    if (accessSyncFailed) {
+      deps.onProjectChange?.();
+      if (executionChanged || (updates.enabled === true && existing.enabled !== true)) {
+        await relaunchFailedTasksForProject(store, id, deps.taskControl);
+      }
+      const message = accessSyncError instanceof Error ? accessSyncError.message : String(accessSyncError);
+      writeJson(res, 500, {
+        error: "Project updated but linked-resource access synchronization failed",
+        message,
+      });
+      return;
     }
     writeJson(res, 200, { project: detail });
     deps.onProjectChange?.();
