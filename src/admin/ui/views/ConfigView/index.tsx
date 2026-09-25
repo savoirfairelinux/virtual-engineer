@@ -25,6 +25,7 @@ import { AuditSection }         from "./AuditSection.tsx";
 import { AuditExportSection }   from "./AuditExportSection.tsx";
 import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
 import { DenialsSection }       from "./DenialsSection.tsx";
+import { AuthSourcesSection }   from "./AuthSourcesSection.tsx";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 
 /* ─── Nav items ────────────────────────────────────────────────────────── */
@@ -36,6 +37,7 @@ const CONFIG_NAV = [
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
   { id: "runtime-policies", label: "Runtime Policies", sub: "Sandbox governance", icon: "layers" },
   { id: "denials",       label: "Policy Denials",   sub: "Audit log",         icon: "alert" },
+  { id: "auth-sources",  label: "Authentication",   sub: "LDAP directories",  icon: "link" },
   { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user" },
   { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers" },
   { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config" },
@@ -63,7 +65,7 @@ const CONFIG_GROUPS: ReadonlyArray<{
   {
     id: "access",
     label: "Access control",
-    sections: ["users", "groups", "policies"],
+    sections: ["auth-sources", "users", "groups", "policies"],
   },
   {
     id: "operations",
@@ -325,6 +327,7 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "prompts"      && <PromptsSection {...routedProps} />}
       {effectiveSec === "runtime-policies" && <RuntimePoliciesSection />}
       {effectiveSec === "denials"      && <DenialsSection />}
+      {effectiveSec === "auth-sources" && <AuthSourcesSection />}
       {effectiveSec === "users"        && <UsersSection {...routedProps} />}
       {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}
       {effectiveSec === "policies"     && <PoliciesSection {...routedProps} />}

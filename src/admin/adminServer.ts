@@ -32,9 +32,12 @@ import { registerSettingsRoutes, type SettingsController } from "./adminSettings
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
+import type { AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
+import type { PasswordAuthenticator } from "./authentication/passwordAuthenticator.js";
 import {
   getAuthContext,
   requestCanAccessResource,
@@ -133,6 +136,8 @@ export interface AdminServerDependencies {
     & Partial<Pick<StateStore, "getProjectStatistics">>;
   /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
   allowUnauthenticatedAdmin?: boolean | undefined;
+  /** Credential authority for `POST /auth/login` and setup; defaults to local scrypt passwords. */
+  authenticator?: PasswordAuthenticator | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;
@@ -303,6 +308,17 @@ function extractPbacStore(stateStore: unknown): PbacRuleStore | null {
     : null;
 }
 
+/** Feature-detect the authentication-source store backing /api/admin/auth-sources. */
+function extractAuthSourceStore(stateStore: unknown): AuthSourceStoreApi | null {
+  const candidate = stateStore as Partial<AuthSourceStoreApi> | null | undefined;
+  return candidate &&
+    typeof candidate.listAuthSources === "function" &&
+    typeof candidate.getAuthSourceById === "function" &&
+    typeof candidate.createAuthSource === "function"
+    ? (candidate as AuthSourceStoreApi)
+    : null;
+}
+
 /** Feature-detect the policy-binding surface used to assign role-default policies. */
 function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | null {
   const candidate = stateStore as Partial<DefaultPolicyBinderStore> | null | undefined;
@@ -353,7 +369,7 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
     throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
   }
   const authService = userStore && !dependencies.allowUnauthenticatedAdmin
-    ? createAdminAuthService({ stateStore: userStore })
+    ? createAdminAuthService({ stateStore: userStore, authenticator: dependencies.authenticator })
     : null;
   let usersExistCache: boolean | null = null;
   return {
@@ -470,6 +486,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
       ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
       : {}),
     trustProxy: dependencies.config.adminTrustProxy,
+  });
+  registerAuthSourceRoutes(router, {
+    authSourceStore: extractAuthSourceStore(dependencies.stateStore) ?? undefined,
+    auditStore,
+    adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
   registerPolicyRoutes(router, { policyStore: policyRoutesStore ?? undefined, auditStore });

@@ -30,6 +30,12 @@
 - `tasks.ticket_source_integration_id` and `tasks.ticket_source_project_key` are nullable text snapshots of the issue-tracking binding that created a ticket task. `createTask()` writes them from its optional `ticketSource` argument, and task hydration exposes them as `ticketSourceIntegrationId` / `ticketSourceProjectKey`; legacy and non-ticket-backed rows may have NULL values. These columns already exist and are not foreign keys.
 - Before resolving a ticket connector, the orchestrator compares a non-null task snapshot with the project's current binding. A changed or removed source is reported as a persisted project-reconfiguration incompatibility rather than silently routing an existing task through the replacement integration.
 
+## Admin Authentication Sources
+
+- `auth_sources` (TEXT `id` PK) stores external credential authorities for admin login: unique `name`, `kind` (CHECK `IN ('ldap')`), `enabled` (INTEGER, default 1), `priority` (INTEGER, default 100; lower values are tried first), `config_json` (TEXT, default `{}`), and second-based `created_at` / `updated_at`. Introduced by `0004_natural_nocturne.sql`.
+- `config_json` holds the kind-specific settings validated by `ldapConfigSchema` (`src/admin/authentication/ldapConfig.ts`): URL, StartTLS, optional CA PEM, service bind DN/password, user search base/filter, and attribute names. `bindPassword` is always stored as a `veenc:v1:` envelope; the admin API masks it and never returns ciphertext.
+- `AuthSourceStoreApi` (`src/state/stores/authSourceStore.ts`): `createAuthSource`, `getAuthSourceById`, `listAuthSources` (ordered by `priority`, then `name`), `updateAuthSource`, `deleteAuthSource`. Name collisions throw `code = "DUPLICATE"`.
+
 ## Audit trail store
 
 - `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.

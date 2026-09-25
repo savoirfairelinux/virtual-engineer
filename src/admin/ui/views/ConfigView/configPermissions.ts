@@ -12,6 +12,7 @@ export const CONFIG_SECTION_PERMISSIONS: Record<ConfigSectionId, string> = {
   prompts: "prompt.read",
   "runtime-policies": "policy.manage",
   denials: "audit.read",
+  "auth-sources": "user.manage",
   users: "user.manage",
   groups: "policy.manage",
   policies: "policy.manage",

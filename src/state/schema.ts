@@ -704,3 +704,29 @@ export const policyBindings = sqliteTable(
     idxPolicyBindingsPrincipal: index("idx_policy_bindings_principal").on(table.principalType, table.principalId),
   })
 );
+
+// ─── Admin authentication sources ─────────────────────────────────────────────
+
+export type AuthSourceKind = "ldap";
+
+/**
+ * External credential authorities for admin login. Kind-specific settings live
+ * in `config_json`; credential fields inside it are stored `veenc:v1:` encrypted.
+ */
+export const authSources = sqliteTable(
+  "auth_sources",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull().unique(),
+    kind: text("kind").$type<AuthSourceKind>().notNull(),
+    enabled: integer("enabled").notNull().default(1),
+    /** Lower values are tried first when a username matches no local account. */
+    priority: integer("priority").notNull().default(100),
+    configJson: text("config_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    chkAuthSourceKind: check("chk_auth_sources_kind", sql`${table.kind} IN ('ldap')`),
+  })
+);
