@@ -216,11 +216,27 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
     const policyStore = deps.policyStore;
     if (!requireStore(policyStore, res, "Policy store not available")) return;
     const policies = await policyStore.listPolicies();
-    const withCounts = await Promise.all(policies.map(async (p) => ({
-      ...serializePolicy(p),
-      ruleCount: (await policyStore.listPolicyRules(p.id)).length,
-      bindingCount: (await policyStore.listBindingsForPolicy(p.id)).length,
-    })));
+    const groupNames = new Map((await policyStore.listGroups()).map((g) => [g.id, g.name]));
+    const userNames = new Map<string, string | null>();
+    const principalName = async (type: PrincipalType, principalId: string): Promise<string> => {
+      if (type === "group") return groupNames.get(principalId) ?? principalId;
+      if (type === "system") return principalId;
+      if (!userNames.has(principalId)) userNames.set(principalId, (await policyStore.getUserById(principalId))?.username ?? null);
+      return userNames.get(principalId) ?? principalId;
+    };
+    const withCounts = await Promise.all(policies.map(async (p) => {
+      const bindings = await policyStore.listBindingsForPolicy(p.id);
+      return {
+        ...serializePolicy(p),
+        ruleCount: (await policyStore.listPolicyRules(p.id)).length,
+        bindingCount: bindings.length,
+        bindings: await Promise.all(bindings.map(async (b) => ({
+          principalType: b.principalType,
+          principalId: b.principalId,
+          principalName: await principalName(b.principalType, b.principalId),
+        }))),
+      };
+    }));
     writeJson(res, 200, { policies: withCounts });
   }, MANAGE);
 

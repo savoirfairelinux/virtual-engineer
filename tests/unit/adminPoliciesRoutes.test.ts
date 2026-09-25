@@ -162,6 +162,27 @@ describe("adminServer policy/group admin API", () => {
     expect(unbind.status).toBe(204);
   });
 
+  it("lists policy bindings with resolved principal names", async () => {
+    const created = await fetch(`${baseUrl}/api/admin/policies`, authJson({ name: "Named" }));
+    const { policy } = (await created.json()) as { policy: { id: string } };
+    const groupRes = await fetch(`${baseUrl}/api/admin/groups`, authJson({ name: "Readers" }));
+    const { group } = (await groupRes.json()) as { group: { id: string } };
+    const user = await createOperator("erin");
+    await fetch(`${baseUrl}/api/admin/policies/${policy.id}/bindings`, authJson({ principalType: "group", principalId: group.id }));
+    await fetch(`${baseUrl}/api/admin/policies/${policy.id}/bindings`, authJson({ principalType: "user", principalId: user.user.id }));
+
+    const list = await fetch(`${baseUrl}/api/admin/policies`, auth());
+    const body = (await list.json()) as {
+      policies: Array<{ id: string; bindingCount: number; bindings: Array<{ principalType: string; principalId: string; principalName: string }> }>;
+    };
+    const named = body.policies.find((p) => p.id === policy.id);
+    expect(named?.bindingCount).toBe(2);
+    expect(named?.bindings).toEqual(expect.arrayContaining([
+      { principalType: "group", principalId: group.id, principalName: "Readers" },
+      { principalType: "user", principalId: user.user.id, principalName: "erin" },
+    ]));
+  });
+
   it("binding a non-existent principal returns 404", async () => {
     const created = await fetch(`${baseUrl}/api/admin/policies`, authJson({ name: "P" }));
     const { policy } = (await created.json()) as { policy: { id: string } };

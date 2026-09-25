@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
 import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { Tag } from "../../components/Tag.tsx";
@@ -7,16 +7,29 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions 
 import { api } from "../../api.ts";
 import { policyListConfig } from "./configListConfigs.ts";
 import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
-import type { ApiGroup, ApiPolicy, ApiPolicyDetail, ApiPolicyRule, ApiUser } from "../../types.ts";
+import { PolicyRulesEditor } from "./PolicyRulesEditor.tsx";
+import {
+  POLICY_GROUPS,
+  applyLinkedResources,
+  draftIssues,
+  draftToRules,
+  emptyDraft,
+  formatNameWithId,
+  linkedResourcesForProject,
+  permissionLabel,
+  resourceOptions,
+  rulesToDraft,
+  type LinkedProjectDetail,
+  type PolicyDraft,
+  type PolicyResourceData,
+  type ScopedGroupId,
+} from "./policyRuleModel.ts";
+import type { ApiGroup, ApiPolicy, ApiPolicyDetail, ApiUser } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
 
 const POLICY_LIST_CONFIG = policyListConfig();
 
-const SCOPEABLE = new Set(["project", "task"]);
-function isScopeable(permission: string): boolean {
-  const type = permission.split(".")[0] ?? "";
-  return SCOPEABLE.has(type);
-}
+const GROUP_TITLE = new Map(POLICY_GROUPS.map((group) => [group.id, group.title]));
 
 /* ─── Create-policy modal ─────────────────────────────────────────────── */
 
@@ -62,37 +75,46 @@ function PolicyFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
 
 /* ─── Policy detail (rules + bindings) modal ──────────────────────────── */
 
-function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersisted }: {
+function describeLinked(added: { agent: string[]; integration: string[]; prompt: string[] }, data: PolicyResourceData): string {
+  const parts = (["agent", "integration", "prompt"] as const).flatMap((kind) => {
+    const labels = new Map(resourceOptions(kind, data).map((o) => [o.id, o.label]));
+    return added[kind].map((id) => labels.get(id) ?? id);
+  });
+  return parts.join(", ");
+}
+
+function PolicyDetailModal({ policyId, forceReadOnly, data, onClose, onEdit, onPersisted }: {
   policyId: string;
   forceReadOnly: boolean;
+  data: PolicyResourceData;
   onClose: () => void;
   onEdit?: (() => void) | undefined;
   onPersisted: () => void;
 }) {
   const [detail, setDetail] = useState<ApiPolicyDetail | null>(null);
-  const [permissions, setPermissions] = useState<string[]>([]);
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [groups, setGroups] = useState<ApiGroup[]>([]);
-  const [rules, setRules] = useState<ApiPolicyRule[]>([]);
-  const [savedRules, setSavedRules] = useState<ApiPolicyRule[]>([]);
+  const [draft, setDraft] = useState<PolicyDraft>(emptyDraft);
+  const draftRef = useRef(draft);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  const [savedDraft, setSavedDraft] = useState<PolicyDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [bindType, setBindType] = useState<"user" | "group">("user");
+  const [bindType, setBindType] = useState<"user" | "group">("group");
   const [bindId, setBindId] = useState("");
 
   const load = useCallback(async (preserveRuleDraft = false) => {
     try {
-      const [d, p, u, g] = await Promise.all([
+      const [d, u, g] = await Promise.all([
         api.get<{ policy: ApiPolicyDetail }>(`/api/admin/policies/${policyId}`),
-        api.get<{ permissions: string[] }>("/api/admin/permissions"),
         api.get<{ users: ApiUser[] }>("/api/admin/users"),
         api.get<{ groups: ApiGroup[] }>("/api/admin/groups"),
       ]);
-      const loadedRules = d.policy.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId }));
+      const loaded = rulesToDraft(d.policy.rules);
       setDetail(d.policy);
-      if (!preserveRuleDraft) setRules(loadedRules);
-      setSavedRules(loadedRules);
-      setPermissions(p.permissions);
+      if (!preserveRuleDraft) setDraft(loaded);
+      setSavedDraft(loaded);
       setUsers(u.users);
       setGroups(g.groups);
     } catch (e) {
@@ -103,27 +125,32 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
   useEffect(() => { void load(); }, [load]);
 
   const readOnly = forceReadOnly || (detail?.builtin ?? false);
-  const rulesDirty = JSON.stringify(rules) !== JSON.stringify(savedRules);
+  const rulesDirty = JSON.stringify(draftToRules(draft)) !== JSON.stringify(draftToRules(savedDraft));
+  const issues = draftIssues(draft);
 
-  function addRule() {
-    setRules((rs) => [...rs, { permission: permissions[0] ?? "project.read", resourceId: null }]);
-  }
-  function updateRule(i: number, patch: Partial<ApiPolicyRule>) {
-    setRules((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  }
-  function removeRule(i: number) {
-    setRules((rs) => rs.filter((_, idx) => idx !== i));
+  function addLinkedResources(group: ScopedGroupId, resourceId: string) {
+    if (group !== "project" && group !== "task") return;
+    void api.get<{ project: LinkedProjectDetail }>(`/api/admin/projects/${encodeURIComponent(resourceId)}`)
+      .then(({ project }) => {
+        const linked = linkedResourcesForProject(project, data.agents, data.prompts);
+        const result = applyLinkedResources(draftRef.current, linked);
+        setDraft(result.draft);
+        const summary = describeLinked(result.added, data);
+        setNotice(summary ? `Added linked resources with Read access: ${summary}` : null);
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? `Could not load linked resources: ${e.message}` : "Could not load linked resources"));
   }
 
   async function saveRules() {
+    if (issues.missingResources.length > 0) {
+      setError(`Select at least one resource for: ${issues.missingResources.map((id) => GROUP_TITLE.get(id) ?? id).join(", ")}`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const payload = rules.map((r) => ({
-        permission: r.permission,
-        resourceId: isScopeable(r.permission) && r.resourceId ? r.resourceId : null,
-      }));
-      await api.put(`/api/admin/policies/${policyId}/rules`, { rules: payload });
+      await api.put(`/api/admin/policies/${policyId}/rules`, { rules: draftToRules(draft) });
+      setNotice(null);
       await load();
       onPersisted();
     } catch (e) {
@@ -147,14 +174,16 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
   }
 
   function principalLabel(type: "user" | "group" | "system", id: string): string {
-    if (type === "user") return users.find((u) => u.id === id)?.username ?? id;
+    if (type === "user") return formatNameWithId(users.find((u) => u.id === id)?.username, id);
     if (type === "system") {
       return id.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
     }
-    return groups.find((g) => g.id === id)?.name ?? id;
+    return formatNameWithId(groups.find((g) => g.id === id)?.name, id);
   }
 
-  const bindCandidates = bindType === "user" ? users.map((u) => ({ id: u.id, label: u.username })) : groups.map((g) => ({ id: g.id, label: g.name }));
+  const bindCandidates = bindType === "user"
+    ? users.map((u) => ({ id: u.id, label: formatNameWithId(u.username, u.id) }))
+    : groups.map((g) => ({ id: g.id, label: formatNameWithId(g.name, g.id) }));
 
   if (error && !detail) {
     return (
@@ -172,29 +201,43 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
 
         {/* Rules */}
         <div className="eyebrow" style={{ margin: "4px 0 8px" }}>Rules</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
-          {rules.length === 0 && <div className="placeholder" style={{ minHeight: "50px" }}>No grants — this policy grants nothing.</div>}
-          {rules.map((r, i) => (
-            <div key={i} className="policy-rule-edit-row" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <FieldSelect value={r.permission} disabled={readOnly} onChange={(e) => updateRule(i, { permission: e.target.value })}>
-                {permissions.map((p) => <option key={p} value={p}>{p}</option>)}
-              </FieldSelect>
-              <FieldInput
-                value={r.resourceId ?? ""}
-                placeholder={isScopeable(r.permission) ? "resource id (blank = all)" : "global"}
-                disabled={readOnly || !isScopeable(r.permission)}
-                onChange={(e) => updateRule(i, { resourceId: e.target.value || null })}
-              />
-              {!readOnly && (
-                <button data-config-dirty className="iconbtn" title="Remove" onClick={() => removeRule(i)}><Icon name="trash" size={14} /></button>
-              )}
-            </div>
-          ))}
-        </div>
+        {savedDraft.nonUniform && !readOnly && (
+          <div className="policy-warning" style={{ marginBottom: "10px", fontSize: "12.5px", color: "var(--warning, var(--text-dim))" }}>
+            Some stored rules grant different actions to different resources of the same type. Saving applies every checked action to every selected resource of that type.
+          </div>
+        )}
+        {draft.legacyGlobalRules.length > 0 && (
+          <div style={{ marginBottom: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>These rules grant access to every resource of their type:</div>
+            {draft.legacyGlobalRules.map((rule) => (
+              <RowCard key={rule.permission}>
+                <div style={{ flex: 1, fontSize: "13px" }}>{permissionLabel(rule.permission)} — all resources</div>
+                {!readOnly && (
+                  <button data-config-dirty className="iconbtn" title="Remove" aria-label={`Remove all-resource grant ${rule.permission}`}
+                    onClick={() => setDraft((current) => ({ ...current, legacyGlobalRules: current.legacyGlobalRules.filter((r) => r.permission !== rule.permission) }))}>
+                    <Icon name="trash" size={14} />
+                  </button>
+                )}
+              </RowCard>
+            ))}
+          </div>
+        )}
+        <PolicyRulesEditor
+          draft={draft}
+          data={data}
+          readOnly={readOnly}
+          onChange={setDraft}
+          onResourceAdded={addLinkedResources}
+        />
+        {notice && <div style={{ marginTop: "10px", fontSize: "12.5px", color: "var(--text-dim)" }}>{notice}</div>}
+        {!readOnly && issues.missingActions.length > 0 && (
+          <div style={{ marginTop: "10px", fontSize: "12.5px", color: "var(--text-faint)" }}>
+            No action checked for: {issues.missingActions.map((id) => GROUP_TITLE.get(id) ?? id).join(", ")} — those resources receive nothing.
+          </div>
+        )}
         {!readOnly && (
-          <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            <button data-config-dirty className="btn ghost" onClick={addRule}><Icon name="plus" size={13} /> Add rule</button>
-            <button className="btn primary" disabled={busy} onClick={() => void saveRules()}>{busy ? "Saving…" : "Save rules"}</button>
+          <div style={{ display: "flex", gap: "8px", margin: "12px 0 16px" }}>
+            <button className="btn primary" disabled={busy || !rulesDirty} onClick={() => void saveRules()}>{busy ? "Saving…" : "Save rules"}</button>
           </div>
         )}
 
@@ -243,7 +286,11 @@ function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersist
 
 /* ─── Policies section ────────────────────────────────────────────────── */
 
-export function PoliciesSection({ route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
+export function PoliciesSection({ route, navigate, markClean, listFilter, onListFilterChange, projects, integrations, agents, prompts, oauthApps }: ConfigSectionProps) {
+  const resourceData = useMemo<PolicyResourceData>(
+    () => ({ projects, integrations, agents, prompts, oauthApps }),
+    [projects, integrations, agents, prompts, oauthApps],
+  );
   const [policies, setPolicies] = useState<ApiPolicy[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -291,6 +338,7 @@ export function PoliciesSection({ route, navigate, markClean, listFilter, onList
       <PolicyDetailModal
         policyId={routeId}
         forceReadOnly={route.mode === "detail"}
+        data={resourceData}
         onClose={() => { void load(); navigate(route.mode === "edit"
           ? { section: "policies", mode: "detail", id: routeId }
           : { section: "policies", mode: "list" }); }}
@@ -351,6 +399,15 @@ export function PoliciesSection({ route, navigate, markClean, listFilter, onList
                 <Tag tone="muted" mono={false}>{p.bindingCount ?? 0} assigned</Tag>
               </div>
               {p.description && <div style={{ fontSize: "12px", color: "var(--text-faint)", marginTop: "3px" }}>{p.description}</div>}
+              {(p.bindings ?? []).some((b) => b.principalType !== "system") && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "6px" }}>
+                  {(p.bindings ?? []).filter((b) => b.principalType !== "system").map((b) => (
+                    <Tag key={`${b.principalType}:${b.principalId}`} tone={b.principalType === "group" ? "info" : "muted"} mono={false}>
+                      {b.principalType}: {formatNameWithId(b.principalName, b.principalId)}
+                    </Tag>
+                  ))}
+                </div>
+              )}
             </div>
             <button className="btn ghost" disabled={busy === p.id} onClick={(event) => { event.stopPropagation(); navigate({ section: "policies", mode: p.builtin ? "detail" : "edit", id: p.id }); }}>
               {p.builtin ? "View" : "Edit"}
