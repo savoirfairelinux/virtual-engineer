@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
-import { Modal, Field, FieldInput, FieldTextarea } from "../../components/Modal.tsx";
+import { Modal, Field, FieldInput, FieldSelect, FieldTextarea, FormError } from "../../components/Modal.tsx";
+import { Tag } from "../../components/Tag.tsx";
+import type { ApiGroup } from "../../types.ts";
 
 export interface LdapSourceConfig {
   url: string;
@@ -14,8 +17,13 @@ export interface LdapSourceConfig {
   usernameAttribute: string;
   uniqueIdAttribute: string;
   displayNameAttribute: string;
+  groupMembershipAttribute: string;
+  groupSearchBaseDn?: string | undefined;
+  groupSearchFilter: string;
   timeoutMs: number;
 }
+
+export type ProvisionedRole = "viewer" | "operator";
 
 export interface AuthSource {
   id: string;
@@ -23,8 +31,29 @@ export interface AuthSource {
   kind: "ldap";
   enabled: boolean;
   priority: number;
+  autoProvision: boolean;
+  defaultRole: ProvisionedRole;
   config: LdapSourceConfig;
 }
+
+interface GroupMapping {
+  id: string;
+  externalGroup: string;
+  groupId: string;
+  groupName: string;
+}
+
+type DirectoryLookup =
+  | {
+      status: "found";
+      account: { dn: string; subject: string; username: string; displayName: string | null; groups: string[] };
+      mappedGroups: Array<{ id: string; name: string }>;
+      linkedUser: { id: string; username: string } | null;
+      wouldProvision: boolean;
+      blockedReason: "source_disabled" | "not_linked" | "username_taken" | null;
+    }
+  | { status: "not_found" | "ambiguous" }
+  | { status: "unavailable"; error: string };
 
 type ConnectionTest = { ok: true } | { ok: false; stage: string; error: string };
 
@@ -41,6 +70,9 @@ export const EMPTY_LDAP_CONFIG: LdapSourceConfig = {
   usernameAttribute: "uid",
   uniqueIdAttribute: "entryUUID",
   displayNameAttribute: "cn",
+  groupMembershipAttribute: "memberOf",
+  groupSearchBaseDn: "",
+  groupSearchFilter: "(&(objectClass=groupOfNames)(member={dn}))",
   timeoutMs: 5000,
 };
 
@@ -55,10 +87,14 @@ export function describeConnectionTest(result: ConnectionTest): string {
 }
 
 export function AuthSourcesSection() {
+  const { can } = useCurrentUser();
+  const canManageMappings = can("policy.manage");
   const [sources, setSources] = useState<AuthSource[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<AuthSource | null>(null);
   const [creating, setCreating] = useState(false);
+  const [mappingSource, setMappingSource] = useState<AuthSource | null>(null);
+  const [lookupSource, setLookupSource] = useState<AuthSource | null>(null);
   const [testResults, setTestResults] = useState<Record<string, string>>({});
 
   async function load() {
@@ -128,6 +164,7 @@ export function AuthSourcesSection() {
                   <span style={{ fontWeight: 600, fontSize: "13.5px" }}>{source.name}</span>
                   <span className="tag" style={{ textTransform: "uppercase", fontSize: "10px" }}>{source.kind}</span>
                   <span className="tag" style={{ fontSize: "10px" }}>{source.enabled ? "enabled" : "disabled"}</span>
+                  {source.autoProvision && <span className="tag" style={{ fontSize: "10px" }}>auto-provision · {source.defaultRole}</span>}
                   <span style={{ fontSize: "11px", color: "var(--text-ghost)" }}>priority {source.priority}</span>
                 </div>
                 <div style={{ fontSize: "11.5px", color: "var(--text-ghost)", marginTop: 2 }}>
@@ -140,6 +177,14 @@ export function AuthSourcesSection() {
               <button className="iconbtn" onClick={() => void handleTest(source)} title="Test connection" aria-label={`Test ${source.name}`} style={ACTION_ICON_STYLE}>
                 <Icon name="pulse" size={16} />
               </button>
+              <button className="iconbtn" onClick={() => setLookupSource(source)} title="Look up a user" aria-label={`Look up a user in ${source.name}`} style={ACTION_ICON_STYLE}>
+                <Icon name="search" size={16} />
+              </button>
+              {canManageMappings && (
+                <button className="iconbtn" onClick={() => setMappingSource(source)} title="Group mappings" aria-label={`Group mappings for ${source.name}`} style={ACTION_ICON_STYLE}>
+                  <Icon name="link" size={16} />
+                </button>
+              )}
               <button className="iconbtn" onClick={() => setEditing(source)} title="Edit" aria-label={`Edit ${source.name}`} style={ACTION_ICON_STYLE}>
                 <Icon name="edit" size={16} />
               </button>
@@ -158,8 +203,154 @@ export function AuthSourcesSection() {
           onSaved={() => { setCreating(false); setEditing(null); void load(); }}
         />
       )}
+      {mappingSource && <GroupMappingsModal source={mappingSource} onClose={() => setMappingSource(null)} />}
+      {lookupSource && <DirectoryLookupModal source={lookupSource} onClose={() => setLookupSource(null)} />}
     </>
   );
+}
+
+function GroupMappingsModal({ source, onClose }: { source: AuthSource; onClose: () => void }) {
+  const [mappings, setMappings] = useState<GroupMapping[]>([]);
+  const [groups, setGroups] = useState<ApiGroup[]>([]);
+  const [externalGroup, setExternalGroup] = useState("");
+  const [groupId, setGroupId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [mapped, available] = await Promise.all([
+        api.get<{ mappings: GroupMapping[] }>(`/api/admin/auth-sources/${source.id}/group-mappings`),
+        api.get<{ groups: ApiGroup[] }>("/api/admin/groups"),
+      ]);
+      setMappings(mapped.mappings);
+      setGroups(available.groups);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load group mappings");
+    }
+  }, [source.id]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function mutate(operation: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Group mappings" sub={`${source.name} — directory groups grant membership in VE groups at sign-in`} onClose={onClose} wide>
+      <FormError msg={error} />
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
+        {mappings.length === 0 && <div className="placeholder" style={{ minHeight: "56px" }}>No group mappings yet.</div>}
+        {mappings.map((mapping) => (
+          <div key={mapping.id} className="card" style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px" }}>
+            <span className="mono" style={{ flex: 1, fontSize: "12px", overflowWrap: "anywhere" }}>{mapping.externalGroup}</span>
+            <Icon name="arrow" size={13} />
+            <Tag tone="info" mono={false}>{mapping.groupName}</Tag>
+            <button className="iconbtn" disabled={busy} title="Remove mapping" aria-label={`Remove mapping ${mapping.externalGroup}`}
+              onClick={() => void mutate(() => api.delete(`/api/admin/auth-sources/${source.id}/group-mappings/${mapping.id}`))}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <Field label="Directory group DN" hint="Compared case-insensitively, e.g. cn=devs,ou=groups,dc=example,dc=com">
+        <FieldInput value={externalGroup} onChange={(e) => setExternalGroup(e.target.value)} placeholder="cn=devs,ou=groups,dc=example,dc=com" />
+      </Field>
+      <Field label="VE group">
+        <div style={{ display: "flex", gap: "8px" }}>
+          <FieldSelect aria-label="VE group" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+            <option value="">Select a group…</option>
+            {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+          </FieldSelect>
+          <button className="btn primary" disabled={busy || externalGroup.trim() === "" || groupId === ""}
+            onClick={() => void mutate(async () => {
+              await api.post(`/api/admin/auth-sources/${source.id}/group-mappings`, { externalGroup: externalGroup.trim(), groupId });
+              setExternalGroup("");
+              setGroupId("");
+            })}>
+            Add mapping
+          </button>
+        </div>
+      </Field>
+    </Modal>
+  );
+}
+
+function DirectoryLookupModal({ source, onClose }: { source: AuthSource; onClose: () => void }) {
+  const [username, setUsername] = useState("");
+  const [result, setResult] = useState<DirectoryLookup | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleLookup() {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      setResult(await api.post<DirectoryLookup>(`/api/admin/auth-sources/${source.id}/lookup`, { username: username.trim() }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Lookup failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Look up a user" sub={`${source.name} — resolves the account with the service account; no password is checked`} onClose={onClose} wide>
+      <Field label="Directory username">
+        <div style={{ display: "flex", gap: "8px" }}>
+          <FieldInput aria-label="Directory username" value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
+          <button className="btn primary" disabled={busy || username.trim() === ""} onClick={() => void handleLookup()}>
+            {busy ? "Looking up…" : "Look up"}
+          </button>
+        </div>
+      </Field>
+      <FormError msg={error} />
+      {result && result.status !== "found" && (
+        <div role="status" style={{ fontSize: "13px", color: "var(--text-dim)" }}>
+          {result.status === "not_found" && "No account matches the user filter."}
+          {result.status === "ambiguous" && "More than one account matches; tighten the user filter."}
+          {result.status === "unavailable" && `Directory unavailable: ${result.error}`}
+        </div>
+      )}
+      {result?.status === "found" && (
+        <div role="status" style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "6px 14px", fontSize: "12.5px" }}>
+          <span style={{ color: "var(--text-faint)" }}>DN</span><span className="mono" style={{ overflowWrap: "anywhere" }}>{result.account.dn}</span>
+          <span style={{ color: "var(--text-faint)" }}>Username</span><span>{result.account.username}</span>
+          <span style={{ color: "var(--text-faint)" }}>Display name</span><span>{result.account.displayName ?? "—"}</span>
+          <span style={{ color: "var(--text-faint)" }}>Unique ID</span><span className="mono">{result.account.subject}</span>
+          <span style={{ color: "var(--text-faint)" }}>Directory groups</span>
+          <span className="mono" style={{ overflowWrap: "anywhere" }}>{result.account.groups.length > 0 ? result.account.groups.join("; ") : "none"}</span>
+          <span style={{ color: "var(--text-faint)" }}>VE groups</span>
+          <span>{result.mappedGroups.length > 0 ? result.mappedGroups.map((group) => group.name).join(", ") : "none"}</span>
+          <span style={{ color: "var(--text-faint)" }}>VE account</span>
+          <span>{lookupOutcome(result, source.defaultRole)}</span>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function lookupOutcome(result: Extract<DirectoryLookup, { status: "found" }>, defaultRole: string): string {
+  const linked = result.linkedUser ? `Linked to ${result.linkedUser.username}` : null;
+  if (result.blockedReason === "source_disabled") {
+    return `${linked ? `${linked}; s` : "S"}ign-in is refused while this source is disabled`;
+  }
+  if (linked) return linked;
+  if (result.wouldProvision) return `Created on first sign-in as ${defaultRole}`;
+  if (result.blockedReason === "username_taken") {
+    return "Not created at sign-in: a local account already uses this username; link this account to a user or create it under another username";
+  }
+  return "Not linked; sign-in is refused until an admin links it";
 }
 
 function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
@@ -180,7 +371,14 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
   const [name, setName] = useState(source?.name ?? "");
   const [enabled, setEnabled] = useState(source?.enabled ?? true);
   const [priority, setPriority] = useState(String(source?.priority ?? 100));
-  const [config, setConfig] = useState<LdapSourceConfig>(() => ({ ...EMPTY_LDAP_CONFIG, ...source?.config, tlsCaCert: source?.config.tlsCaCert ?? "" }));
+  const [autoProvision, setAutoProvision] = useState(source?.autoProvision ?? false);
+  const [defaultRole, setDefaultRole] = useState<ProvisionedRole>(source?.defaultRole ?? "viewer");
+  const [config, setConfig] = useState<LdapSourceConfig>(() => ({
+    ...EMPTY_LDAP_CONFIG,
+    ...source?.config,
+    tlsCaCert: source?.config.tlsCaCert ?? "",
+    groupSearchBaseDn: source?.config.groupSearchBaseDn ?? "",
+  }));
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -215,7 +413,7 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
     if (!name.trim()) { setError("Name is required"); return; }
     setBusy(true);
     try {
-      const body = { name, enabled, priority: Number(priority), config: payloadConfig() };
+      const body = { name, enabled, priority: Number(priority), autoProvision, defaultRole, config: payloadConfig() };
       if (source) {
         await api.put(`/api/admin/auth-sources/${source.id}`, body);
       } else {
@@ -288,6 +486,26 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
       </Field>
       <Field label="Display name attribute">
         <FieldInput value={config.displayNameAttribute} onChange={(e) => update("displayNameAttribute", e.target.value)} />
+      </Field>
+
+      <div className="eyebrow" style={{ margin: "18px 0 8px" }}>Groups</div>
+      <Field label="Group membership attribute" hint="User attribute listing group DNs (memberOf). Leave empty to rely on the group search only.">
+        <FieldInput value={config.groupMembershipAttribute} onChange={(e) => update("groupMembershipAttribute", e.target.value)} />
+      </Field>
+      <Field label="Group search base DN" hint="Optional. Searches groups with the service account for directories without memberOf.">
+        <FieldInput value={config.groupSearchBaseDn ?? ""} onChange={(e) => update("groupSearchBaseDn", e.target.value)} placeholder="ou=groups,dc=example,dc=com" />
+      </Field>
+      <Field label="Group search filter" hint="{dn} is the user's DN and {username} the sign-in name, both escaped. Used only with a group search base.">
+        <FieldInput value={config.groupSearchFilter} onChange={(e) => update("groupSearchFilter", e.target.value)} style={{ fontFamily: "var(--mono, monospace)" }} />
+      </Field>
+
+      <div className="eyebrow" style={{ margin: "18px 0 8px" }}>Provisioning</div>
+      <Checkbox label="Create a user on first sign-in" checked={autoProvision} onChange={setAutoProvision} />
+      <Field label="Role for new users" hint="Admin rights are never granted automatically; promote users on the Users page.">
+        <FieldSelect value={defaultRole} disabled={!autoProvision} onChange={(e) => setDefaultRole(e.target.value as ProvisionedRole)}>
+          <option value="viewer">viewer</option>
+          <option value="operator">operator</option>
+        </FieldSelect>
       </Field>
     </Modal>
   );
