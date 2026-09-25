@@ -140,6 +140,7 @@ export interface PolicySeedStore {
   listUsers(): Promise<AdminUser[]>;
   listBindingsForPrincipal(principalType: PrincipalType, principalId: string): Promise<PolicyBinding[]>;
   listGroupsForUser(userId: string): Promise<Group[]>;
+  getUserIdentityByUserId(userId: string): Promise<{ id: string } | null>;
   createBinding(input: { policyId: string; principalType: PrincipalType; principalId: string }): Promise<PolicyBinding>;
 }
 
@@ -147,7 +148,8 @@ export interface PolicySeedStore {
  * Ensure the built-in policies exist with up-to-date rules, then perform a
  * one-time migration binding existing `operator`/`viewer` users to their
  * matching built-in policy. The migration only touches users that have **no**
- * policy bindings and **no** group memberships, so it never overrides an admin's
+ * policy bindings, **no** group memberships, and **no** directory link (whose
+ * mapped groups may be their only grants), so it never overrides an admin's
  * later access-control changes.
  */
 export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void> {
@@ -222,11 +224,12 @@ export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void>
     const policyId = policyIdByName.get(policyName);
     if (!policyId) continue;
 
-    const [bindings, groups] = await Promise.all([
+    const [bindings, groups, identity] = await Promise.all([
       store.listBindingsForPrincipal("user", user.id),
       store.listGroupsForUser(user.id),
+      store.getUserIdentityByUserId(user.id),
     ]);
-    if (bindings.length > 0 || groups.length > 0) continue; // already managed under PBAC
+    if (bindings.length > 0 || groups.length > 0 || identity) continue; // already managed under PBAC
 
     try {
       await store.createBinding({ policyId, principalType: "user", principalId: user.id });

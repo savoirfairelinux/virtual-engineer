@@ -4,11 +4,13 @@ import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 describe("directoryGroupStore", () => {
   let store: SqliteStateStore;
+  let dbPath: string;
   let sourceId: string;
   let groupId: string;
 
   beforeEach(async () => {
-    store = await SqliteStateStore.create(tempDatabasePath("ve-directory-groups"));
+    dbPath = tempDatabasePath("ve-directory-groups");
+    store = await SqliteStateStore.create(dbPath);
     sourceId = (await store.createAuthSource({ name: "Corp", kind: "ldap", configJson: "{}" })).id;
     groupId = (await store.createGroup({ name: "Developers" })).id;
   });
@@ -66,6 +68,22 @@ describe("directoryGroupStore", () => {
     await store.updateAuthSource(sourceId, { enabled: false });
     expect(await permissions()).not.toContain("audit.read");
     await expect(store.listDirectoryMemberIds(groupId)).resolves.toEqual([]);
+  });
+
+  it("keeps a directory user limited to mapped-group policies across a restart", async () => {
+    const policy = await store.createPolicy({ name: "Auditors" });
+    await store.setPolicyRules(policy.id, [{ permission: "audit.read" }]);
+    await store.createBinding({ policyId: policy.id, principalType: "group", principalId: groupId });
+    await store.createGroupMapping({ authSourceId: sourceId, externalGroup: "cn=devs,ou=groups", groupId });
+    const alice = await directoryUser("alice", ["cn=devs,ou=groups"]);
+
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    await expect(store.listBindingsForPrincipal("user", alice.userId)).resolves.toEqual([]);
+    const permissions = (await store.getEffectivePolicyRulesForUser(alice.userId)).map((rule) => rule.permission);
+    expect(permissions).toContain("audit.read");
+    expect(permissions).not.toContain("oauth.manage");
   });
 
   it("cascades mappings with their group and identity groups with their user", async () => {

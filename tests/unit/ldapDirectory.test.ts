@@ -6,9 +6,25 @@ import {
   authenticateLdapSubject,
   escapeLdapFilterValue,
   lookupLdapAccount,
+  normalizeLdapDn,
   testLdapConnection,
 } from "../../src/admin/authentication/ldapDirectory.js";
 import { ldapAvailable, startLdapDirectoryServer, type LdapDirectoryServer } from "./helpers/ldapDirectoryServer.js";
+
+describe("normalizeLdapDn", () => {
+  it("lower-cases and trims RDNs while keeping escaped commas", () => {
+    expect(normalizeLdapDn("CN=Dev Team, OU=Groups ,DC=Example,DC=Com")).toBe("cn=dev team,ou=groups,dc=example,dc=com");
+    expect(normalizeLdapDn("cn = Smith\\, John,ou=People")).toBe("cn=smith\\, john,ou=people");
+  });
+
+  it("keeps escaped spaces and RDN boundaries, and treats equivalent escapes as one DN", () => {
+    expect(normalizeLdapDn("cn=devs\\ ,ou=groups,dc=ve,dc=test")).not.toBe(normalizeLdapDn("cn=devs\\,ou=groups,dc=ve,dc=test"));
+    expect(normalizeLdapDn("cn=devs\\ ,ou=groups")).toBe("cn=devs\\ ,ou=groups");
+    expect(normalizeLdapDn("cn=Smith\\2C John,ou=People")).toBe(normalizeLdapDn("cn=Smith\\, John,ou=People"));
+    expect(normalizeLdapDn("cn=\\C3\\A9mile,ou=People")).toBe("cn=émile,ou=people");
+    expect(normalizeLdapDn("cn=\\#1\\+x\\;y,ou=People")).toBe("cn=\\#1\\+x\\;y,ou=people");
+  });
+});
 
 describe("escapeLdapFilterValue", () => {
   it("escapes RFC 4515 special characters", () => {
@@ -73,6 +89,8 @@ describe.skipIf(!ldapAvailable)("directory accounts (live slapd)", () => {
     await directory.addUser("alice", "alice-Pass-1", { cn: "Alice Liddell" });
     await directory.addUser("twin-a", "twin-Pass-1", { sn: "twin" });
     await directory.addUser("twin-b", "twin-Pass-1", { sn: "twin" });
+    await directory.addGroup("Devs", ["alice"]);
+    await directory.addGroup("ops", ["alice", "twin-a"]);
   });
 
   afterAll(async () => {
@@ -93,6 +111,34 @@ describe.skipIf(!ldapAvailable)("directory accounts (live slapd)", () => {
     const subject = lookup.status === "found" ? lookup.account.subject : "";
     expect(subject).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     await expect(lookupLdapAccount(config(), "ALICE")).resolves.toMatchObject({ account: { subject, username: "alice" } });
+  });
+
+  it("resolves groups from memberOf, from a group search, or not at all", async () => {
+    const expected = ["cn=devs,ou=groups,dc=ve,dc=test", "cn=ops,ou=groups,dc=ve,dc=test"];
+    await expect(lookupLdapAccount(config(), "alice")).resolves.toMatchObject({ account: { groups: expected } });
+
+    const searched = config({ groupMembershipAttribute: "", groupSearchBaseDn: "ou=groups,dc=ve,dc=test" });
+    await expect(lookupLdapAccount(searched, "alice")).resolves.toMatchObject({ account: { groups: expected } });
+
+    await expect(lookupLdapAccount(config({ groupMembershipAttribute: "" }), "alice")).resolves.toMatchObject({ account: { groups: [] } });
+    await expect(lookupLdapAccount(config(), "twin-b")).resolves.toMatchObject({ account: { groups: [] } });
+  });
+
+  it("never reads a placeholder out of the DN it substituted into the group filter", async () => {
+    await directory.addUser("{username}", "brace-Pass-1", { cn: "xavier" });
+    await directory.addUser("xavier", "xavier-Pass-1", { cn: "yolanda" });
+    await directory.addGroup("x-team", ["{username}"]);
+    await directory.addGroup("y-only", ["xavier"]);
+    const byCn = config({
+      userSearchFilter: "(&(objectClass=inetOrgPerson)(cn={username}))",
+      usernameAttribute: "cn",
+      groupMembershipAttribute: "",
+      groupSearchBaseDn: "ou=groups,dc=ve,dc=test",
+    });
+
+    await expect(lookupLdapAccount(byCn, "xavier")).resolves.toMatchObject({
+      account: { dn: "uid={username},ou=people,dc=ve,dc=test", username: "xavier", groups: ["cn=x-team,ou=groups,dc=ve,dc=test"] },
+    });
   });
 
   it("reports missing, ambiguous, and injected names without matching them", async () => {
