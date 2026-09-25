@@ -4,6 +4,9 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { authSources, type AuthSourceKind } from "../schema.js";
 import * as schema from "../schema.js";
 
+/** Roles an auto-provisioned user may receive; `admin` is always granted locally. */
+export type ProvisionedRole = "viewer" | "operator";
+
 function isUniqueConstraintViolation(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -24,28 +27,34 @@ export interface AuthSourceRecord {
   enabled: boolean;
   priority: number;
   configJson: string;
+  autoProvision: boolean;
+  defaultRole: ProvisionedRole;
   createdAt: Date;
   updatedAt: Date;
 }
 
+interface AuthSourceWritableFields {
+  name?: string;
+  enabled?: boolean;
+  priority?: number;
+  configJson?: string;
+  autoProvision?: boolean;
+  defaultRole?: ProvisionedRole;
+}
+
 export interface AuthSourceStoreApi {
   /** Throws an Error with `code = "DUPLICATE"` when the name is taken. */
-  createAuthSource(input: {
+  createAuthSource(input: AuthSourceWritableFields & {
     id?: string;
     name: string;
     kind: AuthSourceKind;
-    enabled?: boolean;
-    priority?: number;
     configJson: string;
   }): Promise<AuthSourceRecord>;
   getAuthSourceById(id: string): Promise<AuthSourceRecord | null>;
   /** Ordered by ascending priority, then name. */
   listAuthSources(): Promise<AuthSourceRecord[]>;
   /** Throws an Error with `code = "DUPLICATE"` when renamed onto a taken name. */
-  updateAuthSource(
-    id: string,
-    partial: { name?: string; enabled?: boolean; priority?: number; configJson?: string }
-  ): Promise<AuthSourceRecord | null>;
+  updateAuthSource(id: string, partial: AuthSourceWritableFields): Promise<AuthSourceRecord | null>;
   deleteAuthSource(id: string): Promise<boolean>;
 }
 
@@ -64,6 +73,8 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
       enabled: row.enabled === 1,
       priority: row.priority,
       configJson: row.configJson,
+      autoProvision: row.autoProvision === 1,
+      defaultRole: row.defaultRole === "operator" ? "operator" : "viewer",
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -74,12 +85,10 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
     return row ? rowToRecord(row) : null;
   }
 
-  async function createAuthSource(input: {
+  async function createAuthSource(input: AuthSourceWritableFields & {
     id?: string;
     name: string;
     kind: AuthSourceKind;
-    enabled?: boolean;
-    priority?: number;
     configJson: string;
   }): Promise<AuthSourceRecord> {
     const now = new Date();
@@ -92,6 +101,8 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
         enabled: input.enabled === false ? 0 : 1,
         priority: input.priority ?? 100,
         configJson: input.configJson,
+        autoProvision: input.autoProvision ? 1 : 0,
+        defaultRole: input.defaultRole ?? "viewer",
         createdAt: now,
         updatedAt: now,
       });
@@ -111,15 +122,14 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
     return rows.map(rowToRecord);
   }
 
-  async function updateAuthSource(
-    id: string,
-    partial: { name?: string; enabled?: boolean; priority?: number; configJson?: string }
-  ): Promise<AuthSourceRecord | null> {
+  async function updateAuthSource(id: string, partial: AuthSourceWritableFields): Promise<AuthSourceRecord | null> {
     const set: Partial<typeof authSources.$inferInsert> = { updatedAt: new Date() };
     if (partial.name !== undefined) set.name = partial.name;
     if (partial.enabled !== undefined) set.enabled = partial.enabled ? 1 : 0;
     if (partial.priority !== undefined) set.priority = partial.priority;
     if (partial.configJson !== undefined) set.configJson = partial.configJson;
+    if (partial.autoProvision !== undefined) set.autoProvision = partial.autoProvision ? 1 : 0;
+    if (partial.defaultRole !== undefined) set.defaultRole = partial.defaultRole;
     try {
       await db.update(authSources).set(set).where(eq(authSources.id, id));
     } catch (err) {
