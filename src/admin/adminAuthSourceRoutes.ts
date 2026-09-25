@@ -23,6 +23,8 @@ const sourceFieldsSchema = z.object({
   priority: z.number().int().min(0).max(10_000).optional(),
   autoProvision: z.boolean().optional(),
   defaultRole: z.enum(["viewer", "operator"]).optional(),
+  sessionMaxAgeHours: z.number().int().min(1).max(720).optional(),
+  revalidateIntervalMinutes: z.number().int().min(0).max(1440).optional(),
   config: z.record(z.unknown()),
 });
 const updateSchema = sourceFieldsSchema.omit({ kind: true }).partial();
@@ -35,7 +37,7 @@ const lookupSchema = z.object({ username: z.string().trim().min(1, "is required"
 
 export interface AuthSourceRouteDeps {
   authSourceStore?: AuthSourceStoreApi | undefined;
-  identityStore?: (Pick<UserIdentityStoreApi, "countUserIdentitiesForSource" | "getUserIdentityBySubject"> & {
+  identityStore?: (Pick<UserIdentityStoreApi, "countUserIdentitiesForSource" | "getUserIdentityBySubject" | "deleteSessionsForAuthSource"> & {
     getUserById(id: string): Promise<AdminUser | null>;
     getUserByUsername(username: string): Promise<AdminUser | null>;
   }) | undefined;
@@ -56,6 +58,8 @@ export function serializeAuthSource(record: AuthSourceRecord): Record<string, un
     priority: record.priority,
     autoProvision: record.autoProvision,
     defaultRole: record.defaultRole,
+    sessionMaxAgeHours: record.sessionMaxAgeHours,
+    revalidateIntervalMinutes: record.revalidateIntervalMinutes,
     config: publicLdapConfig(record.configJson),
     createdAt: toIsoTimestamp(record.createdAt),
     updatedAt: toIsoTimestamp(record.updatedAt),
@@ -131,6 +135,8 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
         ...(body.priority !== undefined ? { priority: body.priority } : {}),
         ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
         ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
+        ...(body.sessionMaxAgeHours !== undefined ? { sessionMaxAgeHours: body.sessionMaxAgeHours } : {}),
+        ...(body.revalidateIntervalMinutes !== undefined ? { revalidateIntervalMinutes: body.revalidateIntervalMinutes } : {}),
         configJson: serializeLdapConfig(config, deps.adminAuthSecret),
       });
       recordAudit(deps.auditStore, req, {
@@ -144,6 +150,8 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
           priority: created.priority,
           autoProvision: created.autoProvision,
           defaultRole: created.defaultRole,
+          sessionMaxAgeHours: created.sessionMaxAgeHours,
+          revalidateIntervalMinutes: created.revalidateIntervalMinutes,
         },
       });
       writeJson(res, 201, { authSource: serializeAuthSource(created) });
@@ -210,12 +218,17 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
         ...(body.priority !== undefined ? { priority: body.priority } : {}),
         ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
         ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
+        ...(body.sessionMaxAgeHours !== undefined ? { sessionMaxAgeHours: body.sessionMaxAgeHours } : {}),
+        ...(body.revalidateIntervalMinutes !== undefined ? { revalidateIntervalMinutes: body.revalidateIntervalMinutes } : {}),
         ...(configJson !== undefined ? { configJson } : {}),
       });
       if (!updated) {
         writeJson(res, 404, { error: "Authentication source not found" });
         return;
       }
+      const revokedSessions = existing.enabled && !updated.enabled
+        ? (await deps.identityStore?.deleteSessionsForAuthSource(id)) ?? 0
+        : 0;
       recordAudit(deps.auditStore, req, {
         action: "auth_source.update",
         targetType: "auth_source",
@@ -226,6 +239,9 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
           ...(body.priority !== undefined ? { priority: body.priority } : {}),
           ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
           ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
+          ...(body.sessionMaxAgeHours !== undefined ? { sessionMaxAgeHours: body.sessionMaxAgeHours } : {}),
+          ...(body.revalidateIntervalMinutes !== undefined ? { revalidateIntervalMinutes: body.revalidateIntervalMinutes } : {}),
+          ...(revokedSessions > 0 ? { revokedSessions } : {}),
           configChanged: configJson !== undefined,
         },
       });
