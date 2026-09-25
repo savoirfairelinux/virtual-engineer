@@ -33,6 +33,8 @@ export interface AuthSource {
   priority: number;
   autoProvision: boolean;
   defaultRole: ProvisionedRole;
+  sessionMaxAgeHours: number;
+  revalidateIntervalMinutes: number;
   config: LdapSourceConfig;
 }
 
@@ -373,6 +375,8 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
   const [priority, setPriority] = useState(String(source?.priority ?? 100));
   const [autoProvision, setAutoProvision] = useState(source?.autoProvision ?? false);
   const [defaultRole, setDefaultRole] = useState<ProvisionedRole>(source?.defaultRole ?? "viewer");
+  const [sessionMaxAgeHours, setSessionMaxAgeHours] = useState(String(source?.sessionMaxAgeHours ?? 24));
+  const [revalidateIntervalMinutes, setRevalidateIntervalMinutes] = useState(String(source?.revalidateIntervalMinutes ?? 15));
   const [config, setConfig] = useState<LdapSourceConfig>(() => ({
     ...EMPTY_LDAP_CONFIG,
     ...source?.config,
@@ -413,7 +417,16 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
     if (!name.trim()) { setError("Name is required"); return; }
     setBusy(true);
     try {
-      const body = { name, enabled, priority: Number(priority), autoProvision, defaultRole, config: payloadConfig() };
+      const body = {
+        name,
+        enabled,
+        priority: Number(priority),
+        autoProvision,
+        defaultRole,
+        sessionMaxAgeHours: Number(sessionMaxAgeHours),
+        revalidateIntervalMinutes: Number(revalidateIntervalMinutes),
+        config: payloadConfig(),
+      };
       if (source) {
         await api.put(`/api/admin/auth-sources/${source.id}`, body);
       } else {
@@ -506,6 +519,14 @@ export function AuthSourceEditor({ source, onClose, onSaved }: { source: AuthSou
           <option value="viewer">viewer</option>
           <option value="operator">operator</option>
         </FieldSelect>
+      </Field>
+
+      <div className="eyebrow" style={{ margin: "18px 0 8px" }}>Sessions</div>
+      <Field label="Maximum session age (hours)" hint="Directory sessions end after this long even while active (1–720).">
+        <FieldInput type="number" min={1} max={720} value={sessionMaxAgeHours} onChange={(e) => setSessionMaxAgeHours(e.target.value)} />
+      </Field>
+      <Field label="Revalidation interval (minutes)" hint="Active sessions re-check the directory account and its groups this often; 0 checks on every request. An unreachable directory keeps sessions until the maximum age.">
+        <FieldInput type="number" min={0} max={1440} value={revalidateIntervalMinutes} onChange={(e) => setRevalidateIntervalMinutes(e.target.value)} />
       </Field>
     </Modal>
   );
