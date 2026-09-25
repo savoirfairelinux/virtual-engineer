@@ -2,7 +2,7 @@ import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole, UserSession } from "../../interfaces.js";
-import { users, userSessions, userIdentities, policyBindings, policies } from "../schema.js";
+import { users, userSessions, userIdentities, authSources, policyBindings, policies } from "../schema.js";
 import * as schema from "../schema.js";
 import { countEnabledLocalAdminsIn } from "./userIdentityStore.js";
 
@@ -86,6 +86,7 @@ export interface UserStoreApi {
   /**
    * When `identityId` is given, the session is created only while it is still the
    * user's directory link (`null` = no link); otherwise rejects with `IDENTITY_CHANGED`.
+   * A directory session is also refused with `SOURCE_DISABLED` while that link's source is disabled.
    */
   createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null; validatedAt?: Date | undefined }): Promise<UserSession>;
   /** Resolve a live session: null when unknown, expired, or the user is disabled/missing. */
@@ -305,10 +306,15 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     try {
       const row = db.transaction((tx) => {
         if (input.identityId !== undefined) {
-          const current = tx.select({ id: userIdentities.id }).from(userIdentities)
+          const current = tx.select({ id: userIdentities.id, sourceEnabled: authSources.enabled })
+            .from(userIdentities)
+            .innerJoin(authSources, eq(authSources.id, userIdentities.authSourceId))
             .where(eq(userIdentities.userId, input.userId)).get();
           if ((current?.id ?? null) !== input.identityId) {
             throw codedError("IDENTITY_CHANGED", "The account's sign-in method changed during login");
+          }
+          if (current && current.sourceEnabled !== 1) {
+            throw codedError("SOURCE_DISABLED", "The account's authentication source was disabled during login");
           }
         }
         const now = new Date();

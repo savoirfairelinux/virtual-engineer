@@ -135,6 +135,16 @@ describe("userIdentityStore", () => {
     await expect(store.getSessionByTokenHash("stale-link")).resolves.toBeNull();
   });
 
+  it("issues no directory session while the account's source is disabled", async () => {
+    const userId = await localUser("gina");
+    const identity = await store.linkUserIdentity({ userId, authSourceId: sourceId, externalSubject: "uuid-gina", externalUsername: "gina" });
+    await store.updateAuthSource(sourceId, { enabled: false });
+
+    await expect(store.createSession({ tokenHash: "while-disabled", userId, expiresAt: new Date(Date.now() + 60_000), identityId: identity.id }))
+      .rejects.toMatchObject({ code: "SOURCE_DISABLED" });
+    await expect(store.getSessionByTokenHash("while-disabled")).resolves.toBeNull();
+  });
+
   it("unlinks with a new local password hash and revokes sessions", async () => {
     const userId = await localUser("dave");
     await store.linkUserIdentity({ userId, authSourceId: sourceId, externalSubject: "uuid-dave", externalUsername: "dave" });
