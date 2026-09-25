@@ -35,6 +35,7 @@ import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore }
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
+import type { PasswordAuthenticator } from "./authentication/passwordAuthenticator.js";
 import {
   getAuthContext,
   requestCanAccessResource,
@@ -133,6 +134,8 @@ export interface AdminServerDependencies {
     & Partial<Pick<StateStore, "getProjectStatistics">>;
   /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
   allowUnauthenticatedAdmin?: boolean | undefined;
+  /** Credential authority for `POST /auth/login` and setup; defaults to local scrypt passwords. */
+  authenticator?: PasswordAuthenticator | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;
@@ -353,7 +356,7 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
     throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
   }
   const authService = userStore && !dependencies.allowUnauthenticatedAdmin
-    ? createAdminAuthService({ stateStore: userStore })
+    ? createAdminAuthService({ stateStore: userStore, authenticator: dependencies.authenticator })
     : null;
   let usersExistCache: boolean | null = null;
   return {
