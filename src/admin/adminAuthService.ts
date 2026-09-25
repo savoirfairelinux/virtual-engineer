@@ -59,7 +59,7 @@ export interface AdminLoginSession {
 
 /** `unavailable`: no credential authority could answer (e.g. directory down). */
 export type AdminLoginResult =
-  | { status: "ok"; session: AdminLoginSession; authSourceId: string | null }
+  | { status: "ok"; session: AdminLoginSession; authSourceId: string | null; provisioned: boolean }
   | { status: "rejected" }
   | { status: "unavailable" };
 
@@ -96,7 +96,12 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
       const outcome = await authenticator.authenticate(username, password);
       if (outcome.status !== "authenticated") return outcome;
       try {
-        return { status: "ok", session: await issueSession(outcome.user, outcome.identityId), authSourceId: outcome.authSourceId };
+        return {
+          status: "ok",
+          session: await issueSession(outcome.user, outcome.identityId),
+          authSourceId: outcome.authSourceId,
+          provisioned: outcome.provisioned ?? false,
+        };
       } catch (err) {
         // The account was linked or unlinked while its credentials were being checked.
         if (err instanceof Error && "code" in err && err.code === "IDENTITY_CHANGED") return { status: "rejected" };

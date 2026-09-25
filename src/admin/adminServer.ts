@@ -38,6 +38,7 @@ import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore }
 import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
 import type { AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
 import type { UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
+import type { DirectoryGroupStoreApi } from "../state/stores/directoryGroupStore.js";
 import {
   createDirectoryAccountResolver,
   createDirectoryAuthenticator,
@@ -67,7 +68,7 @@ import {
 import { resourceTypeOf } from "./authorization/permissions.js";
 import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
 import type { AuthContext } from "./adminAuthService.js";
-import type { UserRole } from "../interfaces.js";
+import type { AdminUser, Group, UserRole } from "../interfaces.js";
 
 export { getAuthContext } from "./authContext.js";
 export type { AuthContext } from "./adminAuthService.js";
@@ -277,7 +278,9 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
 type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 
 /** Directory-link surface shared by the authenticator and the user routes. */
-type AdminIdentityStore = DirectoryAuthenticatorStore & UserIdentityStoreApi & AuthSourceStoreApi;
+type AdminIdentityStore = DirectoryAuthenticatorStore & UserIdentityStoreApi & AuthSourceStoreApi & DirectoryGroupStoreApi & {
+  getGroupById(id: string): Promise<Group | null>;
+};
 
 /** Feature-detect the user-store methods required by admin session auth. */
 function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
@@ -349,7 +352,10 @@ function extractUserIdentityStore(stateStore: unknown): AdminIdentityStore | nul
     typeof candidate.getUserByUsername === "function" &&
     typeof candidate.getUserIdentityByUserId === "function" &&
     typeof candidate.getUserIdentityBySubject === "function" &&
-    typeof candidate.linkUserIdentity === "function"
+    typeof candidate.linkUserIdentity === "function" &&
+    typeof candidate.replaceIdentityGroups === "function" &&
+    typeof candidate.listGroupMappings === "function" &&
+    typeof candidate.getGroupById === "function"
     ? (candidate as AdminIdentityStore)
     : null;
 }
@@ -404,8 +410,15 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
     throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
   }
   const identityStore = extractUserIdentityStore(dependencies.stateStore);
+  const policyBinder = extractPolicyBinder(dependencies.stateStore);
   const authenticator = dependencies.authenticator ?? (userStore && identityStore
-    ? createDirectoryAuthenticator({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
+    ? createDirectoryAuthenticator({
+        store: identityStore,
+        adminAuthSecret: dependencies.config.adminAuthSecret,
+        ...(policyBinder
+          ? { onUserProvisioned: (user: AdminUser): Promise<void> => bindDefaultPolicyForRole(policyBinder, user.id, user.role) }
+          : {}),
+      })
     : undefined);
   const authService = userStore && !dependencies.allowUnauthenticatedAdmin
     ? createAdminAuthService({ stateStore: userStore, authenticator })
@@ -518,14 +531,15 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
   const identityStore = extractUserIdentityStore(dependencies.stateStore) ?? undefined;
+  const directoryAccounts = identityStore
+    ? createDirectoryAccountResolver({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
+    : undefined;
   registerAuthRoutes(router, {
     userStore: authRuntime.userStore ?? undefined,
     auditStore,
     authService: authRuntime.authService ?? undefined,
     identityStore,
-    directoryAccounts: identityStore
-      ? createDirectoryAccountResolver({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
-      : undefined,
+    directoryAccounts,
     credentialEncryptionConfigured: Boolean(dependencies.config.adminAuthSecret),
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
     ...(policyBinder
@@ -536,6 +550,8 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   registerAuthSourceRoutes(router, {
     authSourceStore: extractAuthSourceStore(dependencies.stateStore) ?? undefined,
     identityStore,
+    directoryGroupStore: identityStore,
+    directoryAccounts,
     auditStore,
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });

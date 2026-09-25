@@ -5,8 +5,10 @@ import type { LdapConfig } from "./ldapConfig.js";
 
 export type LdapFailureStage = "connect" | "bind" | "search";
 
-/** Upper bound on round trips per exchange (StartTLS, service bind, searches, user bind). */
-const LDAP_EXCHANGE_OPERATIONS = 4;
+/** Upper bound on round trips per exchange (StartTLS, service bind, user search, group search, user bind). */
+const LDAP_EXCHANGE_OPERATIONS = 5;
+/** Accounts reporting more groups than this are refused rather than silently truncated. */
+export const MAX_LDAP_GROUPS = 500;
 
 /** A directory entry resolved by the configured user filter. */
 export interface LdapAccount {
@@ -16,6 +18,8 @@ export interface LdapAccount {
   /** Value of `usernameAttribute`, falling back to the searched name. */
   username: string;
   displayName: string | null;
+  /** Normalized group DNs (see {@link normalizeLdapDn}), sorted and de-duplicated. */
+  groups: string[];
 }
 
 export type LdapAccountLookup =
@@ -38,6 +42,87 @@ export type LdapConnectionTest =
 /** RFC 4515 escaping for a value substituted into a search filter. */
 export function escapeLdapFilterValue(value: string): string {
   return value.replace(/[\\*()\0]/g, (char) => `\\${char.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+
+/** RFC 4514 characters that must stay escaped inside an attribute value. */
+const DN_VALUE_SPECIALS = new Set([",", "+", "\"", "\\", "<", ">", ";"]);
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Decode `\XX` / `\c` escapes, drop unescaped edge spaces, lower-case, and re-escape canonically. */
+function canonicalDnValue(raw: string): string {
+  const chars = Array.from(raw);
+  if (chars[0] === "#") return raw.toLowerCase(); // BER hex form; a literal leading # is always escaped
+  const units: Array<{ bytes: number[]; escaped: boolean }> = [];
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index] ?? "";
+    const hex = `${chars[index + 1] ?? ""}${chars[index + 2] ?? ""}`;
+    if (char === "\\" && /^[0-9a-f]{2}$/i.test(hex)) {
+      units.push({ bytes: [Number.parseInt(hex, 16)], escaped: true });
+      index += 2;
+    } else if (char === "\\" && index + 1 < chars.length) {
+      units.push({ bytes: [...Buffer.from(chars[index + 1] ?? "", "utf8")], escaped: true });
+      index++;
+    } else {
+      units.push({ bytes: [...Buffer.from(char, "utf8")], escaped: false });
+    }
+  }
+  const isEdgeSpace = (unit: { bytes: number[]; escaped: boolean } | undefined): boolean =>
+    unit !== undefined && !unit.escaped && unit.bytes.length === 1 && unit.bytes[0] === 0x20;
+  while (isEdgeSpace(units[0])) units.shift();
+  while (isEdgeSpace(units[units.length - 1])) units.pop();
+  const bytes = units.flatMap((unit) => unit.bytes);
+  let text: string;
+  try {
+    text = strictUtf8.decode(Uint8Array.from(bytes)).toLowerCase();
+  } catch {
+    // Not UTF-8: escape every byte so the key cannot collide with a text value.
+    return bytes.map((byte) => `\\${byte.toString(16).padStart(2, "0")}`).join("");
+  }
+  const out = Array.from(text);
+  return out.map((char, index) => {
+    if (char === "\0") return "\\00";
+    if (DN_VALUE_SPECIALS.has(char)) return `\\${char}`;
+    if (index === 0 && (char === " " || char === "#")) return `\\${char}`;
+    if (index === out.length - 1 && char === " ") return "\\ ";
+    return char;
+  }).join("");
+}
+
+function canonicalAva(ava: string): string {
+  const equals = ava.indexOf("=");
+  if (equals < 0) return ava.trim().toLowerCase();
+  return `${ava.slice(0, equals).trim().toLowerCase()}=${canonicalDnValue(ava.slice(equals + 1))}`;
+}
+
+/**
+ * Canonical DN used as the key that joins directory groups to mappings: split on
+ * unescaped `,` and `+`, attribute types and values lower-cased, unescaped edge
+ * spaces dropped, and `\XX` / `\c` escapes decoded then re-escaped one way, so
+ * equivalent encodings match and distinct entries never do.
+ */
+export function normalizeLdapDn(dn: string): string {
+  const rdns: string[] = [];
+  let avas: string[] = [];
+  let current = "";
+  for (let index = 0; index < dn.length; index++) {
+    const char = dn[index] ?? "";
+    if (char === "\\" && index + 1 < dn.length) {
+      current += char + (dn[index + 1] ?? "");
+      index++;
+    } else if (char === "+" || char === ",") {
+      avas.push(current);
+      current = "";
+      if (char === ",") {
+        rdns.push(avas.map(canonicalAva).sort().join("+"));
+        avas = [];
+      }
+    } else {
+      current += char;
+    }
+  }
+  avas.push(current);
+  rdns.push(avas.map(canonicalAva).sort().join("+"));
+  return rdns.join(",");
 }
 
 function buildTlsOptions(config: LdapConfig): ConnectionOptions {
@@ -114,14 +199,37 @@ function subjectValue(entry: Entry, attribute: string): string | null {
   return Buffer.from(text, "utf8").equals(bytes) && /^[\x20-\x7e]+$/.test(text) ? text : bytes.toString("hex");
 }
 
+function textValues(entry: Entry, attribute: string): string[] {
+  const key = Object.keys(entry).find((candidate) => candidate.toLowerCase() === attribute.toLowerCase());
+  const value = key === undefined ? undefined : entry[key];
+  const values = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  return values.map((item) => (Buffer.isBuffer(item) ? item.toString("utf8") : item)).filter((item) => item.trim() !== "");
+}
+
+async function searchGroupDns(client: Client, config: LdapConfig, dn: string, username: string): Promise<string[]> {
+  if (config.groupSearchBaseDn === undefined) return [];
+  // One pass over the template, so a placeholder inside an inserted value is never expanded.
+  const filter = config.groupSearchFilter.replace(/\{(dn|username)\}/g, (_placeholder, name: string) =>
+    escapeLdapFilterValue(name === "dn" ? dn : username));
+  const { searchEntries } = await client.search(config.groupSearchBaseDn, {
+    scope: "sub",
+    filter,
+    attributes: ["1.1"],
+    sizeLimit: MAX_LDAP_GROUPS + 1,
+  });
+  return searchEntries.map((group) => group.dn);
+}
+
 async function findAccount(client: Client, config: LdapConfig, filter: string, fallbackUsername: string): Promise<LdapAccountLookup> {
   await client.bind(config.bindDn, config.bindPassword);
+  const attributes = [config.uniqueIdAttribute, config.usernameAttribute, config.displayNameAttribute];
+  if (config.groupMembershipAttribute !== "") attributes.push(config.groupMembershipAttribute);
   let entries: Entry[];
   try {
     ({ searchEntries: entries } = await client.search(config.userSearchBaseDn, {
       scope: "sub",
       filter,
-      attributes: [config.uniqueIdAttribute, config.usernameAttribute, config.displayNameAttribute],
+      attributes,
       explicitBufferAttributes: [config.uniqueIdAttribute],
       sizeLimit: 2,
     }));
@@ -136,13 +244,29 @@ async function findAccount(client: Client, config: LdapConfig, filter: string, f
   if (subject === null) {
     return { status: "unavailable", error: `Directory entry has no ${config.uniqueIdAttribute} value` };
   }
+  const accountUsername = textValue(entry, config.usernameAttribute) ?? fallbackUsername;
+  let searched: string[];
+  try {
+    searched = await searchGroupDns(client, config, entry.dn, accountUsername);
+  } catch (err) {
+    if (err instanceof SizeLimitExceededError) {
+      return { status: "unavailable", error: `The group search returned more than ${MAX_LDAP_GROUPS} groups` };
+    }
+    throw err;
+  }
+  const memberOf = config.groupMembershipAttribute === "" ? [] : textValues(entry, config.groupMembershipAttribute);
+  const groups = [...new Set([...memberOf, ...searched].map(normalizeLdapDn))].sort();
+  if (groups.length > MAX_LDAP_GROUPS) {
+    return { status: "unavailable", error: `The account belongs to more than ${MAX_LDAP_GROUPS} groups` };
+  }
   return {
     status: "found",
     account: {
       dn: entry.dn,
       subject,
-      username: textValue(entry, config.usernameAttribute) ?? fallbackUsername,
+      username: accountUsername,
       displayName: textValue(entry, config.displayNameAttribute),
+      groups,
     },
   };
 }

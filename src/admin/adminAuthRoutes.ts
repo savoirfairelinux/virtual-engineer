@@ -11,8 +11,10 @@ import { recordAudit, UNAUTHENTICATED_ACTOR_NAME } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
 import { getPasswordStrength } from "./commonPasswords.js";
 import type { DirectoryAccountResolution, DirectoryAccountResolver } from "./authentication/directoryAuthenticator.js";
+import { normalizeUsername } from "./authentication/username.js";
 import type { AuthSourceRecord } from "../state/stores/authSourceStore.js";
 import type { UserIdentityRecord, UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
+import type { DirectoryGroupStoreApi } from "../state/stores/directoryGroupStore.js";
 
 const log = getLogger("admin-auth");
 
@@ -33,11 +35,6 @@ function validatePasswordStrength(password: string): string | null {
     return "password is too weak; mix uppercase letters, numbers, or symbols";
   }
   return null;
-}
-
-/** Normalize a username for storage/lookup: Unicode NFC + trim + lower-case. */
-function normalizeUsername(username: string): string {
-  return username.normalize("NFC").trim().toLowerCase();
 }
 
 /**
@@ -100,7 +97,7 @@ export type AuthRouteIdentityStore = Pick<
   | "createExternalUser"
   | "linkUserIdentity"
   | "unlinkUserIdentity"
-> & {
+> & Pick<DirectoryGroupStoreApi, "replaceIdentityGroups"> & {
   listAuthSources(): Promise<AuthSourceRecord[]>;
 };
 
@@ -387,6 +384,16 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     }
     const { session } = login;
     recordAuthSuccess(req, username);
+    if (login.provisioned) {
+      deps.onUsersChanged?.();
+      recordAudit(deps.auditStore, req, {
+        action: "user.provision",
+        targetType: "user",
+        targetId: session.user.id,
+        actor: { userId: session.user.id, username: session.user.username },
+        details: { username: session.user.username, role: session.user.role, authSourceId: login.authSourceId },
+      });
+    }
     recordAudit(deps.auditStore, req, {
       action: "auth.login",
       targetType: "user",
@@ -482,13 +489,14 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     if (writeDirectoryLookupFailure(res, lookup, externalUsername) || lookup.status !== "found") return;
     const username = requested !== "" ? requested : normalizeUsername(lookup.account.username);
     try {
-      const { user } = await deps.identityStore.createExternalUser({
+      const { user, identity: created } = await deps.identityStore.createExternalUser({
         username,
         role,
         authSourceId: lookup.source.id,
         externalSubject: lookup.account.subject,
         externalUsername: lookup.account.username,
       });
+      await deps.identityStore.replaceIdentityGroups(created.id, lookup.account.groups);
       deps.onUsersChanged?.();
       try {
         await deps.onUserCreated?.(user.id, user.role);
@@ -704,6 +712,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       }
       throw err;
     }
+    await deps.identityStore.replaceIdentityGroups(identity.id, lookup.account.groups);
     recordAudit(deps.auditStore, req, {
       action: "user.identity_link",
       targetType: "user",

@@ -7,6 +7,9 @@ const attributeName = z.string().trim().regex(ATTRIBUTE_NAME, "must be an LDAP a
 const distinguishedName = z.string().trim().min(1, "is required").max(1024);
 
 export const DEFAULT_LDAP_USER_FILTER = "(&(objectClass=inetOrgPerson)(uid={username}))";
+export const DEFAULT_LDAP_GROUP_FILTER = "(&(objectClass=groupOfNames)(member={dn}))";
+
+const emptyToUndefined = (value: unknown): unknown => (typeof value === "string" && value.trim() === "" ? undefined : value);
 
 function isBalancedFilter(filter: string): boolean {
   if (!filter.startsWith("(") || !filter.endsWith(")")) return false;
@@ -25,10 +28,7 @@ const ldapConfigObject = z.object({
   url: z.string().trim().min(1, "is required").max(2048),
   startTls: z.boolean().default(false),
   /** PEM bundle trusted instead of the system CAs; required for private CAs. */
-  tlsCaCert: z.preprocess(
-    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
-    z.string().trim().max(65_536).optional()
-  ),
+  tlsCaCert: z.preprocess(emptyToUndefined, z.string().trim().max(65_536).optional()),
   bindDn: distinguishedName,
   bindPassword: z.string().min(1, "is required").max(1024),
   userSearchBaseDn: distinguishedName,
@@ -38,6 +38,14 @@ const ldapConfigObject = z.object({
   usernameAttribute: attributeName.default("uid"),
   uniqueIdAttribute: attributeName.default("entryUUID"),
   displayNameAttribute: attributeName.default("cn"),
+  /** User attribute listing group DNs; an empty string disables it. */
+  groupMembershipAttribute: z.string().trim().default("memberOf")
+    .refine((value) => value === "" || ATTRIBUTE_NAME.test(value), "must be an LDAP attribute name"),
+  /** Enables a service-account group search for directories without memberOf. */
+  groupSearchBaseDn: z.preprocess(emptyToUndefined, distinguishedName.optional()),
+  groupSearchFilter: z.string().trim().max(2048).default(DEFAULT_LDAP_GROUP_FILTER)
+    .refine((value) => value.includes("{dn}") || value.includes("{username}"), "must contain the {dn} or {username} placeholder")
+    .refine(isBalancedFilter, "must be a parenthesized LDAP filter"),
   timeoutMs: z.number().int().min(1000).max(60_000).default(5000),
 });
 
