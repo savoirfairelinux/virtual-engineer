@@ -169,7 +169,7 @@ export function TopBar({
         <button className="iconbtn" onClick={toggleTheme} title="Toggle theme">
           <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
         </button>
-        {user && user.id !== null && (
+        {user && user.id !== null && !user.authSource && (
           <button className="iconbtn" title="Change password" onClick={onChangePassword}>
             <Icon name="edit" size={15} />
           </button>

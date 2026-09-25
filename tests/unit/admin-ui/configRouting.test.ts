@@ -34,6 +34,11 @@ describe("Configuration routing", () => {
       mode: "password",
       id: "user-1",
     }],
+    ["#config/users/user-1/link", {
+      section: "users",
+      mode: "link",
+      id: "user-1",
+    }],
     ["#config/oauth/gitlab/https%3A%2F%2Fgitlab.example.com%3A8443%2Fgroup", {
       section: "oauth",
       mode: "detail",
@@ -55,6 +60,7 @@ describe("Configuration routing", () => {
     { section: "projects", mode: "edit", id: "project/with spaces" },
     { section: "projects", mode: "statistics", id: "project/with spaces" },
     { section: "users", mode: "password", id: "user/équipe" },
+    { section: "users", mode: "link", id: "user/équipe" },
     {
       section: "oauth",
       mode: "detail",

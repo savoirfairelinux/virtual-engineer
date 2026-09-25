@@ -170,4 +170,27 @@ describe("TopBar tutorial launcher", () => {
 
     expect(container.textContent ?? "").not.toMatch(/\bv\d+\.\d+/);
   });
+
+  it("hides Change password for directory accounts", () => {
+    render(
+      <TopBar
+        view="overview"
+        setView={() => undefined}
+        theme="dark"
+        toggleTheme={() => undefined}
+        user={{ id: "user-2", username: "alice", role: "operator", authSource: { id: "src-1", name: "Corp LDAP" } }}
+        canViewConfig
+        onChangePassword={() => undefined}
+        onStartTutorial={() => undefined}
+        onLogout={() => undefined}
+        taskCount={0}
+        activeCount={0}
+        projectCount={0}
+        pollingRunning={false}
+      />,
+    );
+
+    expect(screen.queryByTitle("Change password")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeDefined();
+  });
 });

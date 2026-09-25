@@ -28,7 +28,7 @@ export type ConfigRoute =
   | { section: ConfigStandardEntitySection; mode: "detail" | "edit"; id: string }
   | { section: "projects"; mode: "statistics"; id: string }
   | { section: "prompts"; mode: "copy"; id: string }
-  | { section: "users"; mode: "password"; id: string }
+  | { section: "users"; mode: "password" | "link"; id: string }
   | { section: "oauth"; mode: "detail"; provider: string; baseUrl: string };
 
 const DEFAULT_ROUTE: ConfigRoute = { section: "overview", mode: "list" };
@@ -99,8 +99,8 @@ export function parseConfigHash(hash: string): ConfigRoute {
   if (segments[3] === "edit") {
     return { section: rawSection as ConfigStandardEntitySection, mode: "edit", id };
   }
-  if (rawSection === "users" && segments[3] === "password") {
-    return { section: "users", mode: "password", id };
+  if (rawSection === "users" && (segments[3] === "password" || segments[3] === "link")) {
+    return { section: "users", mode: segments[3], id };
   }
   return DEFAULT_ROUTE;
 }
