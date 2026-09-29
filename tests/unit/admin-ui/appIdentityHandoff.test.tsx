@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiMe } from "../../../src/admin/ui/types.js";
 
@@ -147,20 +147,26 @@ describe("App identity loading", () => {
     render(<SecuritySecretsOnboarding />);
 
     const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
-    expect(dialog.textContent).toContain("ADMIN_AUTH_SECRET is in the project .env.");
-    expect(dialog.textContent).toContain("encrypts stored provider credentials and generated SSH private keys");
-    expect(dialog.textContent).toContain("authenticates backup manifests and is not the admin login password.");
-    expect(dialog.textContent).toContain("BACKUP_KEYRING_FILE");
-    expect(dialog.textContent).toContain("is a path, not a secret key");
-    expect(dialog.textContent).toContain("AES-256-GCM");
-    expect(dialog.textContent).toContain("activeKeyId selects the key used for new archives");
-    expect(dialog.textContent).toContain("set activeKeyId to it");
-    expect(dialog.textContent).toContain("keep old keys for existing archives");
-    expect(dialog.textContent).toContain("server sends the values to this browser as plaintext JSON");
-    expect(dialog.textContent).toContain("no-store prevents caching; it does not encrypt the connection");
-    expect(dialog.textContent).toContain("The Admin server itself uses HTTP");
+    const adminSecretExplanation = within(dialog).getByRole("region", { name: "ADMIN_AUTH_SECRET" });
+    const backupKeyExplanation = within(dialog).getByRole("region", { name: "Backup keyring" });
+    expect(adminSecretExplanation.textContent).toContain("encrypts saved provider credentials and private SSH keys");
+    expect(backupKeyExplanation.textContent).toContain("The file contains the keys that encrypt backups");
+    expect(dialog.textContent).toContain("Save both values somewhere safe.");
+    expect(dialog.textContent).toContain("Stored in the project .env.");
+    expect(dialog.textContent).toContain("encrypts saved provider credentials and private SSH keys");
+    expect(dialog.textContent).toContain("checks that backups have not been changed");
+    expect(dialog.textContent).toContain("not your Admin login password");
+    expect(dialog.textContent).toContain("Change it only on a new instance, before saving credentials or creating backups");
+    expect(dialog.textContent).toContain("BACKUP_KEYRING_FILE in .env sets the file location");
+    expect(dialog.textContent).toContain("The file contains the keys that encrypt backups");
+    expect(dialog.textContent).toContain("activeKeyId picks the key for new backups");
+    expect(dialog.textContent).toContain("keep old keys to restore older backups");
+    expect(dialog.textContent).toContain("the server sends these values to your browser in plain text");
+    expect(dialog.textContent).toContain("The Admin server uses HTTP, so the connection is not encrypted");
+    expect(dialog.textContent).toContain("Reveal only on a trusted local connection or over trusted HTTPS");
+    expect(dialog.textContent).toContain("no-store stops caching; it does not encrypt");
     expect(dialog.textContent).not.toContain(adminAuthSecret);
-    expect(screen.queryByLabelText("ADMIN_AUTH_SECRET")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "ADMIN_AUTH_SECRET" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Reveal setup secrets" }));
     const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
@@ -214,8 +220,8 @@ describe("App identity loading", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Reveal setup secrets" }));
     const acknowledge = await screen.findByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
-    const adminSecretField = await screen.findByLabelText("ADMIN_AUTH_SECRET");
-    const keyringField = screen.getByLabelText("Backup keyring JSON");
+    const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const keyringField = screen.getByRole("textbox", { name: "Backup keyring JSON" });
     fireEvent.click(screen.getByRole("button", { name: "Copy ADMIN_AUTH_SECRET" }));
     await screen.findByText("Clipboard access failed. Select and copy the ADMIN_AUTH_SECRET text or try copying again.");
     fireEvent.click(screen.getByRole("button", { name: "Copy keyring JSON" }));
