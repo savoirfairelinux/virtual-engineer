@@ -6,11 +6,14 @@
 #
 # Usage:
 #   ./scripts/start.sh                     # full setup + launch
+#   ./scripts/start.sh --setup-only        # provision .env and secrets only
 #   ./scripts/start.sh --no-k3s-install    # skip k3s auto-install (must already exist)
 #   ./scripts/start.sh --restore <archive> [--force] [--yes]  # stop and restore
 #
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
+#   BACKUP_KEYRING_FILE  optional existing keyring override; otherwise generated
+#                        under XDG_CONFIG_HOME or ~/.config on normal startup
 #   OPENSHELL_STATE_DIR (default: $XDG_STATE_HOME/virtual-engineer or
 #                        $HOME/.local/state/virtual-engineer) persistent local
 #                        OpenShell/Keycloak bootstrap state
@@ -25,46 +28,951 @@
 #   AGENT_SANDBOX_VERSION (default: v0.5.1) pinned controller manifest version
 #   AGENT_SANDBOX_MANIFEST_SHA256 verified manifest digest for that version
 
-set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-source "$SCRIPT_DIR/start-lib.sh"
 
 info()  { echo "[INFO]  $*"; }
 warn()  { echo "[WARN]  $*" >&2; }
 error() { echo "[ERROR] $*" >&2; exit 1; }
 
+load_dotenv() {
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 0
+
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ ! "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+      continue
+    fi
+
+    key="${BASH_REMATCH[2]}"
+    [[ -n "${!key+x}" ]] && continue
+    value="${BASH_REMATCH[3]}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ ${#value} -ge 2 ]]; then
+      if [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]] \
+        || [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+    fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done < "$env_file"
+}
+
+ensure_env_file() {
+  local env_file="$1"
+  local env_example="$2"
+  local temp_env_file
+
+  if [[ -L "$env_file" || ( -e "$env_file" && ! -f "$env_file" ) ]]; then
+    printf 'Refusing to use a non-regular .env file: %s\n' "$env_file" >&2
+    return 1
+  fi
+  if [[ ! -e "$env_file" ]]; then
+    [[ -f "$env_example" && ! -L "$env_example" ]] || {
+      printf 'Missing regular .env.example file: %s\n' "$env_example" >&2
+      return 1
+    }
+    temp_env_file="$(mktemp "${env_file}.setup.XXXXXX")" || return 1
+    chmod 0600 "$temp_env_file" || {
+      rm -f -- "$temp_env_file"
+      return 1
+    }
+    if ! cp -- "$env_example" "$temp_env_file"; then
+      rm -f -- "$temp_env_file"
+      return 1
+    fi
+    if ! ln -- "$temp_env_file" "$env_file"; then
+      rm -f -- "$temp_env_file"
+      [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+    else
+      rm -f -- "$temp_env_file"
+    fi
+  fi
+  chmod 0600 "$env_file"
+}
+
+admin_auth_secret_from_env_file() {
+  local env_file="$1"
+  local line value
+  [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?ADMIN_AUTH_SECRET[[:space:]]*=(.*)$ ]]; then
+      value="${BASH_REMATCH[2]}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      if [[ ${#value} -ge 2 ]] \
+        && { [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]] \
+          || [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; }; then
+        value="${value:1:${#value}-2}"
+      fi
+      if [[ -n "$value" && "$value" != \#* ]]; then
+        printf '%s' "$value"
+        return 0
+      fi
+    fi
+  done < "$env_file"
+  return 1
+}
+
+backup_keyring_path_from_env_file() {
+  local env_file="$1"
+  local line value
+  [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?BACKUP_KEYRING_FILE[[:space:]]*=(.*)$ ]]; then
+      value="${BASH_REMATCH[2]}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      if [[ ${#value} -ge 2 ]] \
+        && { [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]] \
+          || [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; }; then
+        value="${value:1:${#value}-2}"
+      fi
+      if [[ -n "$value" && "$value" != \#* ]]; then
+        printf '%s' "$value"
+        return 0
+      fi
+    fi
+  done < "$env_file"
+  return 1
+}
+
+persist_backup_keyring_file() {
+  local env_file="$1"
+  local keyring_file="$2"
+  local temp_env_file temp_path_file
+  local existing_path
+  if existing_path="$(backup_keyring_path_from_env_file "$env_file")"; then
+    return 0
+  fi
+
+  temp_env_file="$(mktemp "${env_file}.keyring.XXXXXX")" || return 1
+  temp_path_file="$(mktemp "${env_file}.path.XXXXXX")" || {
+    rm -f -- "$temp_env_file"
+    return 1
+  }
+  chmod 0600 "$temp_env_file" "$temp_path_file" || {
+    rm -f -- "$temp_env_file" "$temp_path_file"
+    return 1
+  }
+  printf '%s\n' "$keyring_file" > "$temp_path_file" || {
+    rm -f -- "$temp_env_file" "$temp_path_file"
+    return 1
+  }
+  awk -v path_file="$temp_path_file" '
+    BEGIN {
+      if ((getline keyring_path < path_file) <= 0) exit 1
+      close(path_file)
+    }
+    /^[[:space:]]*(export[[:space:]]+)?BACKUP_KEYRING_FILE[[:space:]]*=/ {
+      if (!replaced) {
+        print "BACKUP_KEYRING_FILE=" keyring_path
+        replaced = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!replaced) print "BACKUP_KEYRING_FILE=" keyring_path
+    }
+  ' "$env_file" > "$temp_env_file" || {
+    rm -f -- "$temp_env_file" "$temp_path_file"
+    return 1
+  }
+  rm -f -- "$temp_path_file"
+  if ! mv -- "$temp_env_file" "$env_file"; then
+    rm -f -- "$temp_env_file"
+    return 1
+  fi
+  chmod 0600 "$env_file"
+}
+
+ensure_admin_auth_secret() {
+  local env_file="$1"
+  local secret="${ADMIN_AUTH_SECRET:-}"
+  local temp_env_file temp_secret_file
+  ADMIN_AUTH_SECRET_CREATED=false
+
+  if [[ -L "$env_file" || ( -e "$env_file" && ! -f "$env_file" ) ]]; then
+    printf 'Refusing to update a non-regular .env file.\n' >&2
+    return 1
+  fi
+  if [[ ! -e "$env_file" ]]; then
+    (umask 077; : > "$env_file") || {
+      printf 'Could not create .env for ADMIN_AUTH_SECRET.\n' >&2
+      return 1
+    }
+  fi
+
+  if [[ -z "$secret" ]]; then
+    if secret="$(admin_auth_secret_from_env_file "$env_file")"; then
+      printf -v ADMIN_AUTH_SECRET '%s' "$secret"
+      export ADMIN_AUTH_SECRET
+      unset secret
+      chmod 0600 "$env_file" || return 1
+      return 0
+    fi
+    secret="$(openssl rand -hex 32 | tr -d '\r\n')" || {
+      printf 'Could not generate ADMIN_AUTH_SECRET with OpenSSL.\n' >&2
+      return 1
+    }
+    if [[ ! "$secret" =~ ^[a-f0-9]{64}$ ]]; then
+      unset secret
+      printf 'OpenSSL returned an invalid ADMIN_AUTH_SECRET.\n' >&2
+      return 1
+    fi
+    temp_env_file="$(mktemp "${env_file}.startup.XXXXXX")" || return 1
+    temp_secret_file="$(mktemp "${env_file}.secret.XXXXXX")" || {
+      rm -f -- "$temp_env_file"
+      return 1
+    }
+    chmod 0600 "$temp_env_file" "$temp_secret_file" || {
+      rm -f -- "$temp_env_file" "$temp_secret_file"
+      unset secret
+      return 1
+    }
+    printf '%s\n' "$secret" > "$temp_secret_file" || {
+      rm -f -- "$temp_env_file" "$temp_secret_file"
+      unset secret
+      return 1
+    }
+    awk -v secret_file="$temp_secret_file" '
+      BEGIN {
+        if ((getline secret < secret_file) <= 0) exit 1
+        close(secret_file)
+      }
+      /^[[:space:]]*(export[[:space:]]+)?ADMIN_AUTH_SECRET[[:space:]]*=/ {
+        if (!replaced) {
+          print "ADMIN_AUTH_SECRET=" secret
+          replaced = 1
+        }
+        next
+      }
+      { print }
+      END {
+        if (!replaced) print "ADMIN_AUTH_SECRET=" secret
+      }
+    ' "$env_file" > "$temp_env_file" || {
+      rm -f -- "$temp_env_file" "$temp_secret_file"
+      unset secret
+      printf 'Could not update .env with ADMIN_AUTH_SECRET.\n' >&2
+      return 1
+    }
+    rm -f -- "$temp_secret_file"
+    if ! mv -- "$temp_env_file" "$env_file"; then
+      rm -f -- "$temp_env_file"
+      unset secret
+      printf 'Could not install the generated .env file.\n' >&2
+      return 1
+    fi
+    printf -v ADMIN_AUTH_SECRET '%s' "$secret"
+    export ADMIN_AUTH_SECRET
+    ADMIN_AUTH_SECRET_CREATED=true
+    unset secret
+  fi
+
+  chmod 0600 "$env_file"
+}
+
+resolve_restore_archive() {
+  local archive="${1:-}"
+  local resolved
+  if [[ -z "$archive" || ! -f "$archive" || -L "$archive" ]]; then
+    printf 'Restore source must be an existing regular, non-symlink file.\n' >&2
+    return 1
+  fi
+  resolved=$(realpath -e -- "$archive") || {
+    printf 'Could not resolve restore archive path.\n' >&2
+    return 1
+  }
+  if [[ "$resolved" == *","* ]]; then
+    printf 'Restore archive paths must not contain commas.\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+resolve_backup_keyring_file() {
+  local keyring="${1:-}"
+  local data_dir="${2:-}"
+  local backup_dir="${3:-}"
+  local resolved_keyring resolved_data_dir resolved_backup_dir
+  if [[ -z "$keyring" || ! -f "$keyring" || -L "$keyring" ]]; then
+    printf 'Backup keyring must be an existing regular, non-symlink file.\n' >&2
+    return 1
+  fi
+  resolved_keyring=$(realpath -e -- "$keyring") || return 1
+  resolved_data_dir=$(realpath -e -- "$data_dir") || return 1
+  if [[ "$resolved_keyring" == "$resolved_data_dir" || "$resolved_keyring" == "$resolved_data_dir"/* ]]; then
+    printf 'Backup keyring must be stored outside DATA_DIR.\n' >&2
+    return 1
+  fi
+  if [[ -n "$backup_dir" ]]; then
+    resolved_backup_dir=$(realpath -m -- "$backup_dir") || return 1
+    if [[ "$resolved_keyring" == "$resolved_backup_dir" || "$resolved_keyring" == "$resolved_backup_dir"/* ]]; then
+      printf 'Backup keyring must be stored outside BACKUP_DIR.\n' >&2
+      return 1
+    fi
+  fi
+  if [[ "$resolved_keyring" == *","* ]]; then
+    printf 'Backup keyring paths must not contain commas.\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved_keyring"
+}
+
+default_backup_keyring_file_path() {
+  local xdg_config_home="${1:-}"
+  local home_dir="${2:-}"
+  if [[ -n "$xdg_config_home" ]]; then
+    printf '%s/virtual-engineer/backup-keyring.json\n' "${xdg_config_home%/}"
+  elif [[ -n "$home_dir" ]]; then
+    printf '%s/.config/virtual-engineer/backup-keyring.json\n' "${home_dir%/}"
+  else
+    printf 'Set HOME or XDG_CONFIG_HOME to a persistent directory for the default backup keyring.\n' >&2
+    return 1
+  fi
+}
+
+ensure_private_marker() {
+  local marker_file="$1"
+  local marker_dir="$(dirname -- "$marker_file")"
+  [[ ! -L "$marker_file" && ( ! -e "$marker_file" || -f "$marker_file" ) ]] || {
+    printf 'Setup marker must be a regular, non-symlink file: %s\n' "$marker_file" >&2
+    return 1
+  }
+  mkdir -p -- "$marker_dir" || return 1
+  if [[ ! -e "$marker_file" ]]; then
+    if ! (umask 077; set -o noclobber; : > "$marker_file") \
+      && [[ -L "$marker_file" || ! -f "$marker_file" ]]; then
+      printf 'Could not create setup marker: %s\n' "$marker_file" >&2
+      return 1
+    fi
+  fi
+  chmod 0600 -- "$marker_file"
+}
+
+create_backup_keyring_file_at_path() {
+  local keyring_file="$1"
+  local data_dir="$2"
+  local backup_dir="$3"
+  local onboarding_marker="$4"
+  local resolved_keyring resolved_data_dir resolved_backup_dir keyring_dir
+  local key key_id
+
+  [[ ! -L "$keyring_file" ]] || {
+    printf 'Backup keyring must not be a symlink.\n' >&2
+    return 1
+  }
+  resolved_keyring=$(realpath -m -- "$keyring_file") || return 1
+  resolved_data_dir=$(realpath -e -- "$data_dir") || return 1
+  resolved_backup_dir=$(realpath -m -- "$backup_dir") || return 1
+  if [[ "$resolved_keyring" == "$resolved_data_dir" || "$resolved_keyring" == "$resolved_data_dir"/* \
+    || "$resolved_keyring" == "$resolved_backup_dir" || "$resolved_keyring" == "$resolved_backup_dir"/* ]]; then
+    printf 'Backup keyring must be stored outside DATA_DIR and BACKUP_DIR.\n' >&2
+    return 1
+  fi
+  if [[ "$resolved_keyring" == *","* ]]; then
+    printf 'Backup keyring paths must not contain commas.\n' >&2
+    return 1
+  fi
+  keyring_dir="$(dirname -- "$resolved_keyring")"
+  (umask 077; mkdir -p -- "$keyring_dir") || {
+    printf 'Could not create the backup keyring directory.\n' >&2
+    return 1
+  }
+
+  BACKUP_KEYRING_CREATED=false
+  if [[ -e "$resolved_keyring" ]]; then
+    [[ -f "$resolved_keyring" ]] || {
+      printf 'Backup keyring must be a regular file.\n' >&2
+      return 1
+    }
+    chmod 0600 -- "$resolved_keyring" || return 1
+    BACKUP_KEYRING_FILE="$resolved_keyring"
+    return 0
+  fi
+
+  ensure_private_marker "$onboarding_marker" || return 1
+  if ! command -v node >/dev/null 2>&1; then
+    printf 'Node.js is required to generate the default backup keyring.\n' >&2
+    return 1
+  fi
+  key=$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write(randomBytes(32).toString("hex"));') || {
+    printf 'Could not generate a random backup key.\n' >&2
+    return 1
+  }
+  if [[ ! "$key" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    unset key
+    printf 'Node.js returned an invalid backup key.\n' >&2
+    return 1
+  fi
+  key_id="key-$(date -u +%Y%m%d)-${key:0:8}"
+  if ! (
+    umask 077
+    set -o noclobber
+    printf '{"format":"virtual-engineer-backup-keyring","version":1,"activeKeyId":"%s","keys":{"%s":"%s"}}\n' \
+      "$key_id" "$key_id" "$key" > "$resolved_keyring"
+  ); then
+    unset key
+    if [[ -L "$resolved_keyring" || ! -f "$resolved_keyring" ]]; then
+      printf 'Could not create the backup keyring without overwriting an existing path.\n' >&2
+      return 1
+    fi
+    chmod 0600 -- "$resolved_keyring" || return 1
+    BACKUP_KEYRING_FILE="$resolved_keyring"
+    return 0
+  fi
+  unset key
+  chmod 0600 -- "$resolved_keyring" || {
+    printf 'Could not secure the generated backup keyring.\n' >&2
+    return 1
+  }
+  BACKUP_KEYRING_FILE="$resolved_keyring"
+  BACKUP_KEYRING_CREATED=true
+}
+
+ensure_default_backup_keyring_file() {
+  local xdg_config_home="${1:-}"
+  local home_dir="${2:-}"
+  local data_dir="${3:-}"
+  local onboarding_dir="${4:-}"
+  local keyring_dir resolved_keyring_dir resolved_data_dir keyring_file onboarding_marker
+
+  if [[ -n "$xdg_config_home" ]]; then
+    keyring_dir="${xdg_config_home%/}/virtual-engineer"
+  elif [[ -n "$home_dir" ]]; then
+    keyring_dir="${home_dir%/}/.config/virtual-engineer"
+  else
+    printf 'Set HOME or XDG_CONFIG_HOME to a persistent directory for the default backup keyring.\n' >&2
+    return 1
+  fi
+
+  resolved_data_dir=$(realpath -e -- "$data_dir") || {
+    printf 'Could not resolve DATA_DIR for the default backup keyring.\n' >&2
+    return 1
+  }
+  resolved_keyring_dir=$(realpath -m -- "$keyring_dir") || {
+    printf 'Could not resolve the default backup keyring directory.\n' >&2
+    return 1
+  }
+  if [[ "$resolved_keyring_dir" == "$resolved_data_dir" || "$resolved_keyring_dir" == "$resolved_data_dir"/* ]]; then
+    printf 'Default backup keyring must be stored outside DATA_DIR.\n' >&2
+    return 1
+  fi
+  if [[ "$resolved_keyring_dir" == *","* ]]; then
+    printf 'Default backup keyring paths must not contain commas.\n' >&2
+    return 1
+  fi
+
+  mkdir -p -- "$resolved_keyring_dir" || {
+    printf 'Could not create the default backup keyring directory.\n' >&2
+    return 1
+  }
+  chmod 0700 -- "$resolved_keyring_dir" || {
+    printf 'Could not secure the default backup keyring directory.\n' >&2
+    return 1
+  }
+  resolved_keyring_dir=$(realpath -e -- "$resolved_keyring_dir") || {
+    printf 'Could not resolve the created backup keyring directory.\n' >&2
+    return 1
+  }
+  if [[ "$resolved_keyring_dir" == "$resolved_data_dir" || "$resolved_keyring_dir" == "$resolved_data_dir"/* ]]; then
+    printf 'Default backup keyring must be stored outside DATA_DIR.\n' >&2
+    return 1
+  fi
+
+  keyring_file="${resolved_keyring_dir}/backup-keyring.json"
+  onboarding_dir="${onboarding_dir:-$resolved_data_dir}"
+  mkdir -p -- "$onboarding_dir" || return 1
+  resolved_keyring_dir=$(realpath -e -- "$resolved_keyring_dir") || return 1
+  keyring_file="${resolved_keyring_dir}/backup-keyring.json"
+  onboarding_marker="$(realpath -e -- "$onboarding_dir")/.backup-keyring-onboarding-pending"
+  create_backup_keyring_file_at_path "$keyring_file" "$resolved_data_dir" \
+    "${BACKUP_DIR:-$(dirname -- "$resolved_data_dir")/backups}" "$onboarding_marker"
+}
+
+ensure_instance_secrets() {
+  local env_file="$1"
+  local data_dir="$2"
+  local database_path="${3:-./data/virtual-engineer.db}"
+  local backup_dir="${4:-}"
+  local xdg_config_home="${5:-}"
+  local home_dir="${6:-${HOME:-}}"
+  local resolved_data_dir resolved_database_path state_dir resolved_backup_dir
+  local provisioned_marker onboarding_marker admin_onboarding_marker expected_keyring
+  local admin_present=false keyring_present=false initialized=false archive
+
+  [[ -f "$env_file" && ! -L "$env_file" ]] || {
+    printf 'Setup requires a regular, non-symlink .env file.\n' >&2
+    return 1
+  }
+  resolved_data_dir=$(realpath -e -- "$data_dir") || {
+    printf 'Could not resolve DATA_DIR for secret setup.\n' >&2
+    return 1
+  }
+  resolved_database_path=$(realpath -m -- "$database_path") || return 1
+  state_dir="$(dirname -- "$resolved_database_path")"
+  if [[ -z "$backup_dir" ]]; then
+    resolved_backup_dir="${state_dir}/backups"
+  else
+    resolved_backup_dir=$(realpath -m -- "$backup_dir") || return 1
+  fi
+  mkdir -p -- "$state_dir" || return 1
+  provisioned_marker="${state_dir}/.secrets-provisioned"
+  onboarding_marker="${state_dir}/.backup-keyring-onboarding-pending"
+  admin_onboarding_marker="${state_dir}/.admin-auth-secret-onboarding-pending"
+
+  if [[ -n "${ADMIN_AUTH_SECRET:-}" ]] || admin_auth_secret_from_env_file "$env_file" >/dev/null 2>&1; then
+    admin_present=true
+  fi
+  if [[ -n "${BACKUP_KEYRING_FILE:-}" ]]; then
+    if [[ -L "$BACKUP_KEYRING_FILE" ]]; then
+      printf 'Configured BACKUP_KEYRING_FILE must not be a symlink.\n' >&2
+      return 1
+    fi
+    if [[ -e "$BACKUP_KEYRING_FILE" ]]; then
+      resolve_backup_keyring_file "$BACKUP_KEYRING_FILE" "$resolved_data_dir" "$resolved_backup_dir" >/dev/null || return 1
+      keyring_present=true
+    fi
+  else
+    expected_keyring=$(default_backup_keyring_file_path "$xdg_config_home" "$home_dir") || return 1
+    if [[ -L "$expected_keyring" ]]; then
+      printf 'Default backup keyring must not be a symlink.\n' >&2
+      return 1
+    fi
+    if [[ -e "$expected_keyring" ]]; then
+      [[ -f "$expected_keyring" ]] || {
+        printf 'Default backup keyring must be a regular file.\n' >&2
+        return 1
+      }
+      resolve_backup_keyring_file "$expected_keyring" "$resolved_data_dir" "$resolved_backup_dir" >/dev/null || return 1
+      keyring_present=true
+    fi
+  fi
+
+  if [[ -e "$provisioned_marker" || -L "$provisioned_marker" \
+    || -e "$resolved_database_path" || -e "${resolved_database_path}-wal" \
+    || -e "${resolved_database_path}-shm" ]]; then
+    initialized=true
+  fi
+  for archive in "$resolved_backup_dir"/ve-backup-*.tar.gz.enc "$resolved_backup_dir"/ve-backup-*.tar.gz; do
+    if [[ -f "$archive" || -L "$archive" ]]; then
+      initialized=true
+      break
+    fi
+  done
+  if [[ "$initialized" == "true" && ( "$admin_present" != "true" || "$keyring_present" != "true" ) ]]; then
+    printf 'Refusing to generate missing secrets for an initialized instance. Restore its original ADMIN_AUTH_SECRET and BACKUP_KEYRING_FILE; a replacement cannot decrypt existing credentials or backups.\n' >&2
+    return 1
+  fi
+
+  ensure_admin_auth_secret "$env_file" || return 1
+  if [[ "$ADMIN_AUTH_SECRET_CREATED" == "true" ]]; then
+    ensure_private_marker "$admin_onboarding_marker" || return 1
+  fi
+  if [[ -n "${BACKUP_KEYRING_FILE:-}" ]]; then
+    if [[ ! -e "$BACKUP_KEYRING_FILE" ]]; then
+      [[ "$initialized" != "true" ]] || return 1
+      create_backup_keyring_file_at_path "$BACKUP_KEYRING_FILE" "$resolved_data_dir" \
+        "$resolved_backup_dir" "$onboarding_marker" || return 1
+    else
+      chmod 0600 -- "$BACKUP_KEYRING_FILE" || return 1
+      BACKUP_KEYRING_CREATED=false
+    fi
+  else
+    ensure_default_backup_keyring_file "$xdg_config_home" "$home_dir" \
+      "$resolved_data_dir" "$state_dir" || return 1
+  fi
+  resolve_backup_keyring_file "$BACKUP_KEYRING_FILE" "$resolved_data_dir" "$resolved_backup_dir" >/dev/null || return 1
+  persist_backup_keyring_file "$env_file" "$BACKUP_KEYRING_FILE" || return 1
+
+  ensure_private_marker "$provisioned_marker"
+}
+
+backup_keyring_startup_notice() {
+  local keyring="${1:-}"
+  [[ -n "$keyring" ]] && return 0
+  printf '%s\n' \
+    "BACKUP_KEYRING_FILE is not configured; new backups and encrypted restores will fail." \
+    "Set it in .env to the original keyring's absolute path; encrypted restores require the original key. See README.md, Backups and recovery."
+}
+
+confirm_backup_restore() {
+  local archive="$1"
+  local data_dir="$2"
+  local assume_yes="$3"
+  local response
+  [[ "$assume_yes" == "true" ]] && return 0
+  if [[ ! -t 0 ]]; then
+    printf 'Restore requires interactive confirmation; pass --yes to acknowledge it.\n' >&2
+    return 1
+  fi
+  printf 'This will stop the existing Virtual Engineer instance and restore %s into %s.\n' \
+    "$archive" "$data_dir" >&2
+  printf 'Type restore to continue: ' >&2
+  IFS= read -r response || return 1
+  if [[ "$response" != "restore" ]]; then
+    printf 'Restore cancelled.\n' >&2
+    return 1
+  fi
+}
+
+oidc_mode() {
+  local issuer="$1"
+  local client_secret="$2"
+  if [[ -z "$issuer" && -z "$client_secret" ]]; then
+    printf 'local\n'
+    return 0
+  fi
+  if [[ -n "$issuer" && -n "$client_secret" ]]; then
+    printf 'external\n'
+    return 0
+  fi
+  printf 'OPENSHELL_OIDC_ISSUER and OPENSHELL_OIDC_CLIENT_SECRET must be set together.\n' >&2
+  return 1
+}
+
+normalize_review_diff_tmpfs_size() {
+  local value="${1:-2g}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*[mg]$ ]]; then
+    printf 'REVIEW_DIFF_TMPFS_SIZE must be a positive integer followed by m or g (for example 512m or 2g).\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+
+normalize_openshell_compute_driver() {
+  local value="${1:-}"
+  case "$value" in
+    ""|docker)
+      printf 'docker\n'
+      ;;
+    kubernetes)
+      printf 'kubernetes\n'
+      ;;
+    *)
+      printf 'OPENSHELL_COMPUTE_DRIVER must be docker or kubernetes, got: %s\n' "$value" >&2
+      return 1
+      ;;
+  esac
+}
+
+resolve_openshell_state_dir() {
+  local configured_dir="$1"
+  local xdg_state_home="$2"
+  local home_dir="$3"
+  if [[ -n "$configured_dir" ]]; then
+    printf '%s\n' "$configured_dir"
+  elif [[ -n "$xdg_state_home" ]]; then
+    printf '%s/virtual-engineer\n' "$xdg_state_home"
+  elif [[ -n "$home_dir" ]]; then
+    printf '%s/.local/state/virtual-engineer\n' "$home_dir"
+  else
+    printf 'Set OPENSHELL_STATE_DIR, XDG_STATE_HOME, or HOME: managed OpenShell state must outlive the checkout.\n' >&2
+    return 1
+  fi
+}
+
+migrate_local_oidc_state() {
+  local legacy_dir="$1"
+  local state_dir="$2"
+  local secret_name target
+  [[ "$legacy_dir" != "$state_dir" ]] || return 0
+  [[ -d "$legacy_dir" && ! -L "$legacy_dir" ]] || return 0
+  if [[ -e "$state_dir" || -L "$state_dir" ]]; then
+    [[ -d "$state_dir" && ! -L "$state_dir" ]] || return 1
+  fi
+  mkdir -p "$state_dir"
+  [[ -d "$state_dir" && ! -L "$state_dir" ]] || return 1
+  chmod 700 "$state_dir"
+  for secret_name in client-secret admin-password; do
+    target="$state_dir/$secret_name"
+    if [[ -e "$target" || -L "$target" ]]; then
+      [[ -f "$target" && ! -L "$target" ]] || return 1
+      continue
+    fi
+    [[ -f "$legacy_dir/$secret_name" && ! -L "$legacy_dir/$secret_name" ]] || continue
+    install -m 600 "$legacy_dir/$secret_name" "$target"
+  done
+}
+
+toml_escape_string() {
+  local value="$1"
+  if [[ "$value" =~ [[:cntrl:]] ]]; then
+    printf 'OpenShell gateway configuration values must not contain control characters.\n' >&2
+    return 1
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+write_docker_gateway_config() {
+  local config_path="$1"
+  local oidc_issuer="$2"
+  local sandbox_image="$3"
+  local supervisor_image="$4"
+  local gateway_port="$5"
+  local jwt_dir="$6"
+  local health_port
+  local escaped_issuer escaped_sandbox_image escaped_supervisor_image escaped_jwt_dir
+
+  [[ -n "$config_path" ]] || return 1
+  [[ -n "$oidc_issuer" ]] || return 1
+  [[ -n "$sandbox_image" ]] || return 1
+  [[ -n "$supervisor_image" ]] || return 1
+  [[ -n "$jwt_dir" ]] || return 1
+  if [[ ! "$gateway_port" =~ ^[0-9]+$ ]] \
+    || (( gateway_port < 1 || gateway_port >= 65535 )); then
+    printf 'OpenShell gateway port must be an integer between 1 and 65534.\n' >&2
+    return 1
+  fi
+  health_port=$((gateway_port + 1))
+
+  escaped_issuer=$(toml_escape_string "$oidc_issuer") || return 1
+  escaped_sandbox_image=$(toml_escape_string "$sandbox_image") || return 1
+  escaped_supervisor_image=$(toml_escape_string "$supervisor_image") || return 1
+  escaped_jwt_dir=$(toml_escape_string "$jwt_dir") || return 1
+
+  mkdir -p "$(dirname "$config_path")"
+  cat > "$config_path" <<EOF
+[openshell]
+version = 1
+
+[openshell.gateway]
+bind_address = "0.0.0.0:${gateway_port}"
+health_bind_address = "0.0.0.0:${health_port}"
+log_level = "info"
+compute_drivers = ["docker"]
+disable_tls = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = false
+
+[openshell.gateway.oidc]
+issuer = "${escaped_issuer}"
+audience = "openshell-cli"
+jwks_ttl_secs = 3600
+roles_claim = "realm_access.roles"
+admin_role = "openshell-admin"
+user_role = "openshell-user"
+scopes_claim = ""
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "${escaped_jwt_dir}/signing.pem"
+public_key_path = "${escaped_jwt_dir}/public.pem"
+kid_path = "${escaped_jwt_dir}/kid"
+gateway_id = "virtual-engineer"
+ttl_secs = 7200
+
+[openshell.drivers.docker]
+default_image = "${escaped_sandbox_image}"
+supervisor_image = "${escaped_supervisor_image}"
+image_pull_policy = "IfNotPresent"
+sandbox_namespace = "virtual-engineer"
+grpc_endpoint = "http://host.openshell.internal:${gateway_port}"
+network_name = "openshell-docker"
+enable_bind_mounts = false
+sandbox_pids_limit = 2048
+EOF
+  chmod 600 "$config_path"
+}
+
+load_or_create_secret() {
+  local secret_file="$1"
+  if [[ ! -s "$secret_file" ]]; then
+    mkdir -p "$(dirname "$secret_file")"
+    umask 077
+    openssl rand -hex 32 | tr -d '\r\n' > "$secret_file"
+  else
+    local normalized
+    normalized=$(tr -d '\r\n' < "$secret_file")
+    printf '%s' "$normalized" > "$secret_file"
+  fi
+  chmod 600 "$secret_file"
+  tr -d '\r\n' < "$secret_file"
+}
+
+restore_kubernetes_secret_value() {
+  local kubeconfig="$1"
+  local namespace="$2"
+  local secret_name="$3"
+  local key="$4"
+  local destination="$5"
+  [[ -s "$destination" ]] && return 0
+  mkdir -p "$(dirname "$destination")"
+  umask 077
+  KUBECONFIG="$kubeconfig" kubectl get secret "$secret_name" -n "$namespace" \
+    -o "jsonpath={.data.${key}}" 2>/dev/null | base64 --decode > "$destination" \
+    || rm -f "$destination"
+  [[ -s "$destination" ]] || { rm -f "$destination"; return 1; }
+  chmod 600 "$destination"
+}
+
+can_prepare_k3s() {
+  local cluster_ready="$1"
+  local no_new_privileges="$2"
+  [[ "$cluster_ready" == "true" || "$no_new_privileges" != "true" ]]
+}
+
+image_ids_match() {
+  local docker_id="$1"
+  local runtime_id="$2"
+  [[ -n "$docker_id" && -n "$runtime_id" ]] \
+    && [[ "$runtime_id" == *"${docker_id#sha256:}"* ]]
+}
+
+wait_for_tcp_listener() {
+  local pid="$1"
+  local host="$2"
+  local port="$3"
+  local attempts="${4:-30}"
+  while (( attempts > 0 )); do
+    kill -0 "$pid" 2>/dev/null || return 1
+    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+      exec 3>&-
+      exec 3<&-
+      return 0
+    fi
+    sleep 1
+    ((attempts--)) || true
+  done
+  return 1
+}
+
+wait_for_tcp_port() {
+  local host="$1"
+  local port="$2"
+  local attempts="${3:-30}"
+  while (( attempts > 0 )); do
+    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+      exec 3>&-
+      exec 3<&-
+      return 0
+    fi
+    sleep 1
+    ((attempts--)) || true
+  done
+  return 1
+}
+
+wait_for_container_log() {
+  local container="$1"
+  local pattern="$2"
+  local attempts="${3:-30}"
+  while (( attempts > 0 )); do
+    if docker logs "$container" 2>&1 | grep -F -- "$pattern" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+    ((attempts--)) || true
+  done
+  return 1
+}
+
+is_managed_openshell_port_forward() {
+  local pid="$1"
+  local workspace="$2"
+  local process_uid process_name process_cwd
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -r "/proc/${pid}/status" && -r "/proc/${pid}/comm" ]] || return 1
+  process_uid=$(awk '$1 == "Uid:" { print $2; exit }' "/proc/${pid}/status")
+  process_name=$(cat "/proc/${pid}/comm")
+  process_cwd=$(readlink "/proc/${pid}/cwd" 2>/dev/null || true)
+  [[ "$process_uid" == "$(id -u)" ]] \
+    && [[ "$process_name" == "kubectl" ]] \
+    && [[ "$process_cwd" == "$workspace" ]]
+}
+
+stop_managed_openshell_port_forward() {
+  local pid_file="$1"
+  local port="$2"
+  local workspace="$3"
+  local pid pid_file_value listener_pids
+  local -A seen=()
+
+  pid_file_value=$(cat "$pid_file" 2>/dev/null || true)
+  listener_pids=""
+  if command -v fuser >/dev/null 2>&1; then
+    listener_pids=$(fuser -n tcp "$port" 2>/dev/null || true)
+  fi
+
+  for pid in $pid_file_value $listener_pids; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ -z "${seen[$pid]:-}" ]] || continue
+    seen[$pid]=1
+    is_managed_openshell_port_forward "$pid" "$workspace" || continue
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || return 1
+    fi
+  done
+  rm -f "$pid_file"
+}
+
+run_config_hash() {
+  local env_file="$1"
+  shift
+  {
+    printf 'virtual-engineer-run-config-v1\0'
+    if [[ -f "$env_file" ]]; then
+      printf 'env-present\0'
+      cat "$env_file"
+    else
+      printf 'env-missing\0'
+    fi
+    printf '\0docker-args\0'
+    printf '%s\0' "$@"
+  } | sha256sum | cut -d' ' -f1
+}
+
+should_reuse_container() {
+  local running="$1"
+  local running_image="$2"
+  local latest_image="$3"
+  local stored_config_hash="$4"
+  local current_config_hash="$5"
+
+  [[ "$running" == "true" ]] \
+    && [[ -n "$running_image" ]] \
+    && [[ -n "$latest_image" ]] \
+    && [[ "$running_image" == "$latest_image" ]] \
+    && [[ "$stored_config_hash" == "$current_config_hash" ]]
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
+set -euo pipefail
+
 cd "$ROOT_DIR"
 load_dotenv "$ROOT_DIR/.env"
 
-# ─── Parse arguments ──────────────────────────────────────────────────────────
+# Parse arguments before validating deployment settings so --setup-only needs
+# only the configuration required to provision the instance.
 K3S_INSTALL=true
 RESTORE_ARCHIVE=""
 RESTORE_CONFIRM_YES=false
 RESTORE_FORCE=false
-OPENSHELL_VERSION="v0.0.83"
-OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
-OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
-OPENSHELL_GATEWAY_IMAGE="ghcr.io/nvidia/openshell/gateway:0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6"
-OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f"
-KEYCLOAK_IMAGE="quay.io/keycloak/keycloak@sha256:98fab020a3a490aba0978f237e2a06cd0ea42bf149c6cf10f11c0aaf27728ff2"
-OPENSHELL_GATEWAY_NAME="${OPENSHELL_GATEWAY_NAME:-virtual-engineer}"
-OPENSHELL_COMPUTE_DRIVER=$(normalize_openshell_compute_driver "${OPENSHELL_COMPUTE_DRIVER:-}") \
-  || error "Unsupported OpenShell compute driver."
-OPENSHELL_OIDC_ISSUER="${OPENSHELL_OIDC_ISSUER:-}"
-OPENSHELL_OIDC_CLIENT_ID="${OPENSHELL_OIDC_CLIENT_ID:-openshell-ci}"
-OPENSHELL_OIDC_AUDIENCE="${OPENSHELL_OIDC_AUDIENCE:-openshell-cli}"
-OPENSHELL_OIDC_CA_CONFIG_MAP="${OPENSHELL_OIDC_CA_CONFIG_MAP:-}"
-K3S_VERSION="${K3S_VERSION:-v1.32.3+k3s1}"
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
-AGENT_SANDBOX_MANIFEST_SHA256="${AGENT_SANDBOX_MANIFEST_SHA256:-8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a}"
-
-OIDC_MODE=$(oidc_mode "$OPENSHELL_OIDC_ISSUER" "${OPENSHELL_OIDC_CLIENT_SECRET:-}") \
-  || error "Set both OpenShell OIDC values for an external provider, or leave both empty to use local Keycloak."
+SETUP_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --setup-only)
+      SETUP_ONLY=true; shift ;;
     --no-k3s-install)
       K3S_INSTALL=false; shift ;;
     --restore)
@@ -87,7 +995,54 @@ done
   || error "--yes can only be used with --restore."
 [[ "$RESTORE_FORCE" != "true" || -n "$RESTORE_ARCHIVE" ]] \
   || error "--force can only be used with --restore."
+[[ "$SETUP_ONLY" != "true" || -z "$RESTORE_ARCHIVE" ]] \
+  || error "--setup-only cannot be combined with --restore."
+ensure_env_file "$ROOT_DIR/.env" "$ROOT_DIR/.env.example" \
+  || error "Could not create or protect ${ROOT_DIR}/.env."
+load_dotenv "$ROOT_DIR/.env"
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+DATABASE_PATH="${DATABASE_PATH:-./data/virtual-engineer.db}"
+BACKUP_DIR="${BACKUP_DIR:-$(dirname -- "$DATABASE_PATH")/backups}"
+
+if [[ "$SETUP_ONLY" == "true" ]]; then
+  mkdir -p -- "$DATA_DIR" || error "Could not create DATA_DIR: ${DATA_DIR}"
+  DATA_DIR="$(cd "$DATA_DIR" && pwd)"
+  ensure_instance_secrets "$ROOT_DIR/.env" "$DATA_DIR" "$DATABASE_PATH" "$BACKUP_DIR" \
+    "${XDG_CONFIG_HOME:-}" "${HOME:-}" \
+    || error "Could not create or load the instance secrets."
+  if [[ "$ADMIN_AUTH_SECRET_CREATED" == "true" ]]; then
+    info "Generated ADMIN_AUTH_SECRET and protected it in .env."
+  fi
+  if [[ "$BACKUP_KEYRING_CREATED" == "true" ]]; then
+    info "Created backup encryption keyring at ${BACKUP_KEYRING_FILE}."
+    info "The generated secrets will be available once to the first admin after startup."
+  fi
+  info "Setup complete; existing secret values were preserved."
+  exit 0
+fi
+
+# A /etc/localtime bind mount alone can leave Node using UTC in the container.
+ORCHESTRATOR_TIMEZONE=$(node -p 'Intl.DateTimeFormat().resolvedOptions().timeZone')
+BACKUP_ACCESS_GID="${BACKUP_ACCESS_GID:-${SUDO_GID:-$(id -g)}}"
+OPENSHELL_VERSION="v0.0.83"
+OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
+OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
+OPENSHELL_GATEWAY_IMAGE="ghcr.io/nvidia/openshell/gateway:0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6"
+OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f"
+KEYCLOAK_IMAGE="quay.io/keycloak/keycloak@sha256:98fab020a3a490aba0978f237e2a06cd0ea42bf149c6cf10f11c0aaf27728ff2"
+OPENSHELL_GATEWAY_NAME="${OPENSHELL_GATEWAY_NAME:-virtual-engineer}"
+OPENSHELL_COMPUTE_DRIVER=$(normalize_openshell_compute_driver "${OPENSHELL_COMPUTE_DRIVER:-}") \
+  || error "Unsupported OpenShell compute driver."
+OPENSHELL_OIDC_ISSUER="${OPENSHELL_OIDC_ISSUER:-}"
+OPENSHELL_OIDC_CLIENT_ID="${OPENSHELL_OIDC_CLIENT_ID:-openshell-ci}"
+OPENSHELL_OIDC_AUDIENCE="${OPENSHELL_OIDC_AUDIENCE:-openshell-cli}"
+OPENSHELL_OIDC_CA_CONFIG_MAP="${OPENSHELL_OIDC_CA_CONFIG_MAP:-}"
+K3S_VERSION="${K3S_VERSION:-v1.32.3+k3s1}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
+AGENT_SANDBOX_MANIFEST_SHA256="${AGENT_SANDBOX_MANIFEST_SHA256:-8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a}"
+
+OIDC_MODE=$(oidc_mode "$OPENSHELL_OIDC_ISSUER" "${OPENSHELL_OIDC_CLIENT_SECRET:-}") \
+  || error "Set both OpenShell OIDC values for an external provider, or leave both empty to use local Keycloak."
 if [[ -n "$RESTORE_ARCHIVE" ]]; then
   confirm_backup_restore "$RESTORE_ARCHIVE" "$DATA_DIR" "$RESTORE_CONFIRM_YES" \
     || error "Backup restore was not confirmed."
@@ -124,6 +1079,31 @@ reclaim_root_owned_tree() {
 
 ensure_dir "$DATA_DIR"    755
 DATA_DIR="$(cd "$DATA_DIR" && pwd)"
+if [[ -z "$RESTORE_ARCHIVE" ]]; then
+  ensure_instance_secrets "$ROOT_DIR/.env" "$DATA_DIR" "$DATABASE_PATH" "$BACKUP_DIR" \
+    "${XDG_CONFIG_HOME:-}" "${HOME:-}" \
+    || error "Could not create or load the instance secrets."
+  if [[ "$ADMIN_AUTH_SECRET_CREATED" == "true" ]]; then
+    info "Generated ADMIN_AUTH_SECRET and protected it in .env."
+  fi
+  if [[ "$BACKUP_KEYRING_CREATED" == "true" ]]; then
+    info "Created backup encryption keyring at ${BACKUP_KEYRING_FILE}."
+    warn "Keep a protected copy of this file; encrypted backups cannot be restored without it."
+  fi
+fi
+while IFS= read -r backup_notice; do
+  warn "$backup_notice"
+done < <(backup_keyring_startup_notice "${BACKUP_KEYRING_FILE:-}")
+
+BACKUP_KEYRING_DOCKER_ARGS=()
+if [[ -n "${BACKUP_KEYRING_FILE:-}" ]]; then
+  BACKUP_KEYRING_FILE=$(resolve_backup_keyring_file "$BACKUP_KEYRING_FILE" "$DATA_DIR" "$BACKUP_DIR") \
+    || error "BACKUP_KEYRING_FILE must be a regular file outside DATA_DIR and BACKUP_DIR."
+  BACKUP_KEYRING_DOCKER_ARGS=(
+    --mount "type=bind,source=${BACKUP_KEYRING_FILE},target=/app/backup-keyring.json,readonly"
+    -e "BACKUP_KEYRING_FILE=/app/backup-keyring.json"
+  )
+fi
 OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
 OPENSHELL_CONFIG_DIR="${DATA_DIR}/openshell-cli-config"
 ensure_dir "$OPENSHELL_CONFIG_DIR" 700
@@ -790,8 +1770,8 @@ fi
 RESTORE_DOCKER_ARGS=()
 if [[ -n "$RESTORE_ARCHIVE" ]]; then
   RESTORE_DOCKER_ARGS=(
-    --mount "type=bind,source=${RESTORE_ARCHIVE},target=/app/restore.tar.gz,readonly"
-    -e "VE_RESTORE_FROM=/app/restore.tar.gz"
+    --mount "type=bind,source=${RESTORE_ARCHIVE},target=/app/restore-backup,readonly"
+    -e "VE_RESTORE_FROM=/app/restore-backup"
   )
   if [[ "$RESTORE_FORCE" == "true" ]]; then
     RESTORE_DOCKER_ARGS+=(-e "VE_RESTORE_FORCE=true")
@@ -805,8 +1785,12 @@ DOCKER_RUN_ARGS=(
   --network host
   "${OIDC_DOCKER_HOST_ARGS[@]}"
   --env-file "$ROOT_DIR/.env"
+  -e ADMIN_AUTH_SECRET
+  -e "TZ=$ORCHESTRATOR_TIMEZONE"
+  -e "BACKUP_ACCESS_GID=$BACKUP_ACCESS_GID"
   -e DATABASE_PATH=/app/data/virtual-engineer.db
   "${RESTORE_DOCKER_ARGS[@]}"
+  "${BACKUP_KEYRING_DOCKER_ARGS[@]}"
   -e GH_CONFIG_DIR=/ve-gh
   --security-opt label:disable
   -v /etc/localtime:/etc/localtime:ro
@@ -821,8 +1805,9 @@ LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/nul
 RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
 IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
 OIDC_SECRET_LEN=${#OPENSHELL_OIDC_CLIENT_SECRET}
+ADMIN_AUTH_SECRET_HASH=$(printf '%s' "${ADMIN_AUTH_SECRET:-}" | sha256sum | awk '{ print $1 }')
 RUN_CONFIG_HASH=$(run_config_hash "$ROOT_DIR/.env" "${DOCKER_RUN_ARGS[@]}" \
-  "oidc-secret-len=${OIDC_SECRET_LEN}")
+  "oidc-secret-len=${OIDC_SECRET_LEN}" "admin-auth-secret-sha256=${ADMIN_AUTH_SECRET_HASH}")
 RUN_CONFIG_MARKER="${DATA_DIR}/.orchestrator-run-config-hash"
 STORED_RUN_CONFIG_HASH=$(cat "$RUN_CONFIG_MARKER" 2>/dev/null || true)
 
