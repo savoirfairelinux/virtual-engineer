@@ -63,9 +63,9 @@ Open the Admin UI at [http://127.0.0.1:3100/admin](http://127.0.0.1:3100/admin),
 create the first admin account, and configure the integrations and projects.
 
 For an existing checkout, use `--setup-only` to provision without starting the
-services, or let the normal launcher do both. Setup creates `.env` from
-`.env.example` only when needed, protects it with mode `0600`, and preserves
-existing secret values:
+services, or let the normal launcher do both. Setup seeds `.env` from
+`.env.example` when missing, fills missing defaults in a partial file without
+replacing configured values, and protects it with mode `0600`:
 
 ```bash
 ./scripts/start.sh --setup-only

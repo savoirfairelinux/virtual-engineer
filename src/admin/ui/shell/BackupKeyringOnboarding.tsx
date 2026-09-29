@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api.ts";
 
 interface BackupKeyringFileContent {
@@ -18,6 +18,14 @@ type OnboardingStatusResponse = { pending: boolean };
 type RevealResponse = { pending: false } | { pending: true; secrets: PendingSecuritySecrets };
 
 const ONBOARDING_PATH = "/api/admin/security/secrets-onboarding";
+const readonlyTextBoxStyle: CSSProperties = {
+  width: "100%", boxSizing: "border-box", minHeight: 42, maxHeight: 240,
+  overflowY: "auto", padding: "10px 12px",
+  border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+  background: "var(--panel-2)", color: "var(--text)",
+  fontFamily: "var(--font-mono)", fontSize: "12px", lineHeight: 1.5,
+  whiteSpace: "pre-wrap", overflowWrap: "anywhere", cursor: "text", userSelect: "text",
+};
 
 export function SecuritySecretsOnboarding() {
   const [retryToken, setRetryToken] = useState(0);
@@ -158,9 +166,46 @@ export function SecuritySecretsOnboarding() {
         </header>
         <div className="modal-body" style={{ overflowY: "auto" }}>
           <p style={{ marginTop: 0 }}>
-            Keep protected recovery copies of every generated value. Replacing either secret can make stored credentials
-            or encrypted backups unreadable.
+            These values protect different things and are not interchangeable. Keep protected copies: changing
+            {" "}<code>ADMIN_AUTH_SECRET</code> breaks access to stored credentials and backup-manifest verification;
+            removing a key from the keyring makes archives encrypted with it undecryptable.
           </p>
+          <div
+            role="note"
+            style={{
+              marginBottom: 16, padding: "12px 14px", border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)", background: "var(--panel-2)",
+              color: "var(--text-dim)", fontSize: "12.5px", lineHeight: 1.55, overflowWrap: "anywhere",
+            }}
+          >
+            <strong style={{ display: "block", color: "var(--text)", marginBottom: 4 }}>
+              What each value protects, where it is stored, and how to change it
+            </strong>
+            <p style={{ margin: "0 0 8px" }}>
+              <code>ADMIN_AUTH_SECRET</code> encrypts stored provider credentials and generated SSH private keys. It
+              also authenticates backup manifests and is not the admin login password. <code>ADMIN_AUTH_SECRET</code>{" "}
+              is in the project <code>.env</code>. You can change it there on a fresh instance before saving
+              credentials or creating backups, then recreate <code>ve-orchestrator</code>. After that, keep the
+              original: changing it makes stored credentials undecryptable and prevents verifying backups made with
+              the old secret. In-place rotation is not supported.
+            </p>
+            <p style={{ margin: "0 0 8px" }}>
+              <code>BACKUP_KEYRING_FILE</code> is a path, not a secret key. Its setting in <code>.env</code> points to
+              the keyring file (default:{" "}
+              <code>{'${XDG_CONFIG_HOME:-$HOME/.config}/virtual-engineer/backup-keyring.json'}</code>). To move it,
+              update that path and recreate the container. The file's <code>keys</code> map contains the actual
+              {" "}<code>AES-256-GCM</code> archive-encryption keys; <code>activeKeyId</code> selects the key used for
+              new archives. To rotate, add a new key, set <code>activeKeyId</code> to it, and keep old keys for existing
+              archives; see README → Backups and recovery → Rotate the key.
+            </p>
+            <p style={{ margin: 0 }}>
+              After you click Reveal, the server sends the values to this browser as plaintext JSON, and the UI holds
+              them in page memory while this dialog is open. <code>no-store</code> prevents caching; it does not
+              encrypt the connection. The Admin server itself uses HTTP, so only reveal over a trusted local
+              connection or through a trusted HTTPS proxy for remote access. Avoid screenshots and clear the clipboard
+              after copying.
+            </p>
+          </div>
           {status === "pending" && (
             <button className="btn primary" disabled={revealing} onClick={() => void revealSecrets()}>
               {revealing ? "Revealing…" : "Reveal setup secrets"}
@@ -168,24 +213,20 @@ export function SecuritySecretsOnboarding() {
           )}
           {hasAdminSecret && (
             <div style={{ marginTop: 18 }}>
-              <label htmlFor="admin-auth-secret" style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
+              <div id="admin-auth-secret-label" style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
                 ADMIN_AUTH_SECRET
-              </label>
-              <textarea
+              </div>
+              <div
                 id="admin-auth-secret"
-                aria-label="ADMIN_AUTH_SECRET"
-                readOnly
-                spellCheck={false}
-                rows={2}
-                value={secrets?.adminAuthSecret ?? ""}
+                role="textbox"
+                aria-labelledby="admin-auth-secret-label"
+                aria-readonly="true"
+                tabIndex={0}
                 onCopy={() => setAdminSecretSaved(true)}
-                style={{
-                  width: "100%", resize: "vertical", padding: "10px 12px",
-                  border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-                  background: "var(--panel-2)", color: "var(--text)",
-                  fontFamily: "var(--font-mono)", fontSize: "12px", lineHeight: 1.5,
-                }}
-              />
+                style={readonlyTextBoxStyle}
+              >
+                {secrets?.adminAuthSecret ?? ""}
+              </div>
               <div className="form-actions" style={{ justifyContent: "flex-start", marginTop: 8 }}>
                 <button className="btn ghost" onClick={() => void copyAdminSecret()}>Copy ADMIN_AUTH_SECRET</button>
               </div>
@@ -193,24 +234,20 @@ export function SecuritySecretsOnboarding() {
           )}
           {hasKeyring && (
             <div style={{ marginTop: 18 }}>
-              <label htmlFor="backup-keyring-json" style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
+              <div id="backup-keyring-json-label" style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
                 Backup keyring JSON
-              </label>
-              <textarea
+              </div>
+              <div
                 id="backup-keyring-json"
-                aria-label="Backup keyring JSON"
-                readOnly
-                spellCheck={false}
-                rows={8}
-                value={keyringJson}
+                role="textbox"
+                aria-labelledby="backup-keyring-json-label"
+                aria-readonly="true"
+                tabIndex={0}
                 onCopy={() => setKeyringSaved(true)}
-                style={{
-                  width: "100%", resize: "vertical", padding: "10px 12px",
-                  border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-                  background: "var(--panel-2)", color: "var(--text)",
-                  fontFamily: "var(--font-mono)", fontSize: "12px", lineHeight: 1.5,
-                }}
-              />
+                style={readonlyTextBoxStyle}
+              >
+                {keyringJson}
+              </div>
               <div className="form-actions" style={{ justifyContent: "flex-start", marginTop: 8 }}>
                 <button className="btn ghost" onClick={() => void copyKeyring()}>Copy keyring JSON</button>
                 <button className="btn ghost" onClick={downloadKeyring}>Download keyring JSON</button>
