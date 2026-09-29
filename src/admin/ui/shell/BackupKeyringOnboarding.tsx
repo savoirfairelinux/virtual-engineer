@@ -165,47 +165,58 @@ export function SecuritySecretsOnboarding() {
           </div>
         </header>
         <div className="modal-body" style={{ overflowY: "auto" }}>
-          <p style={{ marginTop: 0 }}>
-            These values protect different things and are not interchangeable. Keep protected copies: changing
-            {" "}<code>ADMIN_AUTH_SECRET</code> breaks access to stored credentials and backup-manifest verification;
-            removing a key from the keyring makes archives encrypted with it undecryptable.
+          <p style={{ margin: "0 0 16px", fontSize: 14, lineHeight: 1.6 }}>
+            Save both values somewhere safe. They protect different things.
           </p>
-          <div
+          <p
             role="note"
             style={{
-              marginBottom: 16, padding: "12px 14px", border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)", background: "var(--panel-2)",
-              color: "var(--text-dim)", fontSize: "12.5px", lineHeight: 1.55, overflowWrap: "anywhere",
+              margin: "0 0 20px", paddingLeft: 12, borderLeft: "3px solid var(--warn)",
+              color: "var(--text-dim)", fontSize: 14, lineHeight: 1.6, overflowWrap: "anywhere",
             }}
           >
-            <strong style={{ display: "block", color: "var(--text)", marginBottom: 4 }}>
-              What each value protects, where it is stored, and how to change it
-            </strong>
-            <p style={{ margin: "0 0 8px" }}>
-              <code>ADMIN_AUTH_SECRET</code> encrypts stored provider credentials and generated SSH private keys. It
-              also authenticates backup manifests and is not the admin login password. <code>ADMIN_AUTH_SECRET</code>{" "}
-              is in the project <code>.env</code>. You can change it there on a fresh instance before saving
-              credentials or creating backups, then recreate <code>ve-orchestrator</code>. After that, keep the
-              original: changing it makes stored credentials undecryptable and prevents verifying backups made with
-              the old secret. In-place rotation is not supported.
-            </p>
-            <p style={{ margin: "0 0 8px" }}>
-              <code>BACKUP_KEYRING_FILE</code> is a path, not a secret key. Its setting in <code>.env</code> points to
-              the keyring file (default:{" "}
-              <code>{'${XDG_CONFIG_HOME:-$HOME/.config}/virtual-engineer/backup-keyring.json'}</code>). To move it,
-              update that path and recreate the container. The file's <code>keys</code> map contains the actual
-              {" "}<code>AES-256-GCM</code> archive-encryption keys; <code>activeKeyId</code> selects the key used for
-              new archives. To rotate, add a new key, set <code>activeKeyId</code> to it, and keep old keys for existing
-              archives; see README → Backups and recovery → Rotate the key.
-            </p>
-            <p style={{ margin: 0 }}>
-              After you click Reveal, the server sends the values to this browser as plaintext JSON, and the UI holds
-              them in page memory while this dialog is open. <code>no-store</code> prevents caching; it does not
-              encrypt the connection. The Admin server itself uses HTTP, so only reveal over a trusted local
-              connection or through a trusted HTTPS proxy for remote access. Avoid screenshots and clear the clipboard
-              after copying.
-            </p>
-          </div>
+            <strong style={{ color: "var(--text)" }}>Before you reveal:</strong> the server sends these values to your
+            browser in plain text. The Admin server uses HTTP, so the connection is not encrypted. Reveal only on a
+            trusted local connection or over trusted HTTPS. <code>no-store</code> stops caching; it does not encrypt.
+            Clear your clipboard after copying.
+          </p>
+          <section
+            aria-labelledby="admin-auth-explanation-title"
+            style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}
+          >
+            <h3
+              id="admin-auth-explanation-title"
+              style={{ margin: "0 0 10px", color: "var(--text)", fontSize: 16 }}
+            >
+              ADMIN_AUTH_SECRET
+            </h3>
+            <ul style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 8, fontSize: 14, lineHeight: 1.6 }}>
+              <li>Stored in the project <code>.env</code>. It encrypts saved provider credentials and private SSH keys.</li>
+              <li>It checks that backups have not been changed. It is not your Admin login password.</li>
+              <li>
+                Change it only on a new instance, before saving credentials or creating backups. After that, changing
+                it can make credentials unusable and prevent backup checks. Recreate <code>ve-orchestrator</code> after
+                changing it.
+              </li>
+            </ul>
+          </section>
+          <section aria-labelledby="backup-keyring-explanation-title" style={{ marginBottom: 20 }}>
+            <h3
+              id="backup-keyring-explanation-title"
+              style={{ margin: "0 0 10px", color: "var(--text)", fontSize: 16 }}
+            >
+              Backup keyring
+            </h3>
+            <ul style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 8, fontSize: 14, lineHeight: 1.6 }}>
+              <li>
+                <code>BACKUP_KEYRING_FILE</code> in <code>.env</code> sets the file location. Default:{" "}
+                <code>{'${XDG_CONFIG_HOME:-$HOME/.config}/virtual-engineer/backup-keyring.json'}</code>.
+              </li>
+              <li>The file contains the keys that encrypt backups. <code>activeKeyId</code> picks the key for new backups.</li>
+              <li>Add a new key to rotate. Make it active, and keep old keys to restore older backups.</li>
+              <li>To move the file, change its path in <code>.env</code> and recreate the container.</li>
+            </ul>
+          </section>
           {status === "pending" && (
             <button className="btn primary" disabled={revealing} onClick={() => void revealSecrets()}>
               {revealing ? "Revealing…" : "Reveal setup secrets"}
