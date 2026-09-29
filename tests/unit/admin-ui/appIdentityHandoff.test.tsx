@@ -147,14 +147,32 @@ describe("App identity loading", () => {
     render(<SecuritySecretsOnboarding />);
 
     const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    expect(dialog.textContent).toContain("ADMIN_AUTH_SECRET is in the project .env.");
+    expect(dialog.textContent).toContain("encrypts stored provider credentials and generated SSH private keys");
+    expect(dialog.textContent).toContain("authenticates backup manifests and is not the admin login password.");
+    expect(dialog.textContent).toContain("BACKUP_KEYRING_FILE");
+    expect(dialog.textContent).toContain("is a path, not a secret key");
+    expect(dialog.textContent).toContain("AES-256-GCM");
+    expect(dialog.textContent).toContain("activeKeyId selects the key used for new archives");
+    expect(dialog.textContent).toContain("set activeKeyId to it");
+    expect(dialog.textContent).toContain("keep old keys for existing archives");
+    expect(dialog.textContent).toContain("server sends the values to this browser as plaintext JSON");
+    expect(dialog.textContent).toContain("no-store prevents caching; it does not encrypt the connection");
+    expect(dialog.textContent).toContain("The Admin server itself uses HTTP");
     expect(dialog.textContent).not.toContain(adminAuthSecret);
     expect(screen.queryByLabelText("ADMIN_AUTH_SECRET")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Reveal setup secrets" }));
-    const adminSecretField = await screen.findByLabelText("ADMIN_AUTH_SECRET") as HTMLTextAreaElement;
-    const keyringField = screen.getByLabelText("Backup keyring JSON") as HTMLTextAreaElement;
-    expect(adminSecretField.value).toBe(adminAuthSecret);
-    expect(keyringField.value).toContain("a".repeat(64));
+    const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const keyringField = screen.getByRole("textbox", { name: "Backup keyring JSON" });
+    expect(adminSecretField.tagName).toBe("DIV");
+    expect(keyringField.tagName).toBe("DIV");
+    expect(adminSecretField.getAttribute("aria-readonly")).toBe("true");
+    expect(keyringField.getAttribute("aria-readonly")).toBe("true");
+    expect(adminSecretField.getAttribute("contenteditable")).toBeNull();
+    expect(keyringField.getAttribute("contenteditable")).toBeNull();
+    expect(adminSecretField.textContent).toBe(adminAuthSecret);
+    expect(keyringField.textContent).toContain("a".repeat(64));
 
     const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
     expect(acknowledge.disabled).toBe(true);

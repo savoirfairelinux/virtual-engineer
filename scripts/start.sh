@@ -72,11 +72,11 @@ ensure_env_file() {
     printf 'Refusing to use a non-regular .env file: %s\n' "$env_file" >&2
     return 1
   fi
+  [[ -f "$env_example" && ! -L "$env_example" ]] || {
+    printf 'Missing regular .env.example file: %s\n' "$env_example" >&2
+    return 1
+  }
   if [[ ! -e "$env_file" ]]; then
-    [[ -f "$env_example" && ! -L "$env_example" ]] || {
-      printf 'Missing regular .env.example file: %s\n' "$env_example" >&2
-      return 1
-    }
     temp_env_file="$(mktemp "${env_file}.setup.XXXXXX")" || return 1
     chmod 0600 "$temp_env_file" || {
       rm -f -- "$temp_env_file"
@@ -92,6 +92,50 @@ ensure_env_file() {
     else
       rm -f -- "$temp_env_file"
     fi
+  fi
+
+  temp_env_file="$(mktemp "${env_file}.merge.XXXXXX")" || return 1
+  chmod 0600 "$temp_env_file" || {
+    rm -f -- "$temp_env_file"
+    return 1
+  }
+  awk '
+    function variable_name(line, assignment) {
+      if (!match(line, /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/)) return ""
+      assignment = substr(line, RSTART, RLENGTH)
+      sub(/^[[:space:]]*(export[[:space:]]+)?/, "", assignment)
+      sub(/[[:space:]]*=$/, "", assignment)
+      return assignment
+    }
+    FILENAME == ARGV[1] {
+      env_lines[++env_line_count] = $0
+      variable = variable_name($0)
+      if (variable != "") existing[variable] = 1
+      next
+    }
+    {
+      variable = variable_name($0)
+      if (variable != "" && !(variable in existing) && !(variable in added)) {
+        defaults[++default_line_count] = $0
+        added[variable] = 1
+      }
+    }
+    END {
+      for (line_number = 1; line_number <= env_line_count; line_number++) print env_lines[line_number]
+      if (env_line_count > 0 && default_line_count > 0) print ""
+      for (line_number = 1; line_number <= default_line_count; line_number++) print defaults[line_number]
+    }
+  ' "$env_file" "$env_example" > "$temp_env_file" || {
+    rm -f -- "$temp_env_file"
+    return 1
+  }
+  if ! cmp -s -- "$env_file" "$temp_env_file"; then
+    if ! mv -- "$temp_env_file" "$env_file"; then
+      rm -f -- "$temp_env_file"
+      return 1
+    fi
+  else
+    rm -f -- "$temp_env_file"
   fi
   chmod 0600 "$env_file"
 }

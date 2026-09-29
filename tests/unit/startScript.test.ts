@@ -207,6 +207,7 @@ describe("start.sh helpers", () => {
     });
     const envFile = join(setupDir, ".env");
     const firstEnv = readFileSync(envFile, "utf8");
+    const envExample = readFileSync(join(setupDir, ".env.example"), "utf8");
     const adminSecret = firstEnv.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
     const keyring = JSON.parse(readFileSync(keyringFile, "utf8")) as {
       activeKeyId: string;
@@ -216,6 +217,7 @@ describe("start.sh helpers", () => {
 
     expect(adminSecret).toMatch(/^[a-f0-9]{64}$/);
     expect(backupKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(firstEnv.startsWith(envExample)).toBe(true);
     expect(firstOutput).not.toContain(adminSecret);
     expect(firstOutput).not.toContain(backupKey);
     expect(firstEnv).toContain(`BACKUP_KEYRING_FILE=${keyringFile}`);
@@ -236,6 +238,23 @@ describe("start.sh helpers", () => {
     expect(readFileSync(keyringFile, "utf8")).toBe(JSON.stringify(keyring) + "\n");
     expect(secondOutput).not.toContain(adminSecret);
     expect(secondOutput).not.toContain(backupKey);
+  });
+
+  it("fills missing .env defaults without overwriting configured values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-env-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    writeFileSync(envFile, "LOG_LEVEL=warn\nCUSTOM_SETTING=keep\nADMIN_AUTH_SECRET=existing\n");
+
+    runHelper('ensure_env_file "$1" "$2"', [envFile, join(process.cwd(), ".env.example")]);
+
+    const envContent = readFileSync(envFile, "utf8");
+    expect(envContent).toContain("NODE_ENV=development");
+    expect(envContent).toContain("LOG_LEVEL=warn");
+    expect(envContent.match(/^LOG_LEVEL=/gm)).toHaveLength(1);
+    expect(envContent).toContain("CUSTOM_SETTING=keep");
+    expect(envContent).toContain("ADMIN_AUTH_SECRET=existing");
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
   });
 
   it("provisions both missing secrets once and keeps them private", async () => {
