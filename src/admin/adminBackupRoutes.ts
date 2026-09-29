@@ -5,7 +5,12 @@ import { writeJson, readBody, requireStore } from "./adminRouteUtils.js";
 import type { AuditCapableStore } from "./adminAudit.js";
 import { recordAudit } from "./adminAudit.js";
 import type { Router } from "./router.js";
-import { isBackupFilename, type BackupInfo } from "../backup/backupArchive.js";
+import {
+  isBackupEncryptedFilename,
+  isBackupFilename,
+  type BackupInfo,
+} from "../backup/backupArchive.js";
+import type { PendingSecuritySecrets } from "../backup/backupService.js";
 import type { EffectiveBackupSettings } from "../backup/backupSettings.js";
 import { mintBackupDownloadToken } from "./backupDownloadTokenStore.js";
 
@@ -24,6 +29,9 @@ export interface BackupAdminController {
   deleteBackup(filename: string): Promise<boolean>;
   openBackup(filename: string): Promise<{ info: BackupInfo; stream: Readable }>;
   getNextBackupAt(): Promise<Date | null>;
+  hasPendingSecuritySecretsOnboarding?(): Promise<boolean>;
+  revealSecuritySecretsOnboarding?(): Promise<PendingSecuritySecrets | null>;
+  acknowledgeSecuritySecretsOnboarding?(): Promise<boolean>;
 }
 
 export interface BackupRoutesDeps {
@@ -100,6 +108,42 @@ export function registerBackupRoutes(router: Router, deps: BackupRoutesDeps): vo
       nextBackupAt: nextBackupAt?.toISOString() ?? null,
     });
   }, { permission: "system.backup.manage" });
+
+  router.add("GET", "/api/admin/security/secrets-onboarding", async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    const pending = await deps.backups?.hasPendingSecuritySecretsOnboarding?.() ?? false;
+    writeJson(res, 200, { pending });
+  });
+
+  router.add("POST", "/api/admin/security/secrets-onboarding/reveal", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    const secrets = await deps.backups?.revealSecuritySecretsOnboarding?.() ?? null;
+    if (secrets) {
+      recordAudit(deps.auditStore, req, {
+        action: "security.secrets_reveal",
+        targetType: "security-secrets",
+      });
+      writeJson(res, 200, { pending: true, secrets });
+      return;
+    }
+    writeJson(res, 200, { pending: false });
+  });
+
+  router.add("POST", "/api/admin/security/secrets-onboarding/acknowledge", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    const acknowledged = await deps.backups?.acknowledgeSecuritySecretsOnboarding?.() ?? false;
+    if (acknowledged) {
+      recordAudit(deps.auditStore, req, {
+        action: "security.secrets_acknowledged",
+        targetType: "security-secrets",
+      });
+    }
+    res.statusCode = 204;
+    res.end();
+  });
 
   router.add("POST", "/api/admin/backups", async (req, res) => {
     if (!requireStore(deps.backups, res, "Backup service not available")) return;
@@ -179,7 +223,7 @@ export async function serveBackupDownloadResponse(
     return;
   }
   res.statusCode = 200;
-  res.setHeader("content-type", "application/gzip");
+  res.setHeader("content-type", isBackupEncryptedFilename(filename) ? "application/octet-stream" : "application/gzip");
   res.setHeader("content-length", String(opened.info.sizeBytes));
   res.setHeader("content-disposition", `attachment; filename="${opened.info.filename}"`);
   res.setHeader("cache-control", "no-store");

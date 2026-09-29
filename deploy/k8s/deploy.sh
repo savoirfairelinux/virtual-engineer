@@ -13,6 +13,8 @@ OPENSHELL_OIDC_ISSUER="${OPENSHELL_OIDC_ISSUER:-}"
 OPENSHELL_OIDC_CLIENT_ID="${OPENSHELL_OIDC_CLIENT_ID:-openshell-ci}"
 OPENSHELL_OIDC_AUDIENCE="${OPENSHELL_OIDC_AUDIENCE:-openshell-cli}"
 OPENSHELL_OIDC_CA_CONFIG_MAP="${OPENSHELL_OIDC_CA_CONFIG_MAP:-}"
+VE_ENCRYPTED_STORAGE_CLASS="${VE_ENCRYPTED_STORAGE_CLASS:-}"
+VE_DATA_PVC_NAME="${VE_DATA_PVC_NAME:-virtual-engineer-data}"
 IMAGE_PULL_SECRET="ve-ghcr-pull"
 OPENSHELL_CHART="oci://ghcr.io/nvidia/openshell/helm-chart@sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
 OPENSHELL_GATEWAY_IMAGE_TAG="0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6"
@@ -25,8 +27,25 @@ require_ghcr_digest_ref "$VE_AGENT_IMAGE" \
 [[ -f "$DOCKER_CONFIG_JSON_FILE" ]] \
   || error "DOCKER_CONFIG_JSON_FILE must reference a Docker config JSON file."
 [[ -n "$OPENSHELL_OIDC_ISSUER" ]] || error "OPENSHELL_OIDC_ISSUER is required."
+valid_storage_class_name "$VE_ENCRYPTED_STORAGE_CLASS" \
+  || error "VE_ENCRYPTED_STORAGE_CLASS must name a verified encrypted CSI StorageClass."
+valid_storage_class_name "$VE_DATA_PVC_NAME" \
+  || error "VE_DATA_PVC_NAME must be a valid Kubernetes PVC name."
 
 kubectl apply -f "$SCRIPT_DIR/00-namespace.yaml"
+kubectl get secret virtual-engineer-secret -n virtual-engineer \
+  -o jsonpath='{.data.OPENSHELL_OIDC_CLIENT_SECRET}' | grep -q . \
+  || error "virtual-engineer-secret must contain OPENSHELL_OIDC_CLIENT_SECRET."
+kubectl get secret virtual-engineer-backup-keyring -n virtual-engineer \
+  -o jsonpath='{.data.backup-keyring\.json}' | grep -q . \
+  || error "virtual-engineer-backup-keyring must contain backup-keyring.json."
+kubectl get storageclass "$VE_ENCRYPTED_STORAGE_CLASS" >/dev/null 2>&1 \
+  || error "VE_ENCRYPTED_STORAGE_CLASS does not exist in this cluster."
+if kubectl get pvc "$VE_DATA_PVC_NAME" -n virtual-engineer >/dev/null 2>&1; then
+  EXISTING_STORAGE_CLASS=$(kubectl get pvc "$VE_DATA_PVC_NAME" -n virtual-engineer -o jsonpath='{.spec.storageClassName}')
+  [[ "$EXISTING_STORAGE_CLASS" == "$VE_ENCRYPTED_STORAGE_CLASS" ]] \
+    || error "The existing data PVC '${VE_DATA_PVC_NAME}' uses StorageClass '${EXISTING_STORAGE_CLASS}'. Use a new PVC name for encrypted storage and retain this claim for rollback."
+fi
 for namespace in virtual-engineer ve-agents; do
   kubectl create secret generic "$IMAGE_PULL_SECRET" \
     --namespace "$namespace" \
@@ -76,14 +95,15 @@ kubectl create configmap virtual-engineer-oidc \
   --from-literal="OPENSHELL_OIDC_AUDIENCE=${OPENSHELL_OIDC_AUDIENCE}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl get secret virtual-engineer-secret -n virtual-engineer \
-  -o jsonpath='{.data.OPENSHELL_OIDC_CLIENT_SECRET}' | grep -q . \
-  || error "virtual-engineer-secret must contain OPENSHELL_OIDC_CLIENT_SECRET."
-
 kubectl apply -f "$SCRIPT_DIR/10-orchestrator-configmap.yaml"
-kubectl apply -f "$SCRIPT_DIR/30-orchestrator-pvc.yaml"
+sed \
+  -e "s/REPLACE_WITH_VERIFIED_ENCRYPTED_STORAGE_CLASS/${VE_ENCRYPTED_STORAGE_CLASS}/g" \
+  -e "s/REPLACE_WITH_VE_DATA_PVC_NAME/${VE_DATA_PVC_NAME}/g" \
+  "$SCRIPT_DIR/30-orchestrator-pvc.yaml" | kubectl apply -f -
 kubectl apply -f "$SCRIPT_DIR/50-orchestrator-service.yaml"
-kubectl set image --local -f "$SCRIPT_DIR/40-orchestrator-deployment.yaml" \
+sed "s/REPLACE_WITH_VE_DATA_PVC_NAME/${VE_DATA_PVC_NAME}/g" \
+  "$SCRIPT_DIR/40-orchestrator-deployment.yaml" \
+  | kubectl set image --local -f - \
   "*=${VE_ORCHESTRATOR_IMAGE}" \
   -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/virtual-engineer-orchestrator -n virtual-engineer

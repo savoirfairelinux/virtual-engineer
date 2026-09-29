@@ -32,6 +32,7 @@ const baseConfig: AppConfig = {
   logLevel: "error" as const,
   databasePath: "/tmp/virtual-engineer-test.db",
   backupDir: "/tmp/backups",
+  backupKeyringFile: undefined,
   restoreFrom: undefined,
   restoreForce: false,
   adminApiEnabled: false,

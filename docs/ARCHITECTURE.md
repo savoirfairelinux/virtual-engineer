@@ -1177,23 +1177,34 @@ Editable runtime workflow settings live in the `app_settings` singleton row (`id
 
 ### 10.8 Backups and recovery
 
-`src/backup/backupService.ts` creates private `.tar.gz` archives from an online
+`src/backup/backupService.ts` creates `.tar.gz.enc` archives from an online
 SQLite snapshot plus allowlisted prompt override Markdown files. Active admin
-sessions are removed from the snapshot. The archive manifest records the
-database SHA-256 and an HMAC fingerprint of `ADMIN_AUTH_SECRET`; the secret
-itself, local OpenShell/Keycloak state, and ephemeral workspaces are excluded.
-The same `ADMIN_AUTH_SECRET` is required to verify the archive and decrypt the
-restored provider credentials. `BACKUP_DIR` defaults to a `backups/` directory
-beside `DATABASE_PATH`; copy archives off-machine because local retention is
-not disaster recovery.
+sessions are removed from the snapshot. The complete tar.gz stream is wrapped
+in AES-256-GCM using a versioned external `BACKUP_KEYRING_FILE`; creation fails
+closed without an active 32-byte key. The keyring is mounted read-only and must
+be kept separate from `ADMIN_AUTH_SECRET`, SQLite, and archive storage. Old
+`.tar.gz` archives remain restorable. The manifest records the database
+SHA-256 and an HMAC fingerprint of `ADMIN_AUTH_SECRET`; the secret and keyring
+are not included in the archive. The original admin secret is required to
+verify the manifest and decrypt restored provider credentials, and encrypted
+archives additionally require the matching backup key. `BACKUP_DIR` defaults
+to a `backups/` directory beside `DATABASE_PATH`; private plaintext staging is
+temporary but means this directory must reside on encrypted storage. Copy
+completed archives off-machine because local retention is not disaster
+recovery.
 
 `BackupScheduler` uses the `app_settings` schedule (disabled by default; daily
 at `03:00` UTC; seven retained archives), checks every 15 minutes, coalesces
 overlapping runs, and is stopped before SQLite closes. `src/index.ts` performs
 `VE_RESTORE_FROM` validation and restore before `SqliteStateStore.create()`.
-Existing database/prompt targets require the explicit `VE_RESTORE_FORCE` flag
-and are quarantined before replacement. Clear both one-shot restore variables
-after success. The Docker launcher command is
+Encrypted files are fully authenticated/decrypted in private staging before tar
+inspection or installation. Existing database/prompt targets require the
+explicit `VE_RESTORE_FORCE` flag and are quarantined before replacement. Clear
+both one-shot restore variables after success. SQLite itself remains standard
+SQLite: Docker `DATA_DIR` must be on host block-encrypted storage, while the
+Kubernetes deployment requires an operator-selected CSI StorageClass verified
+to encrypt volumes at rest. The application can check that a StorageClass
+exists, but cannot verify its provider-side encryption. The Docker launcher command is
 `./scripts/start.sh --restore <archive> [--force] [--yes]`; manifests-based
 Kubernetes restores are staged on the existing data PVC as documented in
 [`deploy/k8s/README.md`](../deploy/k8s/README.md#restore-from-backup).
