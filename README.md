@@ -203,22 +203,49 @@ both the matching keyring and original `ADMIN_AUTH_SECRET`; legacy plaintext
 `.tar.gz` archives require the original admin secret only. Runtime/OIDC settings
 must be separately preserved or reconfigured.
 
-For the Docker launcher, provide a local archive path. The script asks for
-confirmation and stops the existing `ve-orchestrator` before starting the
-replacement:
+### Restore to a new Docker instance
+
+1. Copy the archive and required recovery files to the new host. Keep the
+	original `ADMIN_AUTH_SECRET`. For `.tar.gz.enc` archives, also copy the
+	original keyring file with every old key needed by retained archives.
+2. Before starting Virtual Engineer, prepare `.env`. If it does not exist, seed
+	it from the example and protect it:
+
+	```bash
+	cp .env.example .env
+	chmod 0600 .env
+	```
+
+	Set `ADMIN_AUTH_SECRET` to its exact value from the original instance. For an
+	encrypted archive, set `BACKUP_KEYRING_FILE` to the absolute path of the
+	copied keyring file. Keep the keyring outside `DATA_DIR` and `BACKUP_DIR`,
+	and do not put its contents in `.env`. Replace existing assignments rather
+	than adding duplicate lines. For a legacy `.tar.gz` archive, the keyring is
+	not required.
+3. Use a new, empty `DATA_DIR` for a separate restore target. Do not run the
+	normal launcher or `--setup-only` first: they may create new secrets and
+	database state that do not match the archive.
+4. Run the restore directly. The script asks for confirmation, mounts the
+	archive read-only, restores before opening SQLite, and starts the instance:
 
 ```bash
 BACKUP_ARCHIVE=/secure/path/ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc
 ./scripts/start.sh --restore "$BACKUP_ARCHIVE"
 ```
 
-Restoring over existing database or prompt data also requires explicit
-`--force`; the previous targets are preserved in a `.pre-restore-*` directory
-under `DATA_DIR`:
+Do not use `--force` when the new `DATA_DIR` is empty. If the target already
+contains a database or prompt data, `--force` preserves those targets in a
+`.pre-restore-*` directory before restoring:
 
 ```bash
 ./scripts/start.sh --restore "$BACKUP_ARCHIVE" --force
 ```
+
+The launcher uses the fixed container name `ve-orchestrator`; restoring on a
+host with an existing instance stops and replaces that container. Use a
+different Docker host if both instances must keep running. After restore, log
+in with the existing Admin account; active sessions were not included. Verify
+the integrations, prompts, and runtime/OIDC setup before retiring the old host.
 
 For non-interactive automation, add `--yes` only when that restore has already
 been approved. Do not persist `VE_RESTORE_FROM` or `VE_RESTORE_FORCE` in `.env`;
