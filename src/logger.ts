@@ -23,7 +23,7 @@ function getRoot(): pino.Logger {
     if (isDev) {
       loggerConfig.transport = {
         target: "pino-pretty",
-        options: { colorize: true, translateTime: "HH:MM:ss" },
+        options: { colorize: true, translateTime: "SYS:HH:MM:ss" },
       };
     }
     

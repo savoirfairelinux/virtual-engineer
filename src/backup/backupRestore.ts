@@ -8,12 +8,19 @@ import { getLogger } from "../logger.js";
 import { runDatabaseMigrations } from "../state/databaseMigrations.js";
 import {
   fingerprintAdminAuthSecret,
+  isBackupEncryptedFilename,
   MAX_BACKUP_ARCHIVE_ENTRIES,
   MAX_BACKUP_PROMPT_FILES,
   MAX_BACKUP_PROMPT_OVERRIDE_BYTES,
   verifyBackupManifest,
   sha256File,
 } from "./backupArchive.js";
+import {
+  decryptBackupFile,
+  hasBackupEncryptionMagic,
+  hasBackupGzipMagic,
+  loadBackupKeyring,
+} from "./backupCrypto.js";
 
 const log = getLogger("backup-restore");
 const MAX_DATABASE_BYTES = 16 * 1024 * 1024 * 1024;
@@ -39,6 +46,7 @@ interface RestoreMarker {
 export interface RestoreBackupOptions {
   databasePath: string;
   restoreFrom: string | undefined;
+  backupKeyringFile?: string | undefined;
   adminAuthSecret: string | undefined;
   force: boolean;
 }
@@ -68,6 +76,11 @@ export async function restoreBackupIfRequested(
   const archiveInfo = await lstat(archivePath);
   if (!archiveInfo.isFile() || archiveInfo.isSymbolicLink()) {
     throw new Error("Restore source must be a regular archive file.");
+  }
+  const encryptedArchive = isBackupEncryptedFilename(basename(archivePath))
+    || await hasBackupEncryptionMagic(archivePath);
+  if (!encryptedArchive && !await hasBackupGzipMagic(archivePath)) {
+    throw new Error("Restore source is not a recognized encrypted or legacy gzip backup archive.");
   }
   const archiveStat = await stat(archivePath);
   const archiveSha256 = await sha256File(archivePath);
@@ -101,10 +114,19 @@ export async function restoreBackupIfRequested(
   let installedPrompts = false;
 
   try {
-    const archiveEntries = await inspectArchive(archivePath);
+    let archiveForRestore = archivePath;
+    if (encryptedArchive) {
+      archiveForRestore = join(stagingDir, "restore-source.tar.gz");
+      await decryptBackupFile(
+        archivePath,
+        archiveForRestore,
+        await loadBackupKeyring(options.backupKeyringFile),
+      );
+    }
+    const archiveEntries = await inspectArchive(archiveForRestore);
     validateArchiveEntries(archiveEntries);
     await extractTar({
-      file: archivePath,
+      file: archiveForRestore,
       cwd: stagingDir,
       strict: true,
       preservePaths: false,

@@ -25,6 +25,11 @@ const optionalPathFromEnv = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const optionalNonNegativeIntegerFromEnv = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.coerce.number().int().min(0).max(0xFFFFFFFF).optional(),
+);
+
 // ─── Load .env file if present ────────────────────────────────────────────────
 
 /** Load key=value pairs from a `.env` file into `process.env`, skipping keys that are already set. */
@@ -58,6 +63,8 @@ const ConfigSchema = z.object({
     logLevel: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     databasePath: z.string().default("./data/virtual-engineer.db"),
     backupDir: optionalPathFromEnv,
+    backupAccessGid: optionalNonNegativeIntegerFromEnv,
+    backupKeyringFile: optionalPathFromEnv,
     restoreFrom: optionalPathFromEnv,
     restoreForce: z.preprocess((value) => value === "" ? false : value, booleanFromEnv).default(false),
     adminApiEnabled: booleanFromEnv.default(true),
@@ -107,8 +114,9 @@ const ConfigSchema = z.object({
   });
 
 type ParsedAppConfig = z.infer<typeof ConfigSchema>;
-export type AppConfig = Omit<ParsedAppConfig, "backupDir" | "restoreFrom"> & {
+export type AppConfig = Omit<ParsedAppConfig, "backupDir" | "backupKeyringFile" | "restoreFrom"> & {
   backupDir: string;
+  backupKeyringFile: string | undefined;
   restoreFrom: string | undefined;
 };
 
@@ -119,6 +127,8 @@ function fromEnv(): Record<string, string | undefined> {
     logLevel: process.env["LOG_LEVEL"],
     databasePath: process.env["DATABASE_PATH"],
     backupDir: process.env["BACKUP_DIR"],
+    backupAccessGid: process.env["BACKUP_ACCESS_GID"],
+    backupKeyringFile: process.env["BACKUP_KEYRING_FILE"],
     restoreFrom: process.env["VE_RESTORE_FROM"],
     restoreForce: process.env["VE_RESTORE_FORCE"],
     adminApiEnabled: process.env["ADMIN_API_ENABLED"],
@@ -159,6 +169,9 @@ export function getConfig(): AppConfig {
   _config = {
     ...result.data,
     backupDir: resolve(result.data.backupDir ?? join(dirname(result.data.databasePath), "backups")),
+    backupKeyringFile: result.data.backupKeyringFile === undefined
+      ? undefined
+      : resolve(result.data.backupKeyringFile),
     restoreFrom: result.data.restoreFrom === undefined ? undefined : resolve(result.data.restoreFrom),
   };
   return _config;

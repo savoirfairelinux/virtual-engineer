@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
+  chown,
   copyFile,
   lstat,
   mkdir,
@@ -14,10 +15,11 @@ import {
   writeFile,
   open,
 } from "node:fs/promises";
-import { parse, resolve, join } from "node:path";
+import { isAbsolute, parse, relative, resolve, sep, join } from "node:path";
 import type { Readable } from "node:stream";
 import { create as createTar } from "tar";
 import { getLogger } from "../logger.js";
+import { encryptBackupFile, loadBackupKeyring, type BackupKeyringFileContent } from "./backupCrypto.js";
 import {
   createBackupManifest,
   isBackupFilename,
@@ -34,12 +36,21 @@ const log = getLogger("backup");
 const MIN_SECRET_LENGTH = 32;
 const PROMPT_FILENAME_PATTERN = /^[A-Za-z0-9_-]+\.md$/;
 
+export interface PendingSecuritySecrets {
+  adminAuthSecret?: string;
+  backupKeyring?: BackupKeyringFileContent;
+}
+
 export interface BackupStateStore {
   backupDatabaseTo(destinationPath: string): Promise<void>;
 }
 
 export interface BackupServiceDeps {
   backupDir: string;
+  backupAccessGid?: number | undefined;
+  backupKeyringFile?: string | undefined;
+  backupKeyringOnboardingMarkerFile?: string | undefined;
+  adminAuthSecretOnboardingMarkerFile?: string | undefined;
   promptsDir: string;
   stateStore: BackupStateStore;
   adminAuthSecret: string | undefined;
@@ -51,6 +62,9 @@ export interface BackupService {
   deleteBackup(filename: string): Promise<boolean>;
   prune(retentionCount: number): Promise<string[]>;
   openBackup(filename: string): Promise<{ info: BackupInfo; stream: Readable }>;
+  hasPendingSecuritySecretsOnboarding(): Promise<boolean>;
+  revealSecuritySecretsOnboarding(): Promise<PendingSecuritySecrets | null>;
+  acknowledgeSecuritySecretsOnboarding(): Promise<boolean>;
 }
 
 export function createBackupService(deps: BackupServiceDeps): BackupService {
@@ -81,13 +95,78 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
   }
   let lastCreatedAtMs = 0;
 
+  async function hasPendingSecuritySecretsOnboarding(): Promise<boolean> {
+    const [adminPending, keyringPending] = await Promise.all([
+      hasPendingOnboardingMarker(deps.adminAuthSecretOnboardingMarkerFile),
+      hasPendingOnboardingMarker(deps.backupKeyringOnboardingMarkerFile),
+    ]);
+    return adminPending || keyringPending;
+  }
+
+  async function revealSecuritySecretsOnboarding(): Promise<PendingSecuritySecrets | null> {
+    const [adminPending, keyringPending] = await Promise.all([
+      hasPendingOnboardingMarker(deps.adminAuthSecretOnboardingMarkerFile),
+      hasPendingOnboardingMarker(deps.backupKeyringOnboardingMarkerFile),
+    ]);
+    if (!adminPending && !keyringPending) return null;
+
+    const secrets: PendingSecuritySecrets = {};
+    if (adminPending) {
+      if (!deps.adminAuthSecret) throw new Error("ADMIN_AUTH_SECRET is not configured for onboarding.");
+      secrets.adminAuthSecret = deps.adminAuthSecret;
+    }
+    if (keyringPending) {
+      const keyring = await loadBackupKeyring(deps.backupKeyringFile);
+      secrets.backupKeyring = {
+        format: "virtual-engineer-backup-keyring",
+        version: 1,
+        activeKeyId: keyring.activeKeyId,
+        keys: Object.fromEntries(
+          [...keyring.keys].map(([keyId, key]) => [keyId, key.toString("hex")]),
+        ),
+      };
+    }
+    return secrets;
+  }
+
+  async function acknowledgeSecuritySecretsOnboarding(): Promise<boolean> {
+    let acknowledged = false;
+    for (const markerFile of [deps.adminAuthSecretOnboardingMarkerFile, deps.backupKeyringOnboardingMarkerFile]) {
+      if (!(await hasPendingOnboardingMarker(markerFile))) continue;
+      try {
+        await unlink(markerFile!);
+        acknowledged = true;
+      } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") continue;
+        throw error;
+      }
+    }
+    return acknowledged;
+  }
+
   async function ensureBackupDirectory(): Promise<void> {
     await mkdir(backupDir, { recursive: true, mode: 0o700 });
     const info = await lstat(backupDir);
     if (!info.isDirectory() || info.isSymbolicLink()) {
       throw new Error("BACKUP_DIR must be a real directory, not a symbolic link.");
     }
-    await chmod(backupDir, 0o700);
+    const accessGid = deps.backupAccessGid;
+    if (accessGid === undefined) {
+      await chmod(backupDir, 0o700);
+      return;
+    }
+
+    if (info.gid !== accessGid) await chown(backupDir, info.uid, accessGid);
+    await chmod(backupDir, 0o2750);
+    const entries = await readdir(backupDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !isBackupFilename(entry.name)) continue;
+      const filePath = join(backupDir, entry.name);
+      const fileInfo = await lstat(filePath);
+      if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) continue;
+      if (fileInfo.gid !== accessGid) await chown(filePath, fileInfo.uid, accessGid);
+      if ((fileInfo.mode & 0o777) !== 0o640) await chmod(filePath, 0o640);
+    }
   }
 
   async function createBackup(): Promise<BackupInfo> {
@@ -106,6 +185,11 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     if (!secret || secret.length < MIN_SECRET_LENGTH) {
       throw new Error("ADMIN_AUTH_SECRET must be configured to create backups.");
     }
+    if (deps.backupKeyringFile !== undefined
+      && isPathInside(backupDir, resolve(deps.backupKeyringFile))) {
+      throw new Error("BACKUP_KEYRING_FILE must be stored outside BACKUP_DIR.");
+    }
+    const keyring = await loadBackupKeyring(deps.backupKeyringFile);
 
     await ensureBackupDirectory();
     const timestampMs = Math.max(Date.now(), lastCreatedAtMs + 1);
@@ -113,7 +197,7 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     const createdAtDate = new Date(timestampMs);
     const createdAt = createdAtDate.toISOString();
     const timestamp = createdAt.replace(/[-:.]/g, "");
-    const filename = `ve-backup-${timestamp}-${randomUUID().slice(0, 8)}.tar.gz`;
+    const filename = `ve-backup-${timestamp}-${randomUUID().slice(0, 8)}.tar.gz.enc`;
     const stagingDir = await mkdtemp(join(backupDir, ".ve-backup-"));
     const partialPath = join(backupDir, `.${filename}.partial`);
     const finalPath = join(backupDir, filename);
@@ -139,8 +223,14 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       if (entryCount > MAX_BACKUP_ARCHIVE_ENTRIES) {
         throw new Error("Prompt overrides exceed the backup archive entry limit.");
       }
-      await createTar({ cwd: stagingDir, file: partialPath, gzip: true, strict: true }, archiveEntries);
-      await chmod(partialPath, 0o600);
+      const plaintextArchivePath = join(stagingDir, "backup.tar.gz");
+      await createTar({ cwd: stagingDir, file: plaintextArchivePath, gzip: true, strict: true }, archiveEntries);
+      await chmod(plaintextArchivePath, 0o600);
+      await encryptBackupFile(plaintextArchivePath, partialPath, keyring);
+      const accessGid = deps.backupAccessGid;
+      const partialInfo = await lstat(partialPath);
+      if (accessGid !== undefined) await chown(partialPath, partialInfo.uid, accessGid);
+      await chmod(partialPath, accessGid === undefined ? 0o600 : 0o640);
       await rename(partialPath, finalPath);
 
       const archiveStat = await stat(finalPath);
@@ -201,7 +291,37 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     return removed;
   }
 
-  return { createBackup, listBackups, deleteBackup, prune, openBackup };
+  return {
+    createBackup,
+    listBackups,
+    deleteBackup,
+    prune,
+    openBackup,
+    hasPendingSecuritySecretsOnboarding,
+    revealSecuritySecretsOnboarding,
+    acknowledgeSecuritySecretsOnboarding,
+  };
+}
+
+async function hasPendingOnboardingMarker(markerFile: string | undefined): Promise<boolean> {
+  if (!markerFile) return false;
+  let handle;
+  try {
+    handle = await open(markerFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || (info.mode & 0o077) !== 0) {
+      throw new Error("Security secrets onboarding marker must be a private regular file.");
+    }
+    return true;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function copyPromptOverrides(promptsDir: string, stagingDir: string): Promise<BackupPromptOverride[]> {
@@ -240,4 +360,10 @@ async function copyPromptOverrides(promptsDir: string, stagingDir: string): Prom
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function isPathInside(parentPath: string, candidatePath: string): boolean {
+  const relativePath = relative(parentPath, candidatePath);
+  return relativePath === ""
+    || (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${sep}`));
 }

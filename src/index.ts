@@ -64,6 +64,7 @@ async function main(): Promise<void> {
   await restoreBackupIfRequested({
     databasePath: config.databasePath,
     restoreFrom: config.restoreFrom,
+    backupKeyringFile: config.backupKeyringFile,
     adminAuthSecret: config.adminAuthSecret,
     force: config.restoreForce,
   });
@@ -76,6 +77,10 @@ async function main(): Promise<void> {
   const databaseDir = dirname(resolve(config.databasePath));
   const backupService = createBackupService({
     backupDir: config.backupDir,
+    backupAccessGid: config.backupAccessGid,
+    backupKeyringFile: config.backupKeyringFile,
+    backupKeyringOnboardingMarkerFile: join(databaseDir, ".backup-keyring-onboarding-pending"),
+    adminAuthSecretOnboardingMarkerFile: join(databaseDir, ".admin-auth-secret-onboarding-pending"),
     promptsDir: join(databaseDir, "prompts"),
     stateStore,
     adminAuthSecret: config.adminAuthSecret,
@@ -462,6 +467,9 @@ async function main(): Promise<void> {
     deleteBackup: (filename) => backupService.deleteBackup(filename),
     openBackup: (filename) => backupService.openBackup(filename),
     getNextBackupAt: () => backupScheduler.getNextBackupAt(),
+    hasPendingSecuritySecretsOnboarding: () => backupService.hasPendingSecuritySecretsOnboarding(),
+    revealSecuritySecretsOnboarding: () => backupService.revealSecuritySecretsOnboarding(),
+    acknowledgeSecuritySecretsOnboarding: () => backupService.acknowledgeSecuritySecretsOnboarding(),
   };
 
   let adminServer: Server | null = null;

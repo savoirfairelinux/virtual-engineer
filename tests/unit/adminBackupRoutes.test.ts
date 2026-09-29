@@ -5,6 +5,7 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { BackupAdminController } from "../../src/admin/adminBackupRoutes.js";
 import type { BackupInfo } from "../../src/backup/backupArchive.js";
+import type { BackupKeyringFileContent } from "../../src/backup/backupCrypto.js";
 import type { EffectiveBackupSettings } from "../../src/backup/backupSettings.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
@@ -13,7 +14,7 @@ registerBuiltinPlugins();
 
 const SECRET = "backup-routes-secret-0123456789";
 const SAMPLE_BACKUP: BackupInfo = {
-  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz",
+  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc",
   createdAt: "2026-09-24T03:00:00.000Z",
   sizeBytes: Buffer.byteLength("archive-bytes"),
 };
@@ -28,6 +29,10 @@ function makeController(): BackupAdminController & {
   updateSettings: ReturnType<typeof vi.fn>;
   runNow: ReturnType<typeof vi.fn>;
   deleteBackup: ReturnType<typeof vi.fn>;
+  openBackup: ReturnType<typeof vi.fn>;
+  hasPendingSecuritySecretsOnboarding: ReturnType<typeof vi.fn>;
+  revealSecuritySecretsOnboarding: ReturnType<typeof vi.fn>;
+  acknowledgeSecuritySecretsOnboarding: ReturnType<typeof vi.fn>;
 } {
   const current: EffectiveBackupSettings = {
     enabled: false,
@@ -41,6 +46,9 @@ function makeController(): BackupAdminController & {
   });
   const runNow = vi.fn(async () => SAMPLE_BACKUP);
   const deleteBackup = vi.fn(async () => true);
+  const hasPendingSecuritySecretsOnboarding = vi.fn(async () => false);
+  const revealSecuritySecretsOnboarding = vi.fn(async () => null);
+  const acknowledgeSecuritySecretsOnboarding = vi.fn(async () => false);
   return {
     current,
     getSettings: async () => ({ ...current }),
@@ -48,6 +56,9 @@ function makeController(): BackupAdminController & {
     listBackups: vi.fn(async () => [SAMPLE_BACKUP]),
     runNow,
     deleteBackup,
+    hasPendingSecuritySecretsOnboarding,
+    revealSecuritySecretsOnboarding,
+    acknowledgeSecuritySecretsOnboarding,
     openBackup: vi.fn(async () => ({ info: SAMPLE_BACKUP, stream: Readable.from(["archive-bytes"]) })),
     getNextBackupAt: vi.fn(async () => new Date("2026-09-25T03:00:00.000Z")),
   };
@@ -152,6 +163,7 @@ describe("Admin API — backup routes", () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("application/octet-stream");
     expect(download.headers.get("content-disposition")).toContain(SAMPLE_BACKUP.filename);
     await expect(download.text()).resolves.toBe("archive-bytes");
 
@@ -166,6 +178,112 @@ describe("Admin API — backup routes", () => {
       const audit = await waitForAudit(store, action);
       expect(audit).toHaveLength(1);
     }
+  });
+
+  it("serves legacy plaintext gzip archives with the gzip media type", async () => {
+    const legacyBackup: BackupInfo = {
+      ...SAMPLE_BACKUP,
+      filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz",
+    };
+    backups.openBackup.mockResolvedValueOnce({
+      info: legacyBackup,
+      stream: Readable.from(["legacy-archive-bytes"]),
+    });
+
+    const response = await fetch(`${baseUrl}/api/admin/backups/${legacyBackup.filename}/download`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/gzip");
+    expect(response.headers.get("content-disposition")).toContain(legacyBackup.filename);
+  });
+
+  it("reveals both pending secrets only on explicit superuser request and without caching", async () => {
+    const keyring: BackupKeyringFileContent = {
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: "key-20260928-test",
+      keys: { "key-20260928-test": "a".repeat(64) },
+    };
+    const secrets = { adminAuthSecret: SECRET, backupKeyring: keyring };
+    backups.hasPendingSecuritySecretsOnboarding.mockResolvedValueOnce(true);
+    backups.revealSecuritySecretsOnboarding.mockResolvedValueOnce(secrets);
+
+    const onboardingPath = "/api/admin/security/secrets-onboarding";
+    const anonymous = await fetch(`${baseUrl}${onboardingPath}`);
+    expect(anonymous.status).toBe(401);
+
+    const createOperator = await fetch(`${baseUrl}/api/admin/users`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ username: "ops", password: "Str0ng-Pass-1x", role: "operator" }),
+    });
+    expect(createOperator.status).toBe(201);
+    const operatorLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "ops", password: "Str0ng-Pass-1x" }),
+    });
+    const operatorToken = ((await operatorLogin.json()) as SessionResponse).token;
+    const operatorRead = await fetch(`${baseUrl}${onboardingPath}`, {
+      headers: { authorization: `Bearer ${operatorToken}` },
+    });
+    expect(operatorRead.status).toBe(403);
+    expect(backups.hasPendingSecuritySecretsOnboarding).not.toHaveBeenCalled();
+    const operatorReveal = await fetch(`${baseUrl}${onboardingPath}/reveal`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${operatorToken}` },
+    });
+    expect(operatorReveal.status).toBe(403);
+    expect(backups.revealSecuritySecretsOnboarding).not.toHaveBeenCalled();
+    const operatorAcknowledge = await fetch(`${baseUrl}${onboardingPath}/acknowledge`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${operatorToken}` },
+    });
+    expect(operatorAcknowledge.status).toBe(403);
+    expect(backups.acknowledgeSecuritySecretsOnboarding).not.toHaveBeenCalled();
+
+    const response = await fetch(`${baseUrl}${onboardingPath}`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("pragma")).toBe("no-cache");
+    await expect(response.json()).resolves.toEqual({ pending: true });
+    expect(backups.revealSecuritySecretsOnboarding).not.toHaveBeenCalled();
+
+    const revealed = await fetch(`${baseUrl}${onboardingPath}/reveal`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(revealed.status).toBe(200);
+    expect(revealed.headers.get("cache-control")).toContain("no-store");
+    expect(revealed.headers.get("pragma")).toBe("no-cache");
+    await expect(revealed.json()).resolves.toEqual({ pending: true, secrets });
+    const revealAudit = await waitForAudit(store, "security.secrets_reveal");
+    expect(revealAudit).toHaveLength(1);
+    expect(JSON.stringify(revealAudit)).not.toContain(SECRET);
+    expect(JSON.stringify(revealAudit)).not.toContain(keyring.keys[keyring.activeKeyId]);
+
+    backups.acknowledgeSecuritySecretsOnboarding.mockResolvedValueOnce(true);
+    const acknowledged = await fetch(`${baseUrl}${onboardingPath}/acknowledge`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(acknowledged.status).toBe(204);
+    expect(acknowledged.headers.get("cache-control")).toContain("no-store");
+    expect(backups.acknowledgeSecuritySecretsOnboarding).toHaveBeenCalledOnce();
+    const acknowledgeAudit = await waitForAudit(store, "security.secrets_acknowledged");
+    expect(acknowledgeAudit).toHaveLength(1);
+    expect(JSON.stringify(acknowledgeAudit)).not.toContain(SECRET);
+    expect(JSON.stringify(acknowledgeAudit)).not.toContain(keyring.keys[keyring.activeKeyId]);
+
+    backups.hasPendingSecuritySecretsOnboarding.mockResolvedValueOnce(false);
+    const hidden = await fetch(`${baseUrl}${onboardingPath}`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    await expect(hidden.json()).resolves.toEqual({ pending: false });
   });
 
   it("streams backups through a single-use token scoped to the archive filename", async () => {
@@ -196,6 +314,7 @@ describe("Admin API — backup routes", () => {
     const secondDownloadUrl = `/api/admin/backups/${encodeURIComponent(SAMPLE_BACKUP.filename)}/download?t=${secondToken.token}`;
     const streamed = await fetch(new URL(secondDownloadUrl, baseUrl));
     expect(streamed.status).toBe(200);
+    expect(streamed.headers.get("content-type")).toBe("application/octet-stream");
     expect(streamed.headers.get("content-disposition")).toContain(SAMPLE_BACKUP.filename);
     await expect(streamed.text()).resolves.toBe("archive-bytes");
 

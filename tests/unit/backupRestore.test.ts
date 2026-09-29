@@ -3,14 +3,26 @@ import Database from "better-sqlite3";
 import { create as createTar, extract as extractTar } from "tar";
 import { chmod, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { describe, it, expect, afterEach } from "vitest";
-import { restoreBackupIfRequested } from "../../src/backup/backupRestore.js";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { decryptBackupFile, encryptBackupFile, loadBackupKeyring } from "../../src/backup/backupCrypto.js";
+import {
+  restoreBackupIfRequested as restoreWithKeyring,
+  type RestoreBackupOptions,
+} from "../../src/backup/backupRestore.js";
 import { createBackupService } from "../../src/backup/backupService.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
+import { writeTestBackupKeyring } from "./helpers/backupKeyring.js";
 
 const ADMIN_AUTH_SECRET = "b".repeat(32);
 const openStores: SqliteStateStore[] = [];
+let backupKeyringFile: string;
+
+beforeEach(async () => {
+  const keyringDatabasePath = tempDatabasePath("ve-backup-restore-keyring", { directory: true });
+  backupKeyringFile = join(dirname(keyringDatabasePath), "backup-keyring.json");
+  await writeTestBackupKeyring(backupKeyringFile);
+});
 
 afterEach(() => {
   for (const store of openStores.splice(0)) store.close();
@@ -29,6 +41,7 @@ async function createSourceBackup(): Promise<{ archivePath: string }> {
 
   const service = createBackupService({
     backupDir: join(sourceDir, "backups"),
+    backupKeyringFile,
     promptsDir,
     stateStore: sourceStore,
     adminAuthSecret: ADMIN_AUTH_SECRET,
@@ -65,6 +78,42 @@ describe("backup restoration", () => {
     })).resolves.toEqual(expect.objectContaining({ status: "already-restored" }));
   });
 
+  it("restores legacy plaintext tar.gz archives", async () => {
+    const { archivePath } = await createSourceBackup();
+    const legacyArchivePath = join(dirname(archivePath), "legacy-backup.tar.gz");
+    await decryptBackupFile(archivePath, legacyArchivePath, await loadBackupKeyring(backupKeyringFile));
+    const targetDatabasePath = tempDatabasePath("ve-backup-restore-legacy", { directory: true });
+
+    await restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: legacyArchivePath,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: false,
+    });
+
+    const restoredStore = await SqliteStateStore.create(targetDatabasePath);
+    openStores.push(restoredStore);
+    await expect(restoredStore.getAppSettings()).resolves.toMatchObject({ maxAgentCycles: 9 });
+  });
+
+  it("does not parse a corrupted encrypted envelope as a legacy gzip archive", async () => {
+    const { archivePath } = await createSourceBackup();
+    const renamedCorruptArchive = join(dirname(archivePath), "renamed-corrupt.tar.gz");
+    const contents = await readFile(archivePath);
+    const tagOffset = contents.length - 1;
+    contents[tagOffset] = (contents[tagOffset] ?? 0) ^ 0xff;
+    await writeFile(renamedCorruptArchive, contents, { mode: 0o600 });
+    const targetDatabasePath = tempDatabasePath("ve-backup-restore-invalid-envelope", { directory: true });
+
+    await expect(restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: renamedCorruptArchive,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: false,
+    })).rejects.toThrow("authentication failed");
+    await expect(readdir(dirname(targetDatabasePath))).resolves.not.toContain("ve.db");
+  });
+
   it("rejects a different ADMIN_AUTH_SECRET before installing the database", async () => {
     const { archivePath } = await createSourceBackup();
     const targetDatabasePath = tempDatabasePath("ve-backup-restore-wrong-secret", { directory: true });
@@ -76,6 +125,29 @@ describe("backup restoration", () => {
       force: false,
     })).rejects.toThrow(/ADMIN_AUTH_SECRET/);
     await expect(readdir(dirname(targetDatabasePath))).resolves.not.toContain("ve.db");
+  });
+
+  it("does not replace existing state when encrypted archive authentication fails", async () => {
+    const { archivePath } = await createSourceBackup();
+    const targetDatabasePath = tempDatabasePath("ve-backup-restore-bad-tag", { directory: true });
+    const originalStore = await SqliteStateStore.create(targetDatabasePath);
+    await originalStore.updateAppSettings({ maxAgentCycles: 2 });
+    originalStore.close();
+
+    const tamperedArchive = await readFile(archivePath);
+    tamperedArchive[tamperedArchive.length - 1] = (tamperedArchive[tamperedArchive.length - 1] ?? 0) ^ 1;
+    await writeFile(archivePath, tamperedArchive);
+
+    await expect(restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: archivePath,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: true,
+    })).rejects.toThrow(/authentication/i);
+
+    const unchangedStore = await SqliteStateStore.create(targetDatabasePath);
+    openStores.push(unchangedStore);
+    await expect(unchangedStore.getAppSettings()).resolves.toMatchObject({ maxAgentCycles: 2 });
   });
 
   it("rejects modified prompt content when its manifest remains unchanged", async () => {
@@ -225,8 +297,15 @@ describe("backup restoration", () => {
     await changedStore.updateAppSettings({ maxAgentCycles: 3 });
     changedStore.close();
 
-    const replacement = await readFile(archivePath);
-    replacement[4] = (replacement[4] ?? 0) ^ 1;
+    const plaintextArchivePath = `${archivePath}.replacement.tar.gz`;
+    const replacementArchivePath = `${archivePath}.replacement.enc`;
+    await decryptBackupFile(archivePath, plaintextArchivePath, await loadBackupKeyring(backupKeyringFile));
+    await encryptBackupFile(
+      plaintextArchivePath,
+      replacementArchivePath,
+      await loadBackupKeyring(backupKeyringFile),
+    );
+    const replacement = await readFile(replacementArchivePath);
     await writeFile(archivePath, replacement);
     await utimes(archivePath, preservedTimestamp, preservedTimestamp);
     const replacementStat = await stat(archivePath);
@@ -293,21 +372,35 @@ async function rewriteBackup(
 ): Promise<string> {
   const directory = join(dirname(archivePath), `tampered-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await mkdir(directory, { recursive: true });
-  await extractTar({ file: archivePath, cwd: directory, strict: true });
+  const plaintextArchivePath = join(directory, "source.tar.gz");
+  await decryptBackupFile(archivePath, plaintextArchivePath, await loadBackupKeyring(backupKeyringFile));
+  await extractTar({ file: plaintextArchivePath, cwd: directory, strict: true });
   const manifestPath = join(directory, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
   await update(directory, manifest);
   await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
-  const rewrittenPath = `${archivePath}.tampered.tar.gz`;
-  await createTar({ cwd: directory, file: rewrittenPath, gzip: true, strict: true }, [
+  const rewrittenPlaintextPath = join(directory, "rewritten.tar.gz");
+  const rewrittenPath = `${archivePath}.tampered.tar.gz.enc`;
+  await createTar({ cwd: directory, file: rewrittenPlaintextPath, gzip: true, strict: true }, [
     "manifest.json",
     "database.sqlite",
     "prompts",
   ]);
+  await encryptBackupFile(
+    rewrittenPlaintextPath,
+    rewrittenPath,
+    await loadBackupKeyring(backupKeyringFile),
+  );
   return rewrittenPath;
 }
 
 async function sha256File(filePath: string): Promise<string> {
   const contents = await readFile(filePath);
   return createHash("sha256").update(contents).digest("hex");
+}
+
+async function restoreBackupIfRequested(
+  options: Omit<RestoreBackupOptions, "backupKeyringFile">,
+) {
+  return restoreWithKeyring({ ...options, backupKeyringFile });
 }

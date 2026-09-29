@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 
 export const BACKUP_ARCHIVE_FORMAT = "virtual-engineer-backup";
-export const BACKUP_FILENAME_PATTERN = /^ve-backup-(\d{8}T\d{9}Z)-([a-f\d]{8})\.tar\.gz$/;
+export const BACKUP_FILENAME_PATTERN = /^ve-backup-(\d{8}T\d{9}Z)-([a-f\d]{8})\.tar\.gz(?:\.enc)?$/;
 export const MAX_BACKUP_PROMPT_FILES = 256;
 export const MAX_BACKUP_PROMPT_OVERRIDE_BYTES = 2 * 1024 * 1024;
 export const MAX_BACKUP_ARCHIVE_ENTRIES = MAX_BACKUP_PROMPT_FILES + 3;
@@ -129,6 +129,10 @@ function authenticateManifestFields(
 
 export function isBackupFilename(value: string): boolean {
   return BACKUP_FILENAME_PATTERN.test(value);
+}
+
+export function isBackupEncryptedFilename(value: string): boolean {
+  return isBackupFilename(value) && value.endsWith(".tar.gz.enc");
 }
 
 export function parseBackupCreatedAt(filename: string): string | null {

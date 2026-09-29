@@ -16,7 +16,7 @@ vi.mock("../../../src/admin/ui/api.js", () => ({
 
 const settings = { enabled: true, intervalDays: 2, timeOfDay: "03:00", retentionCount: 7 };
 const backup = {
-  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz",
+  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc",
   createdAt: "2026-09-24T03:00:00.000Z",
   sizeBytes: 2048,
 };

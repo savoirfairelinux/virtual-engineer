@@ -115,6 +115,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            - name: backup-keyring
+              mountPath: /app/backup-keyring.json
+              subPath: backup-keyring.json
+              readOnly: true
             - name: workspaces
               mountPath: /workspaces
             - name: tmp
@@ -124,7 +128,14 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: virtual-engineer-data
+            claimName: REPLACE_WITH_VE_DATA_PVC_NAME
+        - name: backup-keyring
+          secret:
+            secretName: virtual-engineer-backup-keyring
+            defaultMode: 0440
+            items:
+              - key: backup-keyring.json
+                path: backup-keyring.json
         # Ephemeral git working directory (HostGitExecutor). Push credentials
         # live only in this pod — never in the agent sandbox.
         - name: workspaces

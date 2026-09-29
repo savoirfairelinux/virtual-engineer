@@ -6,7 +6,7 @@ import {
   mintBackupDownloadToken,
 } from "../../src/admin/backupDownloadTokenStore.js";
 
-const FILENAME = "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz";
+const FILENAME = "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc";
 
 describe("backupDownloadTokenStore", () => {
   beforeEach(() => {
@@ -30,7 +30,7 @@ describe("backupDownloadTokenStore", () => {
   it("rejects and consumes a token presented for a different archive", () => {
     const { token } = mintBackupDownloadToken(FILENAME);
 
-    expect(consumeBackupDownloadToken(token, "ve-backup-20260924T030000000Z-c3d4e5f6.tar.gz")).toBe(false);
+    expect(consumeBackupDownloadToken(token, "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz")).toBe(false);
     expect(consumeBackupDownloadToken(token, FILENAME)).toBe(false);
   });
 

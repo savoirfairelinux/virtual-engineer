@@ -12,6 +12,8 @@ describe("getConfig", () => {
       "LOG_LEVEL",
       "DATABASE_PATH",
       "BACKUP_DIR",
+      "BACKUP_ACCESS_GID",
+      "BACKUP_KEYRING_FILE",
       "VE_RESTORE_FROM",
       "VE_RESTORE_FORCE",
       "AGENT_MODE",
@@ -191,6 +193,20 @@ describe("getConfig", () => {
       expect(config.restoreForce).toBe(true);
     });
 
+    it("parses the backup access GID", () => {
+      process.env["BACKUP_ACCESS_GID"] = "1000";
+      resetConfig();
+
+      expect(getConfig().backupAccessGid).toBe(1000);
+    });
+
+    it("resolves the backup keyring path", () => {
+      process.env["BACKUP_KEYRING_FILE"] = "./secrets/backup-keyring.json";
+      resetConfig();
+
+      expect(getConfig().backupKeyringFile).toBe(resolve("./secrets/backup-keyring.json"));
+    });
+
     it("derives the backup directory from a custom database path", () => {
       process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
       resetConfig();
@@ -200,11 +216,13 @@ describe("getConfig", () => {
     it("treats empty backup and restore paths as unset", () => {
       process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
       process.env["BACKUP_DIR"] = "";
+      process.env["BACKUP_KEYRING_FILE"] = "";
       process.env["VE_RESTORE_FROM"] = "";
       resetConfig();
 
       const config = getConfig();
       expect(config.backupDir).toBe("/var/lib/ve/backups");
+      expect(config.backupKeyringFile).toBeUndefined();
       expect(config.restoreFrom).toBeUndefined();
     });
   });

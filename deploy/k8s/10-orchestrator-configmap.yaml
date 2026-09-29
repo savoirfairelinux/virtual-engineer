@@ -11,6 +11,7 @@ data:
   NODE_ENV: "production"
   LOG_LEVEL: "info"
   DATABASE_PATH: "/app/data/virtual-engineer.db"
+  BACKUP_KEYRING_FILE: "/app/backup-keyring.json"
   ADMIN_API_ENABLED: "true"
   ADMIN_API_HOST: "0.0.0.0"
   ADMIN_API_PORT: "3100"

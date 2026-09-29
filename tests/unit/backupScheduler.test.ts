@@ -6,7 +6,7 @@ import type { BackupService } from "../../src/backup/backupService.js";
 import type { BackupSettings } from "../../src/state/stores/settingsStore.js";
 
 const backup: BackupInfo = {
-  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz",
+  filename: "ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc",
   createdAt: "2026-09-24T03:00:00.000Z",
   sizeBytes: 2048,
 };
@@ -22,6 +22,9 @@ function makeService(backups: BackupInfo[] = []): BackupService {
     deleteBackup: vi.fn(async () => true),
     prune: vi.fn(async () => []),
     openBackup: vi.fn(async () => ({ info: backup, stream: Readable.from([]) })),
+    hasPendingSecuritySecretsOnboarding: vi.fn(async () => false),
+    revealSecuritySecretsOnboarding: vi.fn(async () => null),
+    acknowledgeSecuritySecretsOnboarding: vi.fn(async () => false),
   };
 }
 

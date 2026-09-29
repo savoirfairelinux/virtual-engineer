@@ -102,19 +102,52 @@ Configuration → Backups (`system.backup.manage`). Backups are disabled by
 default; the defaults are every 1 day at `03:00` UTC with 7 retained archives.
 The scheduler checks every 15 minutes, coalesces overlapping runs, and stops
 before SQLite closes. `BACKUP_DIR` defaults to a `backups/` directory beside
-`DATABASE_PATH`.
+`DATABASE_PATH`; it must be on encrypted storage because creation uses private
+temporary plaintext staging there.
 
-Each private `.tar.gz` archive contains an online SQLite snapshot with active
-admin sessions removed, a checksum/compatibility manifest, and allowlisted
-prompt override Markdown files. It excludes `ADMIN_AUTH_SECRET`, local OIDC and
-OpenShell state, and ephemeral workspaces. Manifest format v2 uses HMAC-SHA256
-with `ADMIN_AUTH_SECRET` to authenticate the SQLite checksum and deterministically
-code-unit-sorted prompt filename/hash inventory without storing the secret. The
-original secret is required to verify the archive and decrypt stored provider
-credentials; older v1 archives are rejected by the v2 restore path.
+The standard Docker launcher passes the invoking host user's primary GID as
+`BACKUP_ACCESS_GID`. When set, the backup directory stays root-owned with mode
+`2750`, and archive files are root-owned with mode `0640`; this lets members of
+that group list and read archives without granting group write/delete access.
+Existing archives are updated to the configured group when the inventory is
+listed or a backup is created. Direct runs without this setting retain private
+`0700` directory and `0600` archive modes.
+
+New archives use the `.tar.gz.enc` suffix and wrap the complete tar.gz stream in
+AES-256-GCM using the active key in the external `BACKUP_KEYRING_FILE`. The
+versioned envelope authenticates its key ID, nonce, and ciphertext; restore
+authenticates and decrypts into private staging before parsing or extracting.
+On a normal Docker launch, an unset/empty `ADMIN_AUTH_SECRET` is generated as a
+random 32-byte value and persisted in `.env` with mode `0600`; existing values
+are reused. Explicit restore skips secret generation and requires the original
+manifest-authentication secret.
+The keyring is mounted read-only, separate from `ADMIN_AUTH_SECRET`, SQLite, and
+archive storage. Rotation retains old key IDs for decryption of retained
+archives. The standard Docker launcher creates a missing keyring in its private
+host config directory and places a mode-`0600` onboarding marker beside the
+database. After an admin authenticates, the dashboard discloses that JSON
+keyring through a superuser-only, no-store endpoint until the admin copies or
+downloads it and acknowledges safe storage; reloads before acknowledgement keep
+the reveal pending. The marker is then removed, and the UI will not show the
+keyring again. `ADMIN_AUTH_SECRET` remains a separate, stable host `.env` secret
+used for credential encryption and manifest HMAC; setup guidance recommends
+generating it with `openssl rand -hex 32` and preserving it for future restores.
+Existing plaintext `.tar.gz` archives remain restorable, but new archives are
+never written in that format.
+
+Each archive contains an online SQLite snapshot with active admin sessions
+removed, a checksum/compatibility manifest, and allowlisted prompt override
+Markdown files. It excludes `ADMIN_AUTH_SECRET`, the backup keyring, local OIDC
+and OpenShell state, and ephemeral workspaces. Manifest format v2 uses
+HMAC-SHA256 with `ADMIN_AUTH_SECRET` to authenticate the SQLite checksum and
+deterministically code-unit-sorted prompt filename/hash inventory without
+storing the secret. The original secret is required to verify the manifest and
+decrypt stored provider credentials; encrypted archives additionally require
+the matching backup key.
 
 When `VE_RESTORE_FROM` is set, `src/index.ts` validates and restores the archive
-before creating `SqliteStateStore` or opening SQLite. Restore checks archive
+before creating `SqliteStateStore` or opening SQLite. Encrypted archives are
+authenticated and decrypted before tar inspection; restore then checks archive
 paths, manifest authentication, database and prompt hashes/inventory, tracked
 migrations, and SQLite integrity.
 Existing database/prompt targets are refused unless `VE_RESTORE_FORCE` is true;
@@ -124,6 +157,10 @@ metadata, and secret fingerprint; an unchanged archive with both targets still
 installed is not reapplied on restart, even when force remains set. Remove the
 one-shot restore variables after a successful restore. Local retention is not
 off-site disaster recovery: copy or download archives to independent storage.
+SQLite itself remains standard SQLite; Docker deployments must put `DATA_DIR`
+on host block-encrypted storage, and Kubernetes deployments must select a
+provider-verified encrypted CSI StorageClass. The application can verify that a
+StorageClass exists, not that its backing media is encrypted.
 
 ### Agents — `src/agents/`
 
