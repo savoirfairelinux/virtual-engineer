@@ -19,7 +19,7 @@ export const CONFIG_SECTIONS = [
 
 export type ConfigSectionId = typeof CONFIG_SECTIONS[number];
 
-type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "exports" | "system" | "denials" | "auth-sources">;
+type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "exports" | "system" | "denials" | "auth-sources" | "backups">;
 type ConfigStandardEntitySection = Exclude<ConfigEntitySection, "oauth">;
 
 export type ConfigRoute =
@@ -42,7 +42,6 @@ const ENTITY_SECTIONS = new Set<ConfigSectionId>([
   "users",
   "groups",
   "policies",
-  "backups",
 ]);
 
 function isConfigSection(value: string): value is ConfigSectionId {

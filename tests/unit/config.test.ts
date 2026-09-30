@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { getConfig, resetConfig } from "../../src/config.js";
 
 describe("getConfig", () => {
@@ -205,6 +207,65 @@ describe("getConfig", () => {
       resetConfig();
 
       expect(getConfig().backupKeyringFile).toBe(resolve("./secrets/backup-keyring.json"));
+    });
+
+    it.each(["./data/keyring.json", "./data/nested/keyring.json"])(
+      "rejects a backup keyring in the database directory: %s",
+      (keyringFile) => {
+        process.env["DATABASE_PATH"] = "./data/ve.db";
+        process.env["BACKUP_KEYRING_FILE"] = keyringFile;
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      },
+    );
+
+    it("rejects a keyring inside the database directory through a symlinked parent", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "data"));
+        symlinkSync(join(root, "data"), join(root, "alias"), "dir");
+        process.env["DATABASE_PATH"] = join(root, "data", "ve.db");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "alias", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a keyring beside the actual database when DATABASE_PATH is a symlink", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "data"));
+        mkdirSync(join(root, "alias"));
+        writeFileSync(join(root, "data", "ve.db"), "");
+        symlinkSync(join(root, "data", "ve.db"), join(root, "alias", "ve.db"));
+        process.env["DATABASE_PATH"] = join(root, "alias", "ve.db");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "data", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a keyring inside a custom backup directory through a symlinked parent", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "backups"));
+        symlinkSync(join(root, "backups"), join(root, "alias"), "dir");
+        process.env["DATABASE_PATH"] = join(root, "data", "ve.db");
+        process.env["BACKUP_DIR"] = join(root, "backups");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "alias", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*BACKUP_DIR/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it("derives the backup directory from a custom database path", () => {
