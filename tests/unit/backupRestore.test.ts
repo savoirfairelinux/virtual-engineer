@@ -4,7 +4,7 @@ import { create as createTar, extract as extractTar } from "tar";
 import { chmod, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { decryptBackupFile, encryptBackupFile, loadBackupKeyring } from "../../src/backup/backupCrypto.js";
+import { decryptBackupFile, encryptBackupFile, loadBackupKeyring, readBackupEncryptionHeader } from "../../src/backup/backupCrypto.js";
 import {
   restoreBackupIfRequested as restoreWithKeyring,
   type RestoreBackupOptions,
@@ -12,7 +12,7 @@ import {
 import { createBackupService } from "../../src/backup/backupService.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
-import { writeTestBackupKeyring } from "./helpers/backupKeyring.js";
+import { TEST_BACKUP_KEY_HEX, TEST_BACKUP_KEY_ID, writeTestBackupKeyring } from "./helpers/backupKeyring.js";
 
 const ADMIN_AUTH_SECRET = "b".repeat(32);
 const openStores: SqliteStateStore[] = [];
@@ -28,7 +28,7 @@ afterEach(() => {
   for (const store of openStores.splice(0)) store.close();
 });
 
-async function createSourceBackup(): Promise<{ archivePath: string }> {
+async function createSourceBackup(): Promise<{ archivePath: string; sourceStore: SqliteStateStore }> {
   const sourceDatabasePath = tempDatabasePath("ve-backup-restore-source", { directory: true });
   const sourceStore = await SqliteStateStore.create(sourceDatabasePath);
   openStores.push(sourceStore);
@@ -47,10 +47,93 @@ async function createSourceBackup(): Promise<{ archivePath: string }> {
     adminAuthSecret: ADMIN_AUTH_SECRET,
   });
   const backup = await service.createBackup();
-  return { archivePath: join(sourceDir, "backups", backup.filename) };
+  return { archivePath: join(sourceDir, "backups", backup.filename), sourceStore };
 }
 
 describe("backup restoration", () => {
+  it("restores both sides of a key rotation and preserves the old target on failed or forced restores", async () => {
+    const { archivePath: oldArchive, sourceStore } = await createSourceBackup();
+    const sourceDir = dirname(dirname(oldArchive));
+    const newKeyId = "rotated-backup-key";
+    await writeFile(backupKeyringFile, `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: newKeyId,
+      keys: { [TEST_BACKUP_KEY_ID]: TEST_BACKUP_KEY_HEX, [newKeyId]: "c".repeat(64) },
+    })}\n`, { mode: 0o600 });
+    await sourceStore.updateAppSettings({ maxAgentCycles: 12 });
+    const newArchive = join(sourceDir, "backups", (await createBackupService({
+      backupDir: dirname(oldArchive),
+      backupKeyringFile,
+      promptsDir: join(sourceDir, "prompts"),
+      stateStore: sourceStore,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+    }).createBackup()).filename);
+    await expect(readBackupEncryptionHeader(oldArchive)).resolves.toMatchObject({ keyId: TEST_BACKUP_KEY_ID });
+    await expect(readBackupEncryptionHeader(newArchive)).resolves.toMatchObject({ keyId: newKeyId });
+
+    const targetDatabasePath = tempDatabasePath("ve-backup-key-rotation", { directory: true });
+    await restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: oldArchive,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: false,
+    });
+    const originalStore = await SqliteStateStore.create(targetDatabasePath);
+    await expect(originalStore.getAppSettings()).resolves.toMatchObject({ maxAgentCycles: 9 });
+    originalStore.close();
+
+    await expect(restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: newArchive,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: false,
+    })).rejects.toThrow("VE_RESTORE_FORCE");
+
+    const incorrectKeyringFile = join(dirname(backupKeyringFile), "incorrect-keyring.json");
+    await writeFile(incorrectKeyringFile, `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: newKeyId,
+      keys: { [newKeyId]: "f".repeat(64) },
+    })}\n`, { mode: 0o600 });
+    await expect(restoreWithKeyring({
+      databasePath: targetDatabasePath,
+      restoreFrom: newArchive,
+      backupKeyringFile: incorrectKeyringFile,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: true,
+    })).rejects.toThrow(/authentication/i);
+    await expect(restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: newArchive,
+      adminAuthSecret: "wrong-secret-".repeat(4),
+      force: true,
+    })).rejects.toThrow(/ADMIN_AUTH_SECRET/);
+    const unchangedStore = await SqliteStateStore.create(targetDatabasePath);
+    await expect(unchangedStore.getAppSettings()).resolves.toMatchObject({ maxAgentCycles: 9 });
+    unchangedStore.close();
+
+    const result = await restoreBackupIfRequested({
+      databasePath: targetDatabasePath,
+      restoreFrom: newArchive,
+      adminAuthSecret: ADMIN_AUTH_SECRET,
+      force: true,
+    });
+    expect(result?.status).toBe("restored");
+    if (!result?.previousDataDirectory) throw new Error("Expected old data to be preserved");
+    const preservedDatabase = new Database(join(result.previousDataDirectory, "ve.db"), { readonly: true });
+    try {
+      expect(preservedDatabase.prepare("SELECT max_agent_cycles FROM app_settings WHERE id = 'global'").get())
+        .toMatchObject({ max_agent_cycles: 9 });
+    } finally {
+      preservedDatabase.close();
+    }
+    const restoredStore = await SqliteStateStore.create(targetDatabasePath);
+    openStores.push(restoredStore);
+    await expect(restoredStore.getAppSettings()).resolves.toMatchObject({ maxAgentCycles: 12 });
+  });
+
   it("restores database data and prompt overrides before the state store opens", async () => {
     const { archivePath } = await createSourceBackup();
     const targetDatabasePath = tempDatabasePath("ve-backup-restore-target", { directory: true });
