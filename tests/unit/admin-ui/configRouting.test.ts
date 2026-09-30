@@ -65,6 +65,9 @@ describe("Configuration routing", () => {
   it.each([
     "#config/not-a-section",
     "#config/overview/new",
+    "#config/backups/new",
+    "#config/backups/archive.tar.gz",
+    "#config/backups/archive.tar.gz/edit",
     "#config/integrations/missing/edit/extra",
     "#config/oauth/gitlab",
     "#config/oauth/gitlab/not%ZZencoded",

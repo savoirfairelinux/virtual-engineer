@@ -38,7 +38,11 @@ export function createBackupScheduler(deps: BackupSchedulerDeps): BackupSchedule
       const settings = resolveBackupSettings(await deps.getSettings());
       const backup = await deps.backupService.createBackup();
       completedRuns += 1;
-      await deps.backupService.prune(settings.retentionCount);
+      try {
+        await deps.backupService.prune(settings.retentionCount);
+      } catch (error) {
+        log.error({ err: error, filename: backup.filename }, "backup created but retention pruning failed");
+      }
       return backup;
     })();
     backupInFlight = current;
@@ -53,6 +57,7 @@ export function createBackupScheduler(deps: BackupSchedulerDeps): BackupSchedule
     if (stopped) return;
     const runCountBeforeCheck = completedRuns;
     const settings = resolveBackupSettings(await deps.getSettings());
+    await deps.backupService.cleanupStaleArtifacts();
     if (!settings.enabled || stopped) return;
     const backups = await deps.backupService.listBackups();
     if (stopped || backupInFlight || completedRuns !== runCountBeforeCheck) return;

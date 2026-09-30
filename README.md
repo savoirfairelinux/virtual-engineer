@@ -129,7 +129,8 @@ recovery: download archives or copy them to independent storage.
 
 New archives use the `.tar.gz.enc` suffix and are streamed through AES-256-GCM.
 Set `BACKUP_KEYRING_FILE` to a protected JSON keyring outside `DATA_DIR` and
-`BACKUP_DIR`; `scripts/start.sh` mounts it read-only. On a normal Docker
+`BACKUP_DIR` (for direct runs, outside the directory containing `DATABASE_PATH`);
+`scripts/start.sh` mounts it read-only. On a normal Docker
 startup, the launcher creates a default keyring automatically if this variable
 is unset. Keep the keyring separate from the archives and preserve old keys
 until every archive using them has expired or been re-encrypted. Existing
@@ -148,7 +149,9 @@ runs and Kubernetes deployments must provide both values through their
 supported configuration.
 Archive encryption does not encrypt the active SQLite file or temporary
 plaintext staging: put `DATA_DIR` on encrypted host storage (or use a verified
-encrypted CSI StorageClass for Kubernetes).
+encrypted CSI StorageClass for Kubernetes). On startup and during backup checks,
+the service removes interrupted staging and `.partial` files after 24 hours;
+fresh files are left alone to avoid interrupting in-progress work.
 
 ### Docker: automatic keyring setup
 

@@ -100,10 +100,21 @@ See [state-machine.md](state-machine.md) and [database.md](database.md).
 The backup schedule is stored in the `app_settings` singleton and managed from
 Configuration → Backups (`system.backup.manage`). Backups are disabled by
 default; the defaults are every 1 day at `03:00` UTC with 7 retained archives.
-The scheduler checks every 15 minutes, coalesces overlapping runs, and stops
-before SQLite closes. `BACKUP_DIR` defaults to a `backups/` directory beside
+The scheduler checks every 15 minutes, coalesces overlapping runs, cleans up
+stale backup artifacts even when scheduling is disabled, and stops before SQLite
+closes. `BACKUP_DIR` defaults to a `backups/` directory beside
 `DATABASE_PATH`; it must be on encrypted storage because creation uses private
 temporary plaintext staging there.
+
+On startup, during scheduled checks, and before creating a backup, the service
+removes only its recognized `.ve-backup-*` staging directories and encrypted
+archive `.partial` files once they are at least 24 hours old. It skips fresh
+entries, unexpected names or file types, and symlinks to avoid racing active
+work or deleting unrelated data. Interrupted plaintext staging can remain
+until that age threshold, so backup storage must remain encrypted.
+
+After the archive is committed, a retention-pruning failure is logged separately;
+the backup still counts as created, and the next run can retry pruning.
 
 The standard Docker launcher passes the invoking host user's primary GID as
 `BACKUP_ACCESS_GID`. When set, the backup directory stays root-owned with mode

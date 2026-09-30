@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { extract as extractTar } from "tar";
@@ -128,6 +128,45 @@ describe("backup service", () => {
 
     await expect(service.prune(2)).resolves.toEqual([first.filename]);
     await expect(service.listBackups()).resolves.toEqual([third, second]);
+  });
+
+  it("scavenges stale interrupted backups without touching new artifacts, symlinks, or archives", async () => {
+    const service = buildBackupService();
+    const archive = await service.createBackup();
+    const staleStage = await mkdtemp(join(backupDir, ".ve-backup-"));
+    const freshStage = await mkdtemp(join(backupDir, ".ve-backup-"));
+    const partialPath = join(backupDir, `.${archive.filename}.partial`);
+    const outsidePath = join(dirname(backupDir), "unrelated-staging-target");
+    const linkedStage = join(backupDir, ".ve-backup-ABC123");
+    await writeFile(join(staleStage, "database.sqlite"), "plaintext snapshot");
+    await writeFile(partialPath, "interrupted ciphertext");
+    await writeFile(outsidePath, "untouched");
+    await symlink(outsidePath, linkedStage);
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(staleStage, oldTime, oldTime);
+    await utimes(partialPath, oldTime, oldTime);
+
+    await service.cleanupStaleArtifacts();
+
+    expect(await readdir(backupDir)).not.toContain(basename(staleStage));
+    expect(await readdir(backupDir)).not.toContain(basename(partialPath));
+    expect((await lstat(freshStage)).isDirectory()).toBe(true);
+    expect((await lstat(linkedStage)).isSymbolicLink()).toBe(true);
+    expect(await readFile(outsidePath, "utf8")).toBe("untouched");
+    await expect(service.listBackups()).resolves.toEqual([archive]);
+  });
+
+  it("cleans old interrupted staging before creating the next archive", async () => {
+    const service = buildBackupService();
+    await mkdir(backupDir, { recursive: true });
+    const staleStage = await mkdtemp(join(backupDir, ".ve-backup-"));
+    await writeFile(join(staleStage, "database.sqlite"), "plaintext snapshot");
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(staleStage, oldTime, oldTime);
+
+    await service.createBackup();
+
+    expect(await readdir(backupDir)).not.toContain(basename(staleStage));
   });
 
   it("rejects backup creation when the encryption secret is unavailable", async () => {

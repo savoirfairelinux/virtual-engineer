@@ -25,6 +25,8 @@ All variables are optional. Only system/infra settings remain in the environment
 | `VE_RESTORE_FROM` | — | One-shot encrypted `.tar.gz.enc` or legacy `.tar.gz` archive path read at startup before SQLite opens. Restore requires the original `ADMIN_AUTH_SECRET`; encrypted archives additionally require their key in `BACKUP_KEYRING_FILE`. Archives do not contain these secrets or the deployment's OIDC/runtime configuration. Do not leave this set in a persistent environment after restore. |
 | `VE_RESTORE_FORCE` | `false` | Explicitly permit replacement of existing database/prompt targets; existing targets are preserved in a `.pre-restore-*` directory. A completed restore writes a marker bound to the canonical archive path, full archive SHA-256, file size/mtime, and secret fingerprint. When the marker matches and both installed targets remain present, restarts return `already-restored` even if force is still true. If the marker matches but a target is missing, restore errors unless force is true, in which case it reapplies the archive. A different archive path/hash/metadata or secret does not match the marker; any existing targets then require force before replacement. Clear the one-shot restore variables after a successful restore. |
 
+Direct startup rejects a configured keyring inside the directory containing the resolved SQLite file or inside `BACKUP_DIR`, including paths that traverse symlinks. Place it in an independent secrets directory before attempting a restore.
+
 ### Admin server
 
 | Var | Default | Notes |

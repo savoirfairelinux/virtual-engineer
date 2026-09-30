@@ -7,8 +7,8 @@
  * (completed via `superRefine`).
  */
 import { z } from "zod";
-import { readFileSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { readFileSync, realpathSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 
 
 const booleanFromEnv = z.preprocess((value) => {
@@ -154,6 +154,22 @@ function fromEnv(): Record<string, string | undefined> {
 
 let _config: AppConfig | null = null;
 
+function physicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(physicalPath(parent), basename(path));
+  }
+}
+
+function isDirectoryInside(parent: string, directory: string): boolean {
+  const pathFromParent = relative(physicalPath(parent), physicalPath(directory));
+  return pathFromParent !== ".." && !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
+}
+
 /** Parse and validate configuration from environment variables. Throws on invalid config. */
 export function getConfig(): AppConfig {
   if (_config) return _config;
@@ -166,12 +182,24 @@ export function getConfig(): AppConfig {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
 
+  const backupDir = resolve(result.data.backupDir ?? join(dirname(result.data.databasePath), "backups"));
+  const backupKeyringFile = result.data.backupKeyringFile === undefined
+    ? undefined
+    : resolve(result.data.backupKeyringFile);
+  if (backupKeyringFile !== undefined) {
+    const keyringDirectory = dirname(backupKeyringFile);
+    if (isDirectoryInside(dirname(physicalPath(resolve(result.data.databasePath))), keyringDirectory)) {
+      throw new Error("Invalid configuration:\n  backupKeyringFile: BACKUP_KEYRING_FILE must be stored outside the DATABASE_PATH directory.");
+    }
+    if (isDirectoryInside(backupDir, keyringDirectory)) {
+      throw new Error("Invalid configuration:\n  backupKeyringFile: BACKUP_KEYRING_FILE must be stored outside BACKUP_DIR.");
+    }
+  }
+
   _config = {
     ...result.data,
-    backupDir: resolve(result.data.backupDir ?? join(dirname(result.data.databasePath), "backups")),
-    backupKeyringFile: result.data.backupKeyringFile === undefined
-      ? undefined
-      : resolve(result.data.backupKeyringFile),
+    backupDir,
+    backupKeyringFile,
     restoreFrom: result.data.restoreFrom === undefined ? undefined : resolve(result.data.restoreFrom),
   };
   return _config;

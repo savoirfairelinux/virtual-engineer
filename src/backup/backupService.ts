@@ -35,6 +35,8 @@ import {
 const log = getLogger("backup");
 const MIN_SECRET_LENGTH = 32;
 const PROMPT_FILENAME_PATTERN = /^[A-Za-z0-9_-]+\.md$/;
+const STAGING_DIRECTORY_PATTERN = /^\.ve-backup-[A-Za-z0-9]{6}$/;
+const STALE_ARTIFACT_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface PendingSecuritySecrets {
   adminAuthSecret?: string;
@@ -58,6 +60,7 @@ export interface BackupServiceDeps {
 
 export interface BackupService {
   createBackup(): Promise<BackupInfo>;
+  cleanupStaleArtifacts(): Promise<void>;
   listBackups(): Promise<BackupInfo[]>;
   deleteBackup(filename: string): Promise<boolean>;
   prune(retentionCount: number): Promise<string[]>;
@@ -169,6 +172,31 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     }
   }
 
+  async function cleanupStaleArtifacts(): Promise<void> {
+    await ensureBackupDirectory();
+    const cutoff = Date.now() - STALE_ARTIFACT_AGE_MS;
+    for (const entry of await readdir(backupDir, { withFileTypes: true })) {
+      const isStagingDirectory = entry.isDirectory() && STAGING_DIRECTORY_PATTERN.test(entry.name);
+      const isPartialArchive = entry.isFile() && entry.name.startsWith(".") && entry.name.endsWith(".partial")
+        && isBackupFilename(entry.name.slice(1, -".partial".length));
+      if (!isStagingDirectory && !isPartialArchive) continue;
+
+      const artifactPath = join(backupDir, entry.name);
+      let info;
+      try {
+        info = await lstat(artifactPath);
+      } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (info.isSymbolicLink() || info.mtimeMs >= cutoff
+        || (isStagingDirectory && !info.isDirectory()) || (isPartialArchive && !info.isFile())) continue;
+
+      await rm(artifactPath, { recursive: isStagingDirectory, force: true });
+      log.warn({ filename: entry.name }, "stale backup artifact removed");
+    }
+  }
+
   async function createBackup(): Promise<BackupInfo> {
     if (creationInFlight) return creationInFlight;
     const current = performBackup();
@@ -191,7 +219,7 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     }
     const keyring = await loadBackupKeyring(deps.backupKeyringFile);
 
-    await ensureBackupDirectory();
+    await cleanupStaleArtifacts();
     const timestampMs = Math.max(Date.now(), lastCreatedAtMs + 1);
     lastCreatedAtMs = timestampMs;
     const createdAtDate = new Date(timestampMs);
@@ -293,6 +321,7 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
 
   return {
     createBackup,
+    cleanupStaleArtifacts,
     listBackups,
     deleteBackup,
     prune,

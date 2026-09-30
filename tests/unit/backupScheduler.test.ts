@@ -18,6 +18,7 @@ function makeSettings(enabled = true): BackupSettings {
 function makeService(backups: BackupInfo[] = []): BackupService {
   return {
     createBackup: vi.fn(async () => backup),
+    cleanupStaleArtifacts: vi.fn(async () => undefined),
     listBackups: vi.fn(async () => backups),
     deleteBackup: vi.fn(async () => true),
     prune: vi.fn(async () => []),
@@ -29,6 +30,19 @@ function makeService(backups: BackupInfo[] = []): BackupService {
 }
 
 describe("backup scheduler", () => {
+  it("scavenges stale backup artifacts even when scheduling is disabled", async () => {
+    const backupService = makeService();
+    const scheduler = createBackupScheduler({
+      backupService,
+      getSettings: async () => makeSettings(false),
+    });
+
+    await scheduler.checkDue();
+
+    expect(backupService.cleanupStaleArtifacts).toHaveBeenCalledTimes(1);
+    expect(backupService.createBackup).not.toHaveBeenCalled();
+  });
+
   it("creates the first backup once the configured UTC time has passed", async () => {
     const backupService = makeService();
     const scheduler = createBackupScheduler({
@@ -92,5 +106,17 @@ describe("backup scheduler", () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual([backup, backup]);
     expect(backupService.prune).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a committed backup as successful when retention fails", async () => {
+    const backupService = makeService();
+    backupService.prune = vi.fn(async () => { throw new Error("retention unavailable"); });
+    const scheduler = createBackupScheduler({
+      backupService,
+      getSettings: async () => makeSettings(),
+    });
+
+    await expect(scheduler.runNow()).resolves.toEqual(backup);
+    expect(backupService.prune).toHaveBeenCalledWith(7);
   });
 });
