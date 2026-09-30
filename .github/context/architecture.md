@@ -125,11 +125,12 @@ The keyring is mounted read-only, separate from `ADMIN_AUTH_SECRET`, SQLite, and
 archive storage. Rotation retains old key IDs for decryption of retained
 archives. The standard Docker launcher creates a missing keyring in its private
 host config directory and places a mode-`0600` onboarding marker beside the
-database. After an admin authenticates, the dashboard discloses that JSON
-keyring through a superuser-only, no-store endpoint until the admin copies or
-downloads it and acknowledges safe storage; reloads before acknowledgement keep
-the reveal pending. The marker is then removed, and the UI will not show the
-keyring again. `ADMIN_AUTH_SECRET` remains a separate, stable host `.env` secret
+database. After an admin authenticates, the dashboard offers an optional reveal
+of that JSON keyring through a superuser-only, no-store endpoint and a direct
+acknowledgement action. The admin can acknowledge before revealing, so the
+keyring JSON need not be sent to the browser; reloads before acknowledgement
+keep the reveal pending. The marker is then removed, and the UI will not show
+the keyring again. `ADMIN_AUTH_SECRET` remains a separate, stable host `.env` secret
 used for credential encryption and manifest HMAC; setup guidance recommends
 generating it with `openssl rand -hex 32` and preserving it for future restores.
 Existing plaintext `.tar.gz` archives remain restorable, but new archives are

@@ -126,7 +126,7 @@ describe("App identity loading", () => {
     await waitFor(() => expect(apiMocks.get).toHaveBeenCalledWith("/api/admin/security/secrets-onboarding"));
   });
 
-  it("requires an explicit reveal and copies both setup secrets before acknowledgement", async () => {
+  it("reveals and copies both setup secrets before acknowledgement", async () => {
     const keyring = {
       format: "virtual-engineer-backup-keyring" as const,
       version: 1 as const,
@@ -181,11 +181,15 @@ describe("App identity loading", () => {
     expect(keyringField.textContent).toContain("a".repeat(64));
 
     const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
-    expect(acknowledge.disabled).toBe(true);
+    expect(acknowledge.disabled).toBe(false);
+    expect(within(dialog).getByText(
+      "Copying is recommended but not required. Acknowledging closes this one-time reveal; recover unsaved values from the host .env and keyring file.",
+    )).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy ADMIN_AUTH_SECRET" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy keyring JSON" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(acknowledge.disabled).toBe(false);
+    expect(within(dialog).queryByText("Copy or download each pending value above to enable acknowledgement.")).toBeNull();
 
     fireEvent.click(acknowledge);
     await waitFor(() => expect(apiMocks.post).toHaveBeenNthCalledWith(
@@ -197,6 +201,83 @@ describe("App identity loading", () => {
       "/api/admin/security/secrets-onboarding/acknowledge",
     );
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Save your Virtual Engineer setup secrets" })).toBeNull());
+  });
+
+  it("shows direct acknowledgement failures without revealing secrets", async () => {
+    apiMocks.post.mockReset();
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockRejectedValueOnce(new Error("Marker removal failed."));
+
+    render(<SecuritySecretsOnboarding />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    fireEvent.click(screen.getByRole("button", { name: "I've saved both secrets securely" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Marker removal failed.");
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    expect(apiMocks.post).toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/acknowledge");
+    expect(apiMocks.post).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/reveal");
+    expect(screen.getByRole("dialog", { name: "Save your Virtual Engineer setup secrets" })).toBe(dialog);
+  });
+
+  it("allows acknowledgement before revealing either secret", async () => {
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockReset();
+    apiMocks.post.mockResolvedValueOnce(undefined);
+
+    render(<SecuritySecretsOnboarding />);
+
+    await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    const reveal = screen.getByRole("button", { name: "Reveal setup secrets" });
+    const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" });
+
+    expect(reveal.parentElement).toBe(acknowledge.parentElement);
+    expect(screen.queryByRole("textbox", { name: "ADMIN_AUTH_SECRET" })).toBeNull();
+
+    fireEvent.click(acknowledge);
+
+    await waitFor(() => expect(apiMocks.post).toHaveBeenCalledWith(
+      "/api/admin/security/secrets-onboarding/acknowledge",
+    ));
+    expect(apiMocks.post).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/reveal");
+    await waitFor(() => expect(screen.queryByRole("dialog", {
+      name: "Save your Virtual Engineer setup secrets",
+    })).toBeNull());
+  });
+
+  it("allows acknowledgement without copying or downloading either secret", async () => {
+    const keyring = {
+      format: "virtual-engineer-backup-keyring" as const,
+      version: 1 as const,
+      activeKeyId: "key-20260928-test",
+      keys: { "key-20260928-test": "a".repeat(64) },
+    };
+    apiMocks.post.mockReset();
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post
+      .mockResolvedValueOnce({ pending: true, secrets: { adminAuthSecret: "c".repeat(64), backupKeyring: keyring } })
+      .mockResolvedValueOnce(undefined);
+
+    render(<SecuritySecretsOnboarding />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reveal setup secrets" }));
+    const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
+
+    expect(acknowledge.disabled).toBe(false);
+    expect(dialog.textContent).toContain(
+      "Copying is recommended but not required. Acknowledging closes this one-time reveal; recover unsaved values from the host .env and keyring file.",
+    );
+
+    fireEvent.click(acknowledge);
+
+    await waitFor(() => expect(apiMocks.post).toHaveBeenLastCalledWith(
+      "/api/admin/security/secrets-onboarding/acknowledge",
+    ));
+    await waitFor(() => expect(screen.queryByRole("dialog", {
+      name: "Save your Virtual Engineer setup secrets",
+    })).toBeNull());
   });
 
   it("allows manual copying of both values when clipboard access is unavailable", async () => {
@@ -219,14 +300,14 @@ describe("App identity loading", () => {
     render(<SecuritySecretsOnboarding />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Reveal setup secrets" }));
-    const acknowledge = await screen.findByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
     const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
     const keyringField = screen.getByRole("textbox", { name: "Backup keyring JSON" });
+    const acknowledge = await screen.findByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
     fireEvent.click(screen.getByRole("button", { name: "Copy ADMIN_AUTH_SECRET" }));
     await screen.findByText("Clipboard access failed. Select and copy the ADMIN_AUTH_SECRET text or try copying again.");
     fireEvent.click(screen.getByRole("button", { name: "Copy keyring JSON" }));
     await screen.findByText("Clipboard access failed. Select and copy the keyring text or download the file instead.");
-    expect(acknowledge.disabled).toBe(true);
+    expect(acknowledge.disabled).toBe(false);
 
     fireEvent.copy(adminSecretField);
     fireEvent.copy(keyringField);
