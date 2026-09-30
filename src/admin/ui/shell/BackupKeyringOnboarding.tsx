@@ -36,6 +36,7 @@ export function SecuritySecretsOnboarding() {
   const [revealing, setRevealing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -44,6 +45,7 @@ export function SecuritySecretsOnboarding() {
     setAdminSecretSaved(false);
     setKeyringSaved(false);
     setMessage(null);
+    setAcknowledgementError(null);
     void api.get<OnboardingStatusResponse>(ONBOARDING_PATH)
       .then((response) => {
         if (current) setStatus(response.pending ? "pending" : "hidden");
@@ -114,12 +116,13 @@ export function SecuritySecretsOnboarding() {
   async function acknowledgeSecrets(): Promise<void> {
     setSaving(true);
     setMessage(null);
+    setAcknowledgementError(null);
     try {
       await api.post(`${ONBOARDING_PATH}/acknowledge`);
       setSecrets(null);
       setStatus("hidden");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not acknowledge the saved secrets.");
+      setAcknowledgementError(error instanceof Error ? error.message : "Could not acknowledge the saved secrets.");
     } finally {
       setSaving(false);
     }
@@ -218,9 +221,30 @@ export function SecuritySecretsOnboarding() {
             </ul>
           </section>
           {status === "pending" && (
-            <button className="btn primary" disabled={revealing} onClick={() => void revealSecrets()}>
-              {revealing ? "Revealing…" : "Reveal setup secrets"}
-            </button>
+            <>
+              <p role="note" style={{ margin: "0 0 12px", color: "var(--text-dim)", fontSize: 13, lineHeight: 1.5 }}>
+                Already saved both values securely? Acknowledge here without revealing them. This closes the one-time
+                UI reveal; the values remain recoverable from the host .env and keyring file.
+              </p>
+              <div
+                className="form-actions"
+                role="group"
+                aria-label="Setup secret actions"
+                style={{ justifyContent: "flex-start", flexWrap: "wrap", marginTop: 0 }}
+              >
+                <button className="btn ghost" disabled={revealing || saving} onClick={() => void revealSecrets()}>
+                  {revealing ? "Revealing…" : "Reveal setup secrets"}
+                </button>
+                <button className="btn primary" disabled={revealing || saving} onClick={() => void acknowledgeSecrets()}>
+                  {saving ? "Saving…" : "I've saved both secrets securely"}
+                </button>
+              </div>
+              {acknowledgementError && (
+                <p role="alert" style={{ margin: "8px 0 0", color: "var(--warn)", fontSize: 13, lineHeight: 1.5 }}>
+                  Could not acknowledge saved secrets: {acknowledgementError}
+                </p>
+              )}
+            </>
           )}
           {hasAdminSecret && (
             <div style={{ marginTop: 18 }}>
@@ -268,10 +292,22 @@ export function SecuritySecretsOnboarding() {
           {message && <p role="status" style={{ margin: "8px 0 0", color: "var(--text-dim)" }}>{message}</p>}
         </div>
         {status === "revealed" && (
-          <footer className="modal-foot">
-            <button className="btn primary" disabled={!allSecretsSaved || saving} onClick={() => void acknowledgeSecrets()}>
-              {saving ? "Saving…" : "I've saved both secrets securely"}
-            </button>
+          <footer className="modal-foot" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            {!allSecretsSaved && (
+              <p role="note" style={{ margin: 0, color: "var(--text-dim)", fontSize: 13, lineHeight: 1.5 }}>
+                Copying is recommended but not required. Acknowledging closes this one-time reveal; recover unsaved values from the host .env and keyring file.
+              </p>
+            )}
+            {acknowledgementError && (
+              <p role="alert" style={{ margin: 0, color: "var(--warn)", fontSize: 13, lineHeight: 1.5 }}>
+                Could not acknowledge saved secrets: {acknowledgementError}
+              </p>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button className="btn primary" disabled={saving} onClick={() => void acknowledgeSecrets()}>
+                {saving ? "Saving…" : "I've saved both secrets securely"}
+              </button>
+            </div>
           </footer>
         )}
       </section>
