@@ -217,7 +217,11 @@ describe("start.sh helpers", () => {
 
     expect(adminSecret).toMatch(/^[a-f0-9]{64}$/);
     expect(backupKey).toMatch(/^[a-f0-9]{64}$/);
-    expect(firstEnv.startsWith(envExample)).toBe(true);
+    expect(envExample).toMatch(/^ADMIN_AUTH_SECRET=\s*$/m);
+    expect(envExample).toMatch(/^BACKUP_KEYRING_FILE=\s*$/m);
+    expect(firstEnv.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
+    expect(firstEnv).toContain(`ADMIN_AUTH_SECRET=${adminSecret}`);
+    expect(firstEnv.match(/^BACKUP_KEYRING_FILE=/gm)).toHaveLength(1);
     expect(firstOutput).not.toContain(adminSecret);
     expect(firstOutput).not.toContain(backupKey);
     expect(firstEnv).toContain(`BACKUP_KEYRING_FILE=${keyringFile}`);
@@ -267,7 +271,7 @@ describe("start.sh helpers", () => {
     const configHome = join(dir, "config");
     const homeDir = join(dir, "home");
     mkdirSync(dataDir);
-    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\nLOG_LEVEL=info\n");
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\nBACKUP_KEYRING_FILE=\nLOG_LEVEL=info\n");
     const helper = [
       "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
       'load_dotenv "$1"',
