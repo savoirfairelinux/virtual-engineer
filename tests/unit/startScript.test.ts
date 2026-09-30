@@ -307,6 +307,74 @@ describe("start.sh helpers", () => {
     expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(false);
   });
 
+  it("marks a pre-existing default keyring pending during first-time provisioning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-existing-keyring-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    const keyringDir = join(configHome, "virtual-engineer");
+    const keyringPath = join(keyringDir, "backup-keyring.json");
+    mkdirSync(dataDir);
+    mkdirSync(keyringDir, { recursive: true, mode: 0o700 });
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\n");
+    const keyringContents = `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: "existing-key",
+      keys: { "existing-key": "a".repeat(64) },
+    })}\n`;
+    writeFileSync(keyringPath, keyringContents, { mode: 0o600 });
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(true);
+    expect(readFileSync(keyringPath, "utf8")).toBe(keyringContents);
+  });
+
+  it("marks a pre-existing keyring pending when first-admin onboarding is already pending", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-pending-admin-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    const keyringDir = join(configHome, "virtual-engineer");
+    const keyringPath = join(keyringDir, "backup-keyring.json");
+    mkdirSync(dataDir);
+    mkdirSync(keyringDir, { recursive: true, mode: 0o700 });
+    writeFileSync(envFile, `ADMIN_AUTH_SECRET=${"b".repeat(64)}\n`);
+    writeFileSync(keyringPath, `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: "existing-key",
+      keys: { "existing-key": "a".repeat(64) },
+    })}\n`, { mode: 0o600 });
+    writeFileSync(join(dataDir, ".secrets-provisioned"), "");
+    writeFileSync(join(dataDir, ".admin-auth-secret-onboarding-pending"), "");
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(true);
+  });
+
   it("refuses to generate replacement secrets after an instance was provisioned", () => {
     const dir = mkdtempSync(join(tmpdir(), "ve-start-setup-"));
     tempDirs.push(dir);

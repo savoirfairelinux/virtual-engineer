@@ -635,6 +635,10 @@ ensure_instance_secrets() {
     ensure_default_backup_keyring_file "$xdg_config_home" "$home_dir" \
       "$resolved_data_dir" "$state_dir" || return 1
   fi
+  if [[ "$keyring_present" == "true" \
+    && ( "$initialized" != "true" || -f "$admin_onboarding_marker" ) ]]; then
+    ensure_private_marker "$onboarding_marker" || return 1
+  fi
   resolve_backup_keyring_file "$BACKUP_KEYRING_FILE" "$resolved_data_dir" "$resolved_backup_dir" >/dev/null || return 1
   persist_backup_keyring_file "$env_file" "$BACKUP_KEYRING_FILE" || return 1
 

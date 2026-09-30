@@ -73,9 +73,10 @@ replacing configured values, and protects it with mode `0600`:
 ```
 
 After creating the first admin account, the Admin UI offers an explicit reveal
-of each newly generated secret. Copy the pending values to protected recovery
-storage before acknowledging the dialog. Setup and normal startup never print
-secret contents to the terminal.
+of newly generated secrets and any existing keyring found during the first
+instance setup. Copy the pending values to protected recovery storage before
+acknowledging the dialog. Setup and normal startup never print secret contents
+to the terminal.
 
 The default deployment uses Docker for OpenShell sandboxes. Kubernetes is an
 experimental alternative; see the [Kubernetes deployment guide](deploy/k8s/README.md).
@@ -136,11 +137,12 @@ handling.
 On a normal Docker start, `ADMIN_AUTH_SECRET` is also generated and persisted in
 `.env` when missing or empty; the same value is reused on later starts. It is
 separate from the keyring, and a restore never invents a replacement for either
-key. After first admin login, the UI can explicitly reveal generated values
-that are still pending recovery: `ADMIN_AUTH_SECRET` and the keyring are copied
-separately, and acknowledgement is enabled only after every pending value is
-copied or downloaded. Direct `npm run dev` runs and Kubernetes deployments must
-provide both values through their supported configuration.
+key. After first admin login, the UI can explicitly reveal setup values still
+pending recovery: a newly generated `ADMIN_AUTH_SECRET` or keyring, and an
+existing keyring found during first instance provisioning. Copy or download
+each pending value separately before acknowledging. Direct `npm run dev` runs
+and Kubernetes deployments must provide both values through their supported
+configuration.
 Archive encryption does not encrypt the active SQLite file or temporary
 plaintext staging: put `DATA_DIR` on encrypted host storage (or use a verified
 encrypted CSI StorageClass for Kubernetes).
@@ -154,9 +156,11 @@ unset, setup generates a random 32-byte key in
 creates the directory with mode `0700`, the file with mode `0600`, reuses an
 existing file without replacing it, persists the path in `.env`, and mounts it
 read-only as `/app/backup-keyring.json`. The first creation prints only the file
-path and reminds you to keep a protected recovery copy; after first admin login,
-the superuser-only UI requires an explicit reveal and acknowledgement. The
-launcher uses Node.js's built-in cryptographic random generator.
+path and reminds you to keep a protected recovery copy. If a keyring already
+exists when a new instance is first provisioned, the launcher keeps it unchanged
+and marks it for the same explicit first-admin reveal. The superuser-only UI
+requires acknowledgement after every pending value is saved. The launcher uses
+Node.js's built-in cryptographic random generator.
 
 You can set `BACKUP_KEYRING_FILE` in `.env` to use an existing keyring at an
 absolute path outside `DATA_DIR` and `BACKUP_DIR`; `.env` contains only the path,
