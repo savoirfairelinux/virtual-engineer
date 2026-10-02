@@ -73,13 +73,6 @@ async function resolveTaskReviewIntegrationId(
     );
   }
 
-  const taskIntegrationId = getIntegrationIdFromSourceLabel(target.ticketSourceLabel);
-  if (taskIntegrationId && reviewConfig.integrationId !== taskIntegrationId) {
-    throw new ProjectReconfigurationIncompatibleError(
-      `Review integration changed while task ${target.taskId} was active: it was created from ${taskIntegrationId}, but project ${target.projectId} now uses ${reviewConfig.integrationId}. Manual retry is required.`,
-    );
-  }
-
   if (reviewConfig.repos.length === 0) {
     throw new ProjectReconfigurationIncompatibleError(
       `Review configuration for project ${target.projectId} no longer contains a repository for task ${target.taskId}. Manual retry is required.`,

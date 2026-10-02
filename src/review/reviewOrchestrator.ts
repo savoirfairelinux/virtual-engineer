@@ -699,11 +699,6 @@ export class ReviewOrchestrator {
           `Review configuration was removed from project ${project.id} while task ${taskId} was active. Manual retry is required.`,
         );
       }
-      if (reviewConfig.integrationId !== this.deps.integrationId) {
-        throw new ProjectReconfigurationIncompatibleError(
-          `Review integration changed while task ${taskId} was active: it was created from ${this.deps.integrationId}, but project ${project.id} now uses ${reviewConfig.integrationId}. Manual retry is required.`,
-        );
-      }
       if (!reviewConfig.repos.includes(details.project)) {
         throw new ProjectReconfigurationIncompatibleError(
           `Review repository ${details.project} was removed from project ${project.id} while task ${taskId} was active. Manual retry is required.`,

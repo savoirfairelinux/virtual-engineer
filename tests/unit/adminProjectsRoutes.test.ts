@@ -1536,7 +1536,7 @@ FetchContent_Declare(googletest
     );
   });
 
-  it("PUT /:id rejects agent reassignment while the project has active tasks", async () => {
+  it("PUT /:id allows agent reassignment while the project has active tasks", async () => {
     const originalAgent = await makeAgent(store, "coding");
     const replacementAgent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1");
@@ -1557,8 +1557,8 @@ FetchContent_Declare(googletest
       body: { agentId: replacementAgent.id },
     });
 
-    expect(response.status).toBe(409);
-    expect((await store.getProjectById(id as import("../../src/interfaces.js").ProjectId))?.agentId).toBe(originalAgent.id);
+    expect(response.status).toBe(200);
+    expect((await store.getProjectById(id as import("../../src/interfaces.js").ProjectId))?.agentId).toBe(replacementAgent.id);
   });
 
   it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {

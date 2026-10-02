@@ -255,7 +255,7 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(await store.getProjectTicketSource(candidate.id)).toBeNull();
   });
 
-  it("requires confirmation before changing a ticket source while tasks are active", async () => {
+  it("updates a ticket source while tasks are active", async () => {
     const agent = await makeAgent(store);
     await makeIntegration(store, "redmine-before", "redmine");
     await makeIntegration(store, "redmine-after", "redmine");
@@ -277,25 +277,13 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     );
 
     await expect(store.updateProjectConfiguration(project.id, {
-      project: { name: "Must not persist" },
-      ticketSource: { integrationId: "redmine-after", ticketProjectKey: "AFTER" },
-    })).rejects.toMatchObject({ code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED" });
-
-    expect((await store.getProjectById(project.id))?.name).toBe("Before");
-    expect(await store.getProjectTicketSource(project.id)).toMatchObject({
-      integrationId: "redmine-before",
-      ticketProjectKey: "BEFORE",
-    });
-
-    await expect(store.updateProjectConfiguration(project.id, {
       project: { name: "After" },
       ticketSource: { integrationId: "redmine-after", ticketProjectKey: "AFTER" },
-      confirmedActiveTaskIds: [makeTaskId("active-ticket-source")],
     })).resolves.toMatchObject({ project: { name: "After" }, executionChanged: true });
     expect(await store.getTask(makeTaskId("active-ticket-source"))).toMatchObject({ state: "DETECTED" });
   });
 
-  it("requires confirmation before changing an active project's execution configuration", async () => {
+  it("updates an active project's execution configuration without confirmation", async () => {
     const agent = await makeAgent(store);
     await makeIntegration(store, "redmine-confirm-before", "redmine");
     await makeIntegration(store, "redmine-confirm-after", "redmine");
@@ -320,24 +308,8 @@ describe("SqliteStateStore — Phase 2: projects", () => {
       ticketSource: { integrationId: "redmine-confirm-after", ticketProjectKey: "AFTER" },
     };
 
-    await expect(store.updateProjectConfiguration(project.id, input)).rejects.toMatchObject({
-      code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
-      activeTasks: [expect.objectContaining({ taskId: task.taskId, state: "DETECTED" })],
-    });
-    expect(await store.getProjectById(project.id)).toMatchObject({ name: "Before" });
-
     await expect(store.updateProjectConfiguration(project.id, {
       ...input,
-      confirmedActiveTaskIds: [makeTaskId("different-task")],
-    })).rejects.toMatchObject({
-      code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED",
-      activeTasks: [expect.objectContaining({ taskId: task.taskId })],
-    });
-    expect(await store.getProjectById(project.id)).toMatchObject({ name: "Before" });
-
-    await expect(store.updateProjectConfiguration(project.id, {
-      ...input,
-      confirmedActiveTaskIds: [task.taskId],
     })).resolves.toMatchObject({ project: { name: "After" }, executionChanged: true });
     expect(await store.getTask(task.taskId)).toMatchObject({ state: "DETECTED" });
   });
@@ -910,7 +882,7 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     expect(automatic?.assignmentMode).toBe("automatic");
   });
 
-  it("requires confirmation to change review assignment mode while a project task is active", async () => {
+  it("changes review assignment mode while a project task is active", async () => {
     const a = await makeAgent(store, { type: "review" });
     const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });
     await makeIntegration(store, "g1", "gerrit");
@@ -930,13 +902,6 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     await expect(store.updateProjectConfiguration(p.id, {
       project: {},
       reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
-    })).rejects.toMatchObject({ code: "ACTIVE_TASKS_CONFIRMATION_REQUIRED" });
-    expect((await store.getProjectReviewConfig(p.id))?.assignmentMode).toBe("manual");
-
-    await expect(store.updateProjectConfiguration(p.id, {
-      project: {},
-      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
-      confirmedActiveTaskIds: [makeTaskId("active-review-mode")],
     })).resolves.toMatchObject({ executionChanged: true });
     expect((await store.getProjectReviewConfig(p.id))?.assignmentMode).toBe("automatic");
   });

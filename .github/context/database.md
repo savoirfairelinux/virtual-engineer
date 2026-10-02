@@ -28,7 +28,7 @@
 ## Task Ticket-Source Snapshot
 
 - `tasks.ticket_source_integration_id` and `tasks.ticket_source_project_key` are nullable text snapshots of the issue-tracking binding that created a ticket task. `createTask()` writes them from its optional `ticketSource` argument, and task hydration exposes them as `ticketSourceIntegrationId` / `ticketSourceProjectKey`; legacy and non-ticket-backed rows may have NULL values. These columns already exist and are not foreign keys.
-- Before resolving a ticket connector, the orchestrator compares a non-null task snapshot with the project's current binding. A changed or removed source is reported as a persisted project-reconfiguration incompatibility rather than silently routing an existing task through the replacement integration.
+- Ticket-source snapshots remain persisted for traceability and legacy tasks. Connector resolution now follows the project's current binding so active non-terminal tasks can continue under updated project configuration; a removed binding still fails closed.
 
 ## Audit trail store
 
@@ -44,16 +44,16 @@
 The project store normalizes an absent or invalid `assignmentMode` to `manual`;
 no SQL column or migration is required. `automatic` means the reviewer provider
 adds VE idempotently on revision events, while initial open-change backfill is
-disabled. Mode changes are execution-affecting and use the same active-task
-confirmation as ticket-source, push-target, agent, script, and skill changes.
+disabled. Mode changes are execution-affecting and persist immediately without
+an active-task confirmation roundtrip.
 
 `StateStore.updateProjectConfiguration()` returns the updated project plus an
-`executionChanged` flag. Within its write transaction it recomputes the active
-task set; callers must provide `confirmedActiveTaskIds` covering every active
-task or receive `ACTIVE_TASKS_CONFIRMATION_REQUIRED` with task summaries. If a
-new active task appeared after the UI confirmation, the transaction writes
-nothing and returns the updated list for another confirmation. A confirmed
-save leaves task states unchanged. This contract adds no column or migration.
+`executionChanged` flag. Execution-affecting changes now persist immediately
+without an active-task confirmation roundtrip; existing active tasks are left
+untouched and pick up updated project bindings on their next connector
+resolution step. `confirmedActiveTaskIds` remains accepted for backward
+compatibility and has no write-time effect. This contract adds no column or
+migration.
 
 `ProjectStoreApi.getEventStreamDemand()` is an on-demand aggregate over existing
 project bindings, tasks, push targets, and per-repository changes; it adds no

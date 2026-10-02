@@ -18,7 +18,6 @@ import type {
   ProjectVendorComponentRecord,
   PushTargetRole,
 } from "../../interfaces.js";
-import { ActiveProjectTasksConfirmationRequiredError, type ActiveProjectTaskSummary } from "../../domain/projectConfiguration.js";
 import {
   DEFAULT_REVIEW_ASSIGNMENT_MODE,
   isReviewAssignmentMode,
@@ -410,18 +409,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
             JSON.stringify(readStringArray(reviewConfig["repos"]).sort())
         ));
       executionChanged = changesExecutionIdentity;
-      if (changesExecutionIdentity) {
-        const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
-        const activeTasks = raw.prepare(
-          `SELECT task_id AS taskId, ticket_id AS ticketId, ticket_title AS ticketTitle, ` +
-          `task_type AS taskType, state FROM tasks WHERE project_id = ? ` +
-          `AND state NOT IN (${terminalPlaceholders}) ORDER BY created_at, task_id`
-        ).all(id, ...TERMINAL_STATES) as ActiveProjectTaskSummary[];
-        const confirmedTaskIds = new Set(input.confirmedActiveTaskIds ?? []);
-        if (activeTasks.some((task) => !confirmedTaskIds.has(task.taskId))) {
-          throw new ActiveProjectTasksConfirmationRequiredError(activeTasks);
-        }
-      }
       updateProjectRow(id, input.project);
       const nowSeconds = Math.floor(Date.now() / 1000);
 

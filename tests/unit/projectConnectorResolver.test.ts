@@ -74,8 +74,9 @@ describe("ProjectConnectorResolver", () => {
     );
   });
 
-  it("fails closed when the project's ticket source no longer matches the task snapshot", async () => {
-    const createConnectorForCapability = vi.fn().mockResolvedValue({} as TicketConnector);
+  it("uses the latest ticket source when the project's binding changed after task creation", async () => {
+    const ticketConnector = {} as TicketConnector;
+    const createConnectorForCapability = vi.fn().mockResolvedValue(ticketConnector);
     const projectMode = makeProjectMode({
       getProjectTicketSource: vi.fn().mockResolvedValue({
         id: 2,
@@ -94,10 +95,12 @@ describe("ProjectConnectorResolver", () => {
       ticketSourceProjectKey: "PLATFORM",
     };
 
-    await expect(resolver.resolveTicketConnector(task)).rejects.toMatchObject({
-      code: "PROJECT_RECONFIGURATION_INCOMPATIBLE",
-    });
-    expect(createConnectorForCapability).not.toHaveBeenCalled();
+    await expect(resolver.resolveTicketConnector(task)).resolves.toBe(ticketConnector);
+    expect(createConnectorForCapability).toHaveBeenCalledWith(
+      "ticket-integration-new",
+      "issue_tracking",
+      { ticketProjectKey: "PLATFORM-V2" },
+    );
   });
 
   it("selects the repository-qualified review connector from push targets", async () => {
@@ -148,8 +151,9 @@ describe("ProjectConnectorResolver", () => {
     ).rejects.toThrow("does not match a repository push target");
   });
 
-  it("fails closed when a review task's source integration was replaced", async () => {
-    const createConnectorForCapability = vi.fn().mockResolvedValue({} as TicketConnector);
+  it("uses the latest review integration when a review task binding was reconfigured", async () => {
+    const reviewConnector = {} as TicketConnector;
+    const createConnectorForCapability = vi.fn().mockResolvedValue(reviewConnector);
     const projectMode = makeProjectMode({
       getProjectReviewConfig: vi.fn().mockResolvedValue({
         integrationId: "review-integration-new",
@@ -167,9 +171,11 @@ describe("ProjectConnectorResolver", () => {
       ticketSourceLabel: "gerrit:review-integration-old",
     };
 
-    await expect(resolver.resolveReviewConnector(task)).rejects.toMatchObject({
-      code: "PROJECT_RECONFIGURATION_INCOMPATIBLE",
-    });
-    expect(createConnectorForCapability).not.toHaveBeenCalled();
+    await expect(resolver.resolveReviewConnector(task)).resolves.toBe(reviewConnector);
+    expect(createConnectorForCapability).toHaveBeenCalledWith(
+      "review-integration-new",
+      "code_review",
+      { repoKey: "core" },
+    );
   });
 });

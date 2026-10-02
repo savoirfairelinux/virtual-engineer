@@ -14,7 +14,6 @@ import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { resolveIntegrationConfig } from "./integrationConfig.js";
 import type { ProjectModeDeps } from "./projectMode.js";
-import { parseIntegrationIdFromSourceLabel } from "../utils/ticketSourceLabel.js";
 
 const log = getLogger("project-connector-resolver");
 
@@ -100,18 +99,6 @@ export class ProjectConnectorResolver {
       throw new Error(`No ticket source configured for project ${task.projectId} (task ${task.taskId})`);
     }
 
-    const hasTicketSourceSnapshot =
-      task.ticketSourceIntegrationId != null || task.ticketSourceProjectKey != null;
-    if (
-      hasTicketSourceSnapshot &&
-      (task.ticketSourceIntegrationId !== ticketSource.integrationId ||
-        task.ticketSourceProjectKey !== ticketSource.ticketProjectKey)
-    ) {
-      throw new ProjectReconfigurationIncompatibleError(
-        `Ticket source changed while task ${task.taskId} was active: it was created from ${task.ticketSourceIntegrationId ?? "an unknown integration"}/${task.ticketSourceProjectKey ?? "an unknown project"}, but project ${task.projectId} now uses ${ticketSource.integrationId}/${ticketSource.ticketProjectKey}. Manual retry is required.`,
-      );
-    }
-
     const connector = mode.pluginManager.createConnectorForCapability
       ? await mode.pluginManager.createConnectorForCapability<TicketConnector>(
         ticketSource.integrationId,
@@ -136,27 +123,15 @@ export class ProjectConnectorResolver {
   /** Resolve the review connector from review config or push targets. */
   async resolveReviewConnector(
     task: Pick<Task, "taskId" | "projectId" | "externalChangeId"> &
-      Partial<Pick<Task, "taskType" | "ticketSourceLabel">>,
+      Partial<Pick<Task, "taskType">>,
   ): Promise<ReviewConnector> {
     const mode = this.dependencies.getProjectMode();
     if (!task.projectId || !mode) {
       throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
     }
 
-    const sourceReviewIntegrationId = task.taskType === "code-review"
-      ? parseIntegrationIdFromSourceLabel(task.ticketSourceLabel)
-      : null;
-    const assertReviewIntegrationCompatible = (integrationId: string): void => {
-      if (sourceReviewIntegrationId && sourceReviewIntegrationId !== integrationId) {
-        throw new ProjectReconfigurationIncompatibleError(
-          `Review integration changed while task ${task.taskId} was active: it was created from ${sourceReviewIntegrationId}, but project ${task.projectId} now uses ${integrationId}. Manual retry is required.`,
-        );
-      }
-    };
-
     const reviewConfig = await mode.projectStore.getProjectReviewConfig(task.projectId);
     if (reviewConfig) {
-      assertReviewIntegrationCompatible(reviewConfig.integrationId);
       const selection = selectReviewRepository(task.externalChangeId, reviewConfig.repos);
       if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
         const message =
@@ -185,14 +160,12 @@ export class ProjectConnectorResolver {
     if (selection.repoKey !== undefined) {
       const target = pushTargets.find((candidate) => candidate.repoKey === selection.repoKey);
       if (target) {
-        assertReviewIntegrationCompatible(target.integrationId);
         const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
         if (connector) return connector;
       }
     } else if (pushTargets.length === 1) {
       const target = pushTargets[0];
       if (target) {
-        assertReviewIntegrationCompatible(target.integrationId);
         const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
         if (connector) return connector;
       }
@@ -201,7 +174,6 @@ export class ProjectConnectorResolver {
       if (integrationIds.length === 1) {
         const integrationId = integrationIds[0];
         if (integrationId !== undefined) {
-          assertReviewIntegrationCompatible(integrationId);
           const connector = await this.resolveReviewCapabilityConnector(integrationId);
           if (connector) return connector;
         }

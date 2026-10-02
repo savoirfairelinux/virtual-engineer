@@ -132,22 +132,29 @@ describe("resolveReviewIntegration", () => {
 });
 
 describe("buildReviewBundle project binding", () => {
-  it("rejects a targeted task when its project now uses another review integration", async () => {
+  it("uses the project's current review integration for a targeted task", async () => {
+    const integration = makeIntegration("gerrit", {});
+    integration.id = "gerrit-new";
+    const getActiveIntegrationById = vi.fn((id: string) => (id === "gerrit-new" ? integration : null));
     const pluginManager = {
-      getActiveIntegrationById: () => null,
+      getActiveIntegrationById,
+      decryptIntegrationConfig: () => ({}),
     } as unknown as PluginManager;
     const stateStore = {
       getProjectReviewConfig: async () => ({ integrationId: "gerrit-new", repos: ["project/repo"] }),
     } as unknown as Parameters<typeof buildReviewBundle>[2];
 
-    await expect(buildReviewBundle(
+    const bundle = await buildReviewBundle(
       pluginManager,
       "/workspaces",
       stateStore,
       {} as WorkspaceRunner,
       undefined,
       makeReviewTask(),
-    )).rejects.toBeInstanceOf(ProjectReconfigurationIncompatibleError);
+    );
+
+    expect(getActiveIntegrationById).toHaveBeenCalledWith("gerrit-new");
+    expect(bundle.integration?.id).toBe("gerrit-new");
   });
 
   it("keeps a matching task unavailable when its review runtime is inactive", async () => {

@@ -1440,7 +1440,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 });
 
 describe("ReviewOrchestrator.runReview project reconfiguration", () => {
-  it("fails before agent execution when the project now selects another review integration", async () => {
+  it("continues review execution when the project now selects another review integration", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     mocks.store.getProjectReviewConfig = vi.fn(async () => ({
@@ -1451,17 +1451,10 @@ describe("ReviewOrchestrator.runReview project reconfiguration", () => {
     const { runner } = makeWorkspaceRunner();
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
 
-    await expect(orch.runReview(initial.taskId)).rejects.toThrow(
-      "Review integration changed while task",
-    );
-
-    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
-      initial.taskId,
-      expect.stringContaining("Manual retry is required"),
-    );
-    expect(mocks.store.task?.state).toBe("REVIEW_FAILED");
-    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
-    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+    expect(mocks.store.task?.state).toBe("REVIEW_WATCHING");
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(1);
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledTimes(1);
   });
 });
 
