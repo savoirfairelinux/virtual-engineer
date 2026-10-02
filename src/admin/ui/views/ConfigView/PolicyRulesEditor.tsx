@@ -43,7 +43,10 @@ export function PolicyRulesEditor({ draft, data, readOnly, onChange, onResourceA
     const state = scopedId ? draft.groups[scopedId] : null;
     const options = group.resourceKind ? resourceOptions(group.resourceKind, data) : [];
     const labelById = new Map(options.map((o) => [o.id, o.label]));
-    const available = options.filter((o) => !state?.resourceIds.includes(o.id));
+    const selectedIds = state
+      ? [...state.resourceIds, ...(state.linkedReadResourceIds ?? []).filter((id) => !state.resourceIds.includes(id))]
+      : [];
+    const available = options.filter((o) => !selectedIds.includes(o.id));
     const noun = group.resourceKind ? RESOURCE_NOUN[group.resourceKind] : "";
 
     return (
@@ -54,28 +57,38 @@ export function PolicyRulesEditor({ draft, data, readOnly, onChange, onResourceA
         {scopedId && state && (
           <div style={{ marginBottom: "10px" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
-              {state.resourceIds.length === 0 && (
+              {selectedIds.length === 0 && (
                 <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>No {noun} selected.</span>
               )}
-              {state.resourceIds.map((id) => (
+              {selectedIds.map((id) => {
+                const linkedOnly = (state.linkedReadResourceIds ?? []).includes(id) && !state.resourceIds.includes(id);
+                return (
                 <span key={id} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", padding: "2px 8px", border: "1px solid var(--border-soft)", borderRadius: "999px", background: "var(--panel)" }}>
                   {labelById.get(id) ?? `${id} (unknown)`}
+                  {linkedOnly && <Tag tone="muted" mono={false}>linked read</Tag>}
                   {!readOnly && (
                     <button data-config-dirty type="button" className="iconbtn" title={`Remove ${id}`} aria-label={`Remove ${id}`}
                       style={{ width: 18, height: 18 }}
-                      onClick={() => updateGroup(scopedId, { resourceIds: state.resourceIds.filter((r) => r !== id) })}>
+                      onClick={() => updateGroup(scopedId, {
+                        resourceIds: state.resourceIds.filter((r) => r !== id),
+                        linkedReadResourceIds: (state.linkedReadResourceIds ?? []).filter((r) => r !== id),
+                      })}>
                       <Icon name="x" size={11} />
                     </button>
                   )}
                 </span>
-              ))}
+                );
+              })}
             </div>
             {!readOnly && (
               <FieldSelect aria-label={`Add ${noun} to ${group.title}`} value="" disabled={available.length === 0}
                 onChange={(event) => {
                   const id = event.target.value;
                   if (!id) return;
-                  updateGroup(scopedId, { resourceIds: [...state.resourceIds, id] });
+                  updateGroup(scopedId, {
+                    resourceIds: [...state.resourceIds, id],
+                    linkedReadResourceIds: (state.linkedReadResourceIds ?? []).filter((resourceId) => resourceId !== id),
+                  });
                   onResourceAdded?.(scopedId, id);
                 }}>
                 <option value="">{available.length === 0 ? `No more ${noun}s` : `Add ${noun}…`}</option>

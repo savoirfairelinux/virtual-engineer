@@ -152,7 +152,7 @@ async function collectProjectLinkedRules(
   );
 }
 
-async function syncProjectLinkedRules(
+export async function syncProjectLinkedRules(
   projectId: string,
   projectStore: ProjectsRouteStore,
   projectAccessStore: NonNullable<ProjectsRouteDeps["projectAccessStore"]>
@@ -741,4 +741,3 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
   }, { permission: "project.delete", resourceParam: "id" });
 }
-

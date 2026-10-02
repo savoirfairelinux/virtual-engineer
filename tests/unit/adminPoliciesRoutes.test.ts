@@ -162,6 +162,38 @@ describe("adminServer policy/group admin API", () => {
     expect(unbind.status).toBe(204);
   });
 
+  it("allows preserving unchanged legacy unknown rules during updates", async () => {
+    const created = await fetch(`${baseUrl}/api/admin/policies`, authJson({ name: "LegacyEditable" }));
+    const { policy } = (await created.json()) as { policy: { id: string } };
+    await store.setPolicyRules(policy.id, [
+      { permission: "legacy.permission", resourceId: "legacy-resource" },
+    ]);
+
+    const keepLegacy = await fetch(`${baseUrl}/api/admin/policies/${policy.id}/rules`, {
+      method: "PUT",
+      headers: { ...auth().headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        rules: [
+          { permission: "task.read", resourceId: null },
+          { permission: "legacy.permission", resourceId: "legacy-resource" },
+        ],
+      }),
+    });
+    expect(keepLegacy.status).toBe(200);
+
+    const mutateLegacy = await fetch(`${baseUrl}/api/admin/policies/${policy.id}/rules`, {
+      method: "PUT",
+      headers: { ...auth().headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        rules: [
+          { permission: "task.read", resourceId: null },
+          { permission: "legacy.permission", resourceId: "other-resource" },
+        ],
+      }),
+    });
+    expect(mutateLegacy.status).toBe(400);
+  });
+
   it("lists policy bindings with resolved principal names", async () => {
     const created = await fetch(`${baseUrl}/api/admin/policies`, authJson({ name: "Named" }));
     const { policy } = (await created.json()) as { policy: { id: string } };

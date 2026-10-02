@@ -109,10 +109,22 @@ describe("policyRuleModel", () => {
     const draft = emptyDraft();
     draft.groups.integration = { actions: ["integration.write"], resourceIds: ["redmine-1"] };
     const { draft: next, added } = applyLinkedResources(draft, { agent: ["agent-1"], integration: ["redmine-1", "gerrit-1"], prompt: [] });
-    expect(next.groups.integration).toEqual({ actions: ["integration.write", "integration.read"], resourceIds: ["redmine-1", "gerrit-1"] });
-    expect(next.groups.agent).toEqual({ actions: ["agent.read"], resourceIds: ["agent-1"] });
+    expect(next.groups.integration).toEqual({
+      actions: ["integration.write", "integration.read"],
+      resourceIds: ["redmine-1"],
+      linkedReadResourceIds: ["gerrit-1"],
+    });
+    expect(next.groups.agent).toEqual({ actions: ["agent.read"], resourceIds: [], linkedReadResourceIds: ["agent-1"] });
     expect(next.groups.prompt).toEqual({ actions: [], resourceIds: [] });
     expect(added).toEqual({ agent: ["agent-1"], integration: ["gerrit-1"], prompt: [] });
     expect(draft.groups.integration.resourceIds).toEqual(["redmine-1"]);
+    expect(draftToRules(next)).toEqual(expect.arrayContaining([
+      { permission: "integration.write", resourceId: "redmine-1" },
+      { permission: "integration.read", resourceId: "redmine-1" },
+      { permission: "integration.read", resourceId: "gerrit-1" },
+    ]));
+    expect(draftToRules(next)).not.toEqual(expect.arrayContaining([
+      { permission: "integration.write", resourceId: "gerrit-1" },
+    ]));
   });
 });

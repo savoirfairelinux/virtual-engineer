@@ -99,6 +99,8 @@ export function permissionLabel(permission: string): string {
 export interface PolicyGroupDraft {
   actions: string[];
   resourceIds: string[];
+  /** Resource ids that should receive only `<group>.read` grants. */
+  linkedReadResourceIds?: string[] | undefined;
 }
 
 export interface PolicyDraft {
@@ -166,6 +168,10 @@ export function draftToRules(draft: PolicyDraft): ApiPolicyRule[] {
     const group = draft.groups[id];
     for (const permission of group.actions) {
       for (const resourceId of group.resourceIds) add(permission, resourceId);
+    }
+    const readPermission = `${id}.read`;
+    for (const resourceId of group.linkedReadResourceIds ?? []) {
+      add(readPermission, resourceId);
     }
   }
   for (const permission of draft.globalPermissions) add(permission, null);
@@ -282,10 +288,14 @@ export function applyLinkedResources(draft: PolicyDraft, linked: LinkedResources
   const groups = { ...draft.groups };
   for (const kind of ["agent", "integration", "prompt"] as const) {
     if (linked[kind].length === 0) continue;
-    const group = { actions: [...groups[kind].actions], resourceIds: [...groups[kind].resourceIds] };
+    const group = {
+      actions: [...groups[kind].actions],
+      resourceIds: [...groups[kind].resourceIds],
+      linkedReadResourceIds: [...(groups[kind].linkedReadResourceIds ?? [])],
+    };
     for (const id of linked[kind]) {
-      if (!group.resourceIds.includes(id)) {
-        group.resourceIds.push(id);
+      if (!group.resourceIds.includes(id) && !group.linkedReadResourceIds.includes(id)) {
+        group.linkedReadResourceIds.push(id);
         added[kind].push(id);
       }
     }

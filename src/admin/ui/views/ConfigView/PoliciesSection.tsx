@@ -100,6 +100,8 @@ function PolicyDetailModal({ policyId, forceReadOnly, data, onClose, onEdit, onP
   const [savedDraft, setSavedDraft] = useState<PolicyDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingLinkedLoads, setPendingLinkedLoads] = useState(0);
+  const pendingLinkedLoadsRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [bindType, setBindType] = useState<"user" | "group">("group");
   const [bindId, setBindId] = useState("");
@@ -128,20 +130,37 @@ function PolicyDetailModal({ policyId, forceReadOnly, data, onClose, onEdit, onP
   const rulesDirty = JSON.stringify(draftToRules(draft)) !== JSON.stringify(draftToRules(savedDraft));
   const issues = draftIssues(draft);
 
+  function beginLinkedResourceLoad() {
+    pendingLinkedLoadsRef.current += 1;
+    setPendingLinkedLoads((value) => value + 1);
+  }
+
+  function endLinkedResourceLoad() {
+    pendingLinkedLoadsRef.current = Math.max(0, pendingLinkedLoadsRef.current - 1);
+    setPendingLinkedLoads((value) => Math.max(0, value - 1));
+  }
+
   function addLinkedResources(group: ScopedGroupId, resourceId: string) {
     if (group !== "project" && group !== "task") return;
+    beginLinkedResourceLoad();
     void api.get<{ project: LinkedProjectDetail }>(`/api/admin/projects/${encodeURIComponent(resourceId)}`)
       .then(({ project }) => {
         const linked = linkedResourcesForProject(project, data.agents, data.prompts);
         const result = applyLinkedResources(draftRef.current, linked);
+        draftRef.current = result.draft;
         setDraft(result.draft);
         const summary = describeLinked(result.added, data);
         setNotice(summary ? `Added linked resources with Read access: ${summary}` : null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? `Could not load linked resources: ${e.message}` : "Could not load linked resources"));
+      .catch((e: unknown) => setError(e instanceof Error ? `Could not load linked resources: ${e.message}` : "Could not load linked resources"))
+      .finally(() => endLinkedResourceLoad());
   }
 
   async function saveRules() {
+    if (pendingLinkedLoadsRef.current > 0) {
+      setError("Wait for linked resources to finish loading before saving.");
+      return;
+    }
     if (issues.missingResources.length > 0) {
       setError(`Select at least one resource for: ${issues.missingResources.map((id) => GROUP_TITLE.get(id) ?? id).join(", ")}`);
       return;
@@ -237,7 +256,9 @@ function PolicyDetailModal({ policyId, forceReadOnly, data, onClose, onEdit, onP
         )}
         {!readOnly && (
           <div style={{ display: "flex", gap: "8px", margin: "12px 0 16px" }}>
-            <button className="btn primary" disabled={busy || !rulesDirty} onClick={() => void saveRules()}>{busy ? "Saving…" : "Save rules"}</button>
+            <button className="btn primary" disabled={busy || pendingLinkedLoads > 0 || !rulesDirty} onClick={() => void saveRules()}>
+              {busy ? "Saving…" : "Save rules"}
+            </button>
           </div>
         )}
 

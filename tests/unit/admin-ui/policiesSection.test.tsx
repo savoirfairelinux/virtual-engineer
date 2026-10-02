@@ -103,6 +103,47 @@ describe("PoliciesSection rules editor", () => {
     expect(within(promptsGroup).getByRole("option", { name: "System (system_generic_code)" })).toBeTruthy();
   });
 
+  it("disables save while linked resources are still loading", async () => {
+    let saved: unknown;
+    let releaseProjectLookup: (() => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/admin/policies/pol-1" && (!init?.method || init.method === "GET")) {
+        return json({ policy: { id: "pol-1", name: "Share", description: "", builtin: false, createdAt: "", updatedAt: "", rules: [], bindings: [] } });
+      }
+      if (path === "/api/admin/policies/pol-1/rules" && init?.method === "PUT") {
+        saved = JSON.parse(String(init.body));
+        return json({ rules: [] });
+      }
+      if (path === "/api/admin/users") return json({ users: [] });
+      if (path === "/api/admin/groups") return json({ groups: [] });
+      if (path === "/api/admin/policies") {
+        return json({ policies: [{ id: "pol-1", name: "Share", description: "", builtin: false, createdAt: "", updatedAt: "", ruleCount: 1, bindingCount: 0, bindings: [] }] });
+      }
+      if (path === "/api/admin/projects/proj-1") {
+        await new Promise<void>((resolveRequest) => {
+          releaseProjectLookup = () => resolveRequest();
+        });
+        return json({ project: { ...projects[0], ticketSource: { integration: { id: "redmine-1" } }, pushTargets: [] } });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    }));
+
+    render(<PoliciesSection {...props("edit")} />);
+    const projectGroup = await screen.findByRole("region", { name: "Projects" });
+    fireEvent.change(within(projectGroup).getByRole("combobox"), { target: { value: "proj-1" } });
+    fireEvent.click(within(projectGroup).getByRole("checkbox", { name: "Read" }));
+
+    const saveButton = screen.getByRole("button", { name: "Save rules" }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
+    expect(saved).toBeUndefined();
+
+    if (releaseProjectLookup === undefined) throw new Error("Project lookup did not start");
+    releaseProjectLookup();
+    await screen.findByText(/Added linked resources with Read access/);
+    expect((screen.getByRole("button", { name: "Save rules" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("lists assigned principal names in the policy list", async () => {
     stubApi(() => undefined);
     render(<PoliciesSection {...props("list")} />);

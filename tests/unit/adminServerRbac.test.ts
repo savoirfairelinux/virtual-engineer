@@ -1232,6 +1232,27 @@ describe("adminServer PBAC project scoping", () => {
     });
     expect(promptEdit.status).toBe(200);
 
+    const refreshedAgentIntegration = await store.upsertIntegration({
+      id: "snapshot-agent-refresh",
+      provider: "copilot",
+      name: "Refreshed agent integration",
+      configJson: "{}",
+      enabled: true,
+      ownerUserId: admin.user.id,
+    });
+    const refreshedSystemPrompt = await store.createPrompt("Refreshed system", "refreshed system", "system", admin.user.id);
+    const refreshedInstructionsPrompt = await store.createPrompt("Refreshed instructions", "refreshed instructions", "instructions", admin.user.id);
+    const updateAgentDependencies = await fetch(`${baseUrl}/api/admin/agents/${oldAgent.id}`, {
+      method: "PUT",
+      headers: { ...authed(admin.token).headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        integrationId: refreshedAgentIntegration.id,
+        systemPromptId: refreshedSystemPrompt.id,
+        instructionsPromptId: refreshedInstructionsPrompt.id,
+      }),
+    });
+    expect(updateAgentDependencies.status).toBe(200);
+
     const newAgentIntegration = await store.upsertIntegration({
       id: "snapshot-agent-new",
       provider: "copilot",
@@ -1262,6 +1283,9 @@ describe("adminServer PBAC project scoping", () => {
     const allLinkedRules = await store.listPolicyRules(policyId);
     const expectedAllResources = [
       ...expectedOldResources,
+      ["integration.read", refreshedAgentIntegration.id], ["integration.write", refreshedAgentIntegration.id],
+      ["prompt.read", refreshedSystemPrompt.id], ["prompt.write", refreshedSystemPrompt.id],
+      ["prompt.read", refreshedInstructionsPrompt.id], ["prompt.write", refreshedInstructionsPrompt.id],
       ["agent.read", newAgent.id], ["agent.write", newAgent.id],
       ["integration.read", newAgentIntegration.id], ["integration.write", newAgentIntegration.id],
       ["prompt.read", newSystemPrompt.id], ["prompt.write", newSystemPrompt.id],
@@ -1272,7 +1296,10 @@ describe("adminServer PBAC project scoping", () => {
     )));
     for (const path of [
       `/api/admin/agents/${newAgent.id}`,
+      `/api/admin/integrations/${refreshedAgentIntegration.id}`,
       `/api/admin/integrations/${newAgentIntegration.id}`,
+      `/api/admin/prompts/${refreshedSystemPrompt.id}`,
+      `/api/admin/prompts/${refreshedInstructionsPrompt.id}`,
       `/api/admin/prompts/${newSystemPrompt.id}`,
       `/api/admin/prompts/${newInstructionsPrompt.id}`,
     ]) {

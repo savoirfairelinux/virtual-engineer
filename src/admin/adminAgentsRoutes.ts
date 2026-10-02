@@ -24,6 +24,8 @@ import { decryptRequiredManagedCredential, StoredCredentialDecryptionError } fro
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
+import type { ProjectAccessStore, ProjectsRouteStore } from "./adminProjectsShared.js";
+import { syncProjectLinkedRules } from "./adminProjectsRoutes.js";
 import {
   normalizeReviewStrategyConfig,
   ReviewStrategyConfigError,
@@ -67,14 +69,28 @@ export interface AgentsRouteStore {
 }
 
 export interface AgentsRouteDeps {
-    pluginManager?: PluginManager | undefined;
+  pluginManager?: PluginManager | undefined;
   agentStore?: AgentsRouteStore | undefined;
+  projectStore?: ProjectsRouteStore | undefined;
+  projectAccessStore?: ProjectAccessStore | undefined;
   promptStore?: Pick<PromptStore, "getPrompt"> | undefined;
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
   auditStore?: AuditCapableStore | undefined;
   adminAuthSecret?: string | undefined;
   providerAuthService?: ProviderAuthService | undefined;
+}
+
+async function syncLinkedProjectRulesForAgent(
+  agentId: AgentId,
+  projectStore: ProjectsRouteStore,
+  projectAccessStore: ProjectAccessStore
+): Promise<void> {
+  const projects = await projectStore.listProjects();
+  const linkedProjects = projects.filter((project) => project.agentId === agentId);
+  for (const project of linkedProjects) {
+    await syncProjectLinkedRules(project.id, projectStore, projectAccessStore);
+  }
 }
 
 type PluginOAuthRouteAction = "device-code" | "token" | "start" | "complete";
@@ -873,6 +889,24 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
       if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
       const updated = await store.updateAgent(id, updates);
+      const linkedDependenciesChanged =
+        updated.integrationId !== existing.integrationId
+        || updated.systemPromptId !== existing.systemPromptId
+        || updated.instructionsPromptId !== existing.instructionsPromptId
+        || updated.feedbackInstructionsPromptId !== existing.feedbackInstructionsPromptId;
+      if (linkedDependenciesChanged && deps.projectStore && deps.projectAccessStore) {
+        try {
+          await syncLinkedProjectRulesForAgent(id, deps.projectStore, deps.projectAccessStore);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          log.error({ err, id }, "agent updated but linked-resource access synchronization failed");
+          writeJson(res, 500, {
+            error: "Agent updated but linked-resource access synchronization failed",
+            message,
+          });
+          return;
+        }
+      }
       const count = await countProjectsForAgent(req, store, id);
       const integrationId = await readableAgentIntegrationId(req, deps, updated);
       recordAudit(deps.auditStore, req, {

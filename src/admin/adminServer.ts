@@ -493,8 +493,10 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAgentRoutes(router, {
-      pluginManager: dependencies.pluginManager,
+    pluginManager: dependencies.pluginManager,
     agentStore: dependencies.agentStore,
+    projectStore: dependencies.projectStore,
+    projectAccessStore: policyRoutesStore ?? undefined,
     promptStore: dependencies.promptStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
