@@ -30,6 +30,14 @@
 - `tasks.ticket_source_integration_id` and `tasks.ticket_source_project_key` are nullable text snapshots of the issue-tracking binding that created a ticket task. `createTask()` writes them from its optional `ticketSource` argument, and task hydration exposes them as `ticketSourceIntegrationId` / `ticketSourceProjectKey`; legacy and non-ticket-backed rows may have NULL values. These columns already exist and are not foreign keys.
 - Before resolving a ticket connector, the orchestrator compares a non-null task snapshot with the project's current binding. A changed or removed source is reported as a persisted project-reconfiguration incompatibility rather than silently routing an existing task through the replacement integration.
 
+## Task soft deletion and cost history
+
+- `tasks.deleted_at` (nullable epoch-seconds timestamp) marks tasks hidden from operational reads (`getTask`, `getAllTasks`, active/retry lookup paths) without dropping immutable historical rows.
+- `deleteTask(taskId)` now soft-deletes terminal tasks by setting `deleted_at` (and still removing mutable change/comment rows), so `agent_cycles` and `state_transitions` remain available for cost/model/statistics aggregates and audit history.
+- `deleteTaskGroup(taskId)` delegates to the same soft-delete semantics for terminal siblings sharing ticket/change identity; it does not physically delete immutable history rows.
+- `getCostSummary()` and `getModelUsageSummary()` continue aggregating from preserved `agent_cycles` snapshots joined to `tasks`, so deleting a task no longer erases historical USD/token totals.
+- `getProjectStatistics()` excludes `deleted_at` rows from operational task, period, execution, and timing counts to avoid resurfacing soft-deleted tasks in project health metrics.
+
 ## Audit trail store
 
 - `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.

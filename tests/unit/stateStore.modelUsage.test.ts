@@ -256,6 +256,32 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     expect(summary.totalTokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
   });
 
+  it("keeps model usage history after deleting a terminal task", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
+    const taskId = await makeTaskForProject(store, project.id);
+    await store.transition(taskId, "FAILED");
+    await store.saveAgentCycle(taskId, 1, pricedResult(3, "claude-sonnet"));
+
+    const beforeDelete = await store.getModelUsageSummary();
+    expect(beforeDelete.totalRuns).toBe(1);
+    expect(beforeDelete.byModel[0]?.modelId).toBe("claude-sonnet");
+
+    await store.deleteTask(taskId);
+
+    const afterDelete = await store.getModelUsageSummary();
+    expect(await store.getTask(taskId)).toBeNull();
+    expect(afterDelete.totalRuns).toBe(1);
+    expect(afterDelete.byModel[0]?.modelId).toBe("claude-sonnet");
+  });
+
   it("aggregates token usage per model, globally and per project", async () => {
     const agent = await store.createAgent({
       name: "A",

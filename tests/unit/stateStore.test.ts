@@ -1605,7 +1605,7 @@ describe("SqliteStateStore", () => {
   });
 
   describe("deleteTask", () => {
-    it("removes a terminal-state task and all its records", async () => {
+    it("hides a terminal-state task from operational reads", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("delete-1"));
       await store.transition(taskId, "FAILED");
@@ -1616,7 +1616,7 @@ describe("SqliteStateStore", () => {
       expect(fetched).toBeNull();
     });
 
-    it("removes per-repo changes, cycles, and transitions along with the task", async () => {
+    it("removes mutable task-linked rows but preserves immutable cycle and transition history", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("delete-2"));
 
@@ -1638,6 +1638,10 @@ describe("SqliteStateStore", () => {
 
       const changes = await store.getChangesForTask(taskId);
       expect(changes).toHaveLength(0);
+      const cycles = await store.getAgentCycles(taskId);
+      expect(cycles).toHaveLength(1);
+      const transitions = await store.getStateTransitions(taskId);
+      expect(transitions).not.toHaveLength(0);
     });
 
     it("auto-abandons a non-terminal-state task without removing the row", async () => {

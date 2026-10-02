@@ -1,0 +1,1 @@
+ALTER TABLE `tasks` ADD `deleted_at` integer;

@@ -1498,10 +1498,16 @@ export interface StateStore {
   /** Manually transition a task to ABANDONED. */
   abandonTask(taskId: TaskId): Promise<Task>;
 
-  /** Permanently delete a task and its records. Only terminal-state tasks may be deleted. */
+  /**
+   * Hide a terminal task from operational reads while preserving immutable
+   * history (cycle costs and state transitions).
+   */
   deleteTask(taskId: TaskId): Promise<void>;
 
-  /** Force-delete a task and all siblings sharing the same ticketId or gerritChangeId. */
+  /**
+   * Soft-delete a task and all siblings sharing the same ticketId or gerritChangeId.
+   * Terminal siblings are hidden from operational reads while immutable history is preserved.
+   */
   deleteTaskGroup(taskId: TaskId): Promise<void>;
 
   // Cycle audit trail

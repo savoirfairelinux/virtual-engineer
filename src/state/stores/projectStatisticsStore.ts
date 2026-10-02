@@ -110,7 +110,7 @@ function sinceClause(sinceEpochSeconds: number | null, column: string): {
 
 function buildCurrent(raw: Database.Database, projectId: ProjectId): ProjectStatisticsCurrent {
   const rows = raw
-    .prepare("SELECT task_id AS taskId, state FROM tasks WHERE project_id = ?")
+    .prepare("SELECT task_id AS taskId, state FROM tasks WHERE project_id = ? AND deleted_at IS NULL")
     .all(projectId) as TaskStateRow[];
   const byState = createStateCounts();
   const byBucket = createBucketCounts();
@@ -129,7 +129,7 @@ function buildPeriod(
 ): ProjectStatisticsPeriod {
   const taskClause = sinceClause(sinceEpochSeconds, "t.created_at");
   const createdRow = raw
-    .prepare(`SELECT COUNT(*) AS count FROM tasks t WHERE t.project_id = ?${taskClause.sql}`)
+    .prepare(`SELECT COUNT(*) AS count FROM tasks t WHERE t.project_id = ? AND t.deleted_at IS NULL${taskClause.sql}`)
     .get(projectId, ...taskClause.args) as { count: number };
   const terminalClause = sinceClause(sinceEpochSeconds, "st.created_at");
   const transitions = raw
@@ -137,7 +137,7 @@ function buildPeriod(
       `SELECT st.task_id AS taskId, st.to_state AS toState, st.created_at AS createdAt
        FROM state_transitions st
        JOIN tasks t ON t.task_id = st.task_id
-       WHERE t.project_id = ? AND st.to_state IN (${TERMINAL_STATE_SQL})${terminalClause.sql}
+       WHERE t.project_id = ? AND t.deleted_at IS NULL AND st.to_state IN (${TERMINAL_STATE_SQL})${terminalClause.sql}
        ORDER BY st.created_at DESC, st.id DESC`
     )
     .all(projectId, ...terminalClause.args) as TerminalTransitionRow[];
@@ -172,7 +172,7 @@ function buildExecution(
       `SELECT c.task_id AS taskId, c.cycle_number AS cycleNumber, c.validation_result AS validationResult
        FROM agent_cycles c
        JOIN tasks t ON t.task_id = c.task_id
-       WHERE t.project_id = ?${cycleClause.sql}`
+       WHERE t.project_id = ? AND t.deleted_at IS NULL${cycleClause.sql}`
     )
     .all(projectId, ...cycleClause.args) as CycleRow[];
   const taskIds = new Set<string>();
@@ -207,7 +207,7 @@ function buildTiming(
       `SELECT t.created_at AS createdAt, MIN(st.created_at) AS terminalAt
        FROM tasks t
        JOIN state_transitions st ON st.task_id = t.task_id
-       WHERE t.project_id = ? AND st.to_state IN (${TERMINAL_STATE_SQL})${terminalClause.sql}
+       WHERE t.project_id = ? AND t.deleted_at IS NULL AND st.to_state IN (${TERMINAL_STATE_SQL})${terminalClause.sql}
        GROUP BY t.task_id, t.created_at`
     )
     .all(projectId, ...terminalClause.args) as TimingRow[];

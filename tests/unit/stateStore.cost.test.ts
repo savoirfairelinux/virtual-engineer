@@ -315,6 +315,32 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.totalRunsWithTokens).toBe(0);
   });
 
+  it("keeps historical USD after deleting a terminal task", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const taskId = await makeTaskForProject(store, project.id);
+    await store.transition(taskId, "FAILED");
+    await store.saveAgentCycle(taskId, 1, pricedResult(5));
+
+    const beforeDelete = await store.getCostSummary();
+    expect(beforeDelete.totalRuns).toBe(1);
+    expect(beforeDelete.totalUsd).toBeCloseTo(0.05, 6);
+
+    await store.deleteTask(taskId);
+
+    const afterDelete = await store.getCostSummary();
+    expect(await store.getTask(taskId)).toBeNull();
+    expect(afterDelete.totalRuns).toBe(1);
+    expect(afterDelete.totalUsd).toBeCloseTo(0.05, 6);
+  });
+
   it("aggregates token usage per project and instance-wide", async () => {
     const agent = await store.createAgent({
       name: "A",

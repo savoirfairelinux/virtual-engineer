@@ -228,4 +228,30 @@ describe("SqliteStateStore — getProjectStatistics", () => {
     expect(statistics.cost.totalRunsWithTokens).toBe(0);
     expect(statistics.cost.totalTokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
   });
+
+  it("excludes soft-deleted tasks from operational statistics", async () => {
+    const agent = await store.createAgent({
+      name: "Soft delete statistics agent",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const visibleTask = await createTask(store, project.id);
+    await store.transition(visibleTask, "CONTEXT_BUILDING");
+    await store.transition(visibleTask, "AGENT_RUNNING");
+    const deletedTask = await createTask(store, project.id);
+    await completeTask(store, deletedTask);
+    await store.deleteTask(deletedTask);
+
+    const statistics = await store.getProjectStatistics(project.id);
+
+    expect(statistics.current.taskCount).toBe(1);
+    expect(statistics.current.byState.AGENT_RUNNING).toBe(1);
+    expect(statistics.current.byState.DONE).toBe(0);
+    expect(statistics.period.tasksCreated).toBe(1);
+    expect(statistics.period.terminalTasks).toBe(0);
+  });
 });

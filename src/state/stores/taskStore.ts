@@ -183,16 +183,19 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
   async function getTask(taskId: TaskId): Promise<Task | null> {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.taskId, taskId),
+      where: and(eq(tasks.taskId, taskId), isNull(tasks.deletedAt)),
     });
     return row ? rowToTask(row) : null;
   }
 
   async function getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null> {
     const row = await db.query.tasks.findFirst({
-      where: projectId !== undefined
-        ? and(eq(tasks.ticketId, ticketId), eq(tasks.projectId, projectId))
-        : eq(tasks.ticketId, ticketId),
+      where: and(
+        projectId !== undefined
+          ? and(eq(tasks.ticketId, ticketId), eq(tasks.projectId, projectId))
+          : eq(tasks.ticketId, ticketId),
+        isNull(tasks.deletedAt),
+      ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
     return row ? rowToTask(row) : null;
@@ -203,6 +206,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       where: and(
         eq(tasks.ticketId, ticketId),
         notInArray(tasks.state, [...TERMINAL_STATES]),
+        isNull(tasks.deletedAt),
         ...(projectId !== undefined ? [eq(tasks.projectId, projectId)] : [])
       ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
@@ -227,7 +231,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       where: and(
         eq(tasks.ticketId, ticketId),
         eq(tasks.ticketSourceIntegrationId, integrationId),
-        eq(tasks.ticketSourceProjectKey, ticketProjectKey)
+        eq(tasks.ticketSourceProjectKey, ticketProjectKey),
+        isNull(tasks.deletedAt),
       ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
@@ -241,7 +246,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       where: and(
         eq(tasks.ticketId, ticketId),
         isNull(tasks.projectId),
-        notInArray(tasks.state, [...TERMINAL_STATES])
+        notInArray(tasks.state, [...TERMINAL_STATES]),
+        isNull(tasks.deletedAt),
       ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
@@ -317,7 +323,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
   async function getActiveTasks(): Promise<Task[]> {
     const rows = await db.query.tasks.findMany({
-      where: notInArray(tasks.state, [...TERMINAL_STATES]),
+      where: and(notInArray(tasks.state, [...TERMINAL_STATES]), isNull(tasks.deletedAt)),
     });
     return rows.map((row) => rowToTask(row));
   }
@@ -330,7 +336,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   // logic pick them back up instead of leaving them stuck in RUNNING forever.
   async function reconcileOrphanedActiveTasks(): Promise<number> {
     const orphanable: TaskState[] = ["AGENT_RUNNING", "REVIEW_RUNNING"];
-    const rows = await db.query.tasks.findMany({ where: inArray(tasks.state, orphanable) });
+    const rows = await db.query.tasks.findMany({
+      where: and(inArray(tasks.state, orphanable), isNull(tasks.deletedAt)),
+    });
     for (const row of rows) {
       const task = rowToTask(row);
       const toState: TaskState = task.state === "AGENT_RUNNING" ? "FAILED" : "REVIEW_FAILED";
@@ -342,6 +350,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
   async function getAllTasks(): Promise<Task[]> {
     const rows = await db.query.tasks.findMany({
+      where: isNull(tasks.deletedAt),
       orderBy: (t, { desc }) => [desc(t.updatedAt)],
     });
     return rows.map((row) => rowToTask(row));
@@ -657,7 +666,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       args.push(projectId);
     }
     const row = raw
-      .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${clauses.join(" AND ")}`)
+      .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE deleted_at IS NULL AND ${clauses.join(" AND ")}`)
       .get(...args) as { count: number };
     return Promise.resolve(row.count);
   }
@@ -726,6 +735,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         "AND pib.integration_id = t.ticket_source_integration_id " +
         "AND json_extract(pib.config_json, '$.ticketProjectKey') = t.ticket_source_project_key " +
         "WHERE t.task_id = ? " +
+        "AND t.deleted_at IS NULL " +
         "AND t.ticket_source_integration_id IS NOT NULL " +
         "AND t.ticket_source_project_key IS NOT NULL"
       )
@@ -733,7 +743,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     if (snapshotRow) return snapshotRow;
 
     const labelRow = raw
-      .prepare("SELECT ticket_source_label AS label FROM tasks WHERE task_id = ?")
+      .prepare("SELECT ticket_source_label AS label FROM tasks WHERE task_id = ? AND deleted_at IS NULL")
       .get(taskId) as { label: string } | undefined;
     const integrationId = parseIntegrationIdFromLabel(labelRow?.label);
     if (integrationId === null) return null;
@@ -895,15 +905,15 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(taskId);
       raw.prepare("UPDATE policy_denial_events SET task_id = NULL WHERE task_id = ?").run(taskId);
-      raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
-      raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
-      raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
+      raw
+        .prepare("UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE task_id = ? AND deleted_at IS NULL")
+        .run(now, now, taskId);
     })();
   }
 
   async function deleteTaskGroup(taskId: TaskId): Promise<void> {
     const anchor = raw
-      .prepare("SELECT ticket_id, ticket_source_integration_id, ticket_source_project_key, project_id, gerrit_change_id FROM tasks WHERE task_id = ?")
+      .prepare("SELECT ticket_id, ticket_source_integration_id, ticket_source_project_key, project_id, gerrit_change_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL")
       .get(taskId) as {
         ticket_id: string;
         ticket_source_integration_id: string | null;
@@ -919,6 +929,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     const byTicket = raw
       .prepare(`SELECT task_id FROM tasks
         WHERE ticket_id = ?
+          AND deleted_at IS NULL
           AND project_id IS ?
           AND ticket_source_integration_id IS ?
           AND ticket_source_project_key IS ?`)
@@ -1028,19 +1039,19 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       const scopedChangeRow = scopedChangeRows[0];
       if (scopedChangeRow) {
         const scopedTask = await db.query.tasks.findFirst({
-          where: eq(tasks.taskId, scopedChangeRow.task_id as TaskId),
+          where: and(eq(tasks.taskId, scopedChangeRow.task_id as TaskId), isNull(tasks.deletedAt)),
         });
         if (scopedTask) return rowToTask(scopedTask);
       }
 
       const reviewTaskRow = raw
         .prepare(
-          "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
+          "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND deleted_at IS NULL AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
         )
         .get(externalChangeId, integrationId) as { task_id: string } | undefined;
       if (reviewTaskRow) {
         const reviewTask = await db.query.tasks.findFirst({
-          where: eq(tasks.taskId, reviewTaskRow.task_id as TaskId),
+          where: and(eq(tasks.taskId, reviewTaskRow.task_id as TaskId), isNull(tasks.deletedAt)),
         });
         if (reviewTask) return rowToTask(reviewTask);
       }
@@ -1049,7 +1060,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         .prepare(
           "SELECT DISTINCT task.task_id FROM tasks task " +
           "JOIN project_push_targets target ON target.project_id = task.project_id " +
-          "WHERE task.task_type = 'code-gen' AND task.gerrit_change_id = ? " +
+          "WHERE task.task_type = 'code-gen' AND task.deleted_at IS NULL AND task.gerrit_change_id = ? " +
           "AND target.integration_id = ? " +
           "AND (SELECT COUNT(*) FROM project_push_targets target_count " +
           "WHERE target_count.project_id = task.project_id " +
@@ -1059,18 +1070,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       if (legacyTaskRows.length !== 1) return null;
 
       const legacyTask = await db.query.tasks.findFirst({
-        where: eq(tasks.taskId, legacyTaskRows[0]!.task_id as TaskId),
+        where: and(eq(tasks.taskId, legacyTaskRows[0]!.task_id as TaskId), isNull(tasks.deletedAt)),
       });
       if (legacyTask) return rowToTask(legacyTask);
       return null;
     }
 
     const singleRow = raw
-      .prepare("SELECT * FROM tasks WHERE gerrit_change_id = ? ORDER BY created_at DESC LIMIT 1")
+      .prepare("SELECT * FROM tasks WHERE gerrit_change_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1")
       .get(externalChangeId) as Record<string, unknown> | undefined;
     if (singleRow) {
       const orm = await db.query.tasks.findFirst({
-        where: eq(tasks.taskId, singleRow["task_id"] as TaskId),
+        where: and(eq(tasks.taskId, singleRow["task_id"] as TaskId), isNull(tasks.deletedAt)),
       });
       if (orm) return rowToTask(orm);
     }
@@ -1083,7 +1094,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     if (cprRow) {
       const orm = await db.query.tasks.findFirst({
-        where: eq(tasks.taskId, cprRow.task_id as TaskId),
+        where: and(eq(tasks.taskId, cprRow.task_id as TaskId), isNull(tasks.deletedAt)),
       });
       if (orm) return rowToTask(orm);
     }
@@ -1095,12 +1106,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     if (!changeId) return null;
     const row = raw
       .prepare(
-        "SELECT task_id FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+        "SELECT task_id FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
       )
       .get(changeId, projectId) as { task_id: string } | undefined;
     if (!row) return null;
     const orm = await db.query.tasks.findFirst({
-      where: eq(tasks.taskId, row.task_id as TaskId),
+      where: and(eq(tasks.taskId, row.task_id as TaskId), isNull(tasks.deletedAt)),
     });
     return orm ? rowToTask(orm) : null;
   }
@@ -1168,7 +1179,11 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
    */
   async function getFailedTasksForProject(projectId: ProjectId): Promise<Task[]> {
     const rows = await db.query.tasks.findMany({
-      where: and(eq(tasks.projectId, projectId), inArray(tasks.state, ["FAILED", "REVIEW_FAILED"])),
+      where: and(
+        eq(tasks.projectId, projectId),
+        inArray(tasks.state, ["FAILED", "REVIEW_FAILED"]),
+        isNull(tasks.deletedAt),
+      ),
     });
     return rows.map((row) => rowToTask(row));
   }

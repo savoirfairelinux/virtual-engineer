@@ -44,6 +44,8 @@ export const tasks = sqliteTable(
     displayId: text("display_id"),
     /** Persisted feature branch ref used for the first push; reused on subsequent pushes for idempotence and backward-compat with branches created under the legacy naming scheme. */
     pushRef: text("push_ref"),
+    /** Soft-deletion marker: set once the task is hidden from operational reads. */
+    deletedAt: integer("deleted_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
