@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadBackupKeyring } from "../../src/backup/backupCrypto.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 const tempDirs: string[] = [];
@@ -22,7 +23,7 @@ afterEach(() => {
 });
 
 function runHelper(script: string, args: string[] = [], env?: NodeJS.ProcessEnv): string {
-  return execFileSync("bash", ["-c", `source scripts/start-lib.sh; ${script}`, "test", ...args], {
+  return execFileSync("bash", ["-c", `source scripts/start.sh; ${script}`, "test", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
     ...(env ? { env: { ...process.env, ...env } } : {}),
@@ -104,22 +105,34 @@ describe("install.sh bootstrap", () => {
     }).trim();
 
     const firstOutput = runInstaller(workDir, fixtureDir, argsFile, ["--no-k3s-install"], expectedCommit);
-    const envContent = readFileSync(join(checkoutDir, ".env"), "utf8");
-    const secret = envContent.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
 
-    if (!secret) throw new Error("Expected generated ADMIN_AUTH_SECRET");
-    expect(firstOutput).not.toContain(secret);
-    expect(statSync(join(checkoutDir, ".env")).mode & 0o777).toBe(0o600);
+    expect(firstOutput).toContain("Starting Virtual Engineer.");
     expect(readFileSync(argsFile, "utf8")).toBe("--no-k3s-install");
+    expect(existsSync(join(checkoutDir, ".env"))).toBe(false);
+    expect(existsSync(join(workDir, "setup.log"))).toBe(false);
     expect(readFileSync(join(workDir, "unrelated.txt"), "utf8")).toBe("keep me");
 
     rmSync(fixtureDir, { recursive: true, force: true });
     const secondOutput = runInstaller(workDir, fixtureDir, argsFile, [], expectedCommit);
-    const secondEnvContent = readFileSync(join(checkoutDir, ".env"), "utf8");
 
     expect(secondOutput).toContain("existing Virtual Engineer checkout");
-    expect(secondEnvContent).toBe(envContent);
-    expect(secondEnvContent.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
+    expect(existsSync(join(checkoutDir, ".env"))).toBe(false);
+    expect(readFileSync(argsFile, "utf8")).toBe("");
+  });
+
+  it("does not generate a replacement ADMIN_AUTH_SECRET when starting with restore", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(workDir);
+    const { fixtureDir, argsFile } = createInstallerFixture();
+    const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const archivePath = join(workDir, "restore.tar.gz.enc");
+
+    runInstaller(workDir, fixtureDir, argsFile, ["--", "--restore", archivePath], expectedCommit);
+
+    expect(readFileSync(argsFile, "utf8")).toBe(`--restore ${archivePath}`);
+    expect(existsSync(join(workDir, "setup.log"))).toBe(false);
   });
 
   it("reuses the current directory when it already is a Virtual Engineer checkout", () => {
@@ -167,6 +180,494 @@ describe("install.sh bootstrap", () => {
 });
 
 describe("start.sh helpers", () => {
+  it("runs --setup-only idempotently and persists an externally configured keyring path", () => {
+    const setupDir = mkdtempSync(join(tmpdir(), "ve-setup-script-"));
+    tempDirs.push(setupDir);
+    const scriptsDir = join(setupDir, "scripts");
+    mkdirSync(scriptsDir, { recursive: true });
+    copyFileSync("scripts/start.sh", join(scriptsDir, "start.sh"));
+    copyFileSync(".env.example", join(setupDir, ".env.example"));
+
+    const homeDir = join(setupDir, "home");
+    const keyringFile = join(setupDir, "secrets", "backup-keyring.json");
+    const setupEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: homeDir,
+      XDG_CONFIG_HOME: join(setupDir, "config"),
+      DATA_DIR: join(setupDir, "data"),
+      DATABASE_PATH: join(setupDir, "data", "virtual-engineer.db"),
+      BACKUP_DIR: join(setupDir, "data", "backups"),
+      BACKUP_KEYRING_FILE: keyringFile,
+    };
+    delete setupEnv["ADMIN_AUTH_SECRET"];
+    const firstOutput = execFileSync("bash", [join(scriptsDir, "start.sh"), "--setup-only"], {
+      cwd: setupDir,
+      encoding: "utf8",
+      env: setupEnv,
+    });
+    const envFile = join(setupDir, ".env");
+    const firstEnv = readFileSync(envFile, "utf8");
+    const envExample = readFileSync(join(setupDir, ".env.example"), "utf8");
+    const adminSecret = firstEnv.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
+    const keyring = JSON.parse(readFileSync(keyringFile, "utf8")) as {
+      activeKeyId: string;
+      keys: Record<string, string>;
+    };
+    const backupKey = keyring.keys[keyring.activeKeyId];
+
+    expect(adminSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(backupKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(envExample).toMatch(/^ADMIN_AUTH_SECRET=\s*$/m);
+    expect(envExample).toMatch(/^BACKUP_KEYRING_FILE=\s*$/m);
+    expect(firstEnv.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
+    expect(firstEnv).toContain(`ADMIN_AUTH_SECRET=${adminSecret}`);
+    expect(firstEnv.match(/^BACKUP_KEYRING_FILE=/gm)).toHaveLength(1);
+    expect(firstOutput).not.toContain(adminSecret);
+    expect(firstOutput).not.toContain(backupKey);
+    expect(firstEnv).toContain(`BACKUP_KEYRING_FILE=${keyringFile}`);
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
+    expect(statSync(keyringFile).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(setupDir, "data", ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(setupDir, "data", ".backup-keyring-onboarding-pending"))).toBe(true);
+
+    const secondEnv = { ...setupEnv };
+    delete secondEnv["BACKUP_KEYRING_FILE"];
+    const secondOutput = execFileSync("bash", [join(scriptsDir, "start.sh"), "--setup-only"], {
+      cwd: setupDir,
+      encoding: "utf8",
+      env: secondEnv,
+    });
+
+    expect(readFileSync(envFile, "utf8")).toBe(firstEnv);
+    expect(readFileSync(keyringFile, "utf8")).toBe(JSON.stringify(keyring) + "\n");
+    expect(secondOutput).not.toContain(adminSecret);
+    expect(secondOutput).not.toContain(backupKey);
+  });
+
+  it("fills missing .env defaults without overwriting configured values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-env-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    writeFileSync(envFile, "LOG_LEVEL=warn\nCUSTOM_SETTING=keep\nADMIN_AUTH_SECRET=existing\n");
+
+    runHelper('ensure_env_file "$1" "$2"', [envFile, join(process.cwd(), ".env.example")]);
+
+    const envContent = readFileSync(envFile, "utf8");
+    expect(envContent).toContain("NODE_ENV=development");
+    expect(envContent).toContain("LOG_LEVEL=warn");
+    expect(envContent.match(/^LOG_LEVEL=/gm)).toHaveLength(1);
+    expect(envContent).toContain("CUSTOM_SETTING=keep");
+    expect(envContent).toContain("ADMIN_AUTH_SECRET=existing");
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("provisions both missing secrets once and keeps them private", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-setup-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    mkdirSync(dataDir);
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\nBACKUP_KEYRING_FILE=\nLOG_LEVEL=info\n");
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    const output = runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+    const envContent = readFileSync(envFile, "utf8");
+    const adminSecret = envContent.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
+    const keyringPath = join(configHome, "virtual-engineer", "backup-keyring.json");
+    const keyring = JSON.parse(readFileSync(keyringPath, "utf8")) as {
+      activeKeyId: string;
+      keys: Record<string, string>;
+    };
+    const backupKey = keyring.keys[keyring.activeKeyId];
+
+    expect(adminSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(backupKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(output).not.toContain(adminSecret);
+    expect(output).not.toContain(backupKey);
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
+    expect(statSync(keyringPath).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(dataDir, ".secrets-provisioned"))).toBe(true);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(envContent).toContain(`BACKUP_KEYRING_FILE=${keyringPath}`);
+
+    const originalKeyring = readFileSync(keyringPath, "utf8");
+    const originalEnv = readFileSync(envFile, "utf8");
+    rmSync(join(dataDir, ".backup-keyring-onboarding-pending"));
+    rmSync(join(dataDir, ".admin-auth-secret-onboarding-pending"));
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+
+    expect(readFileSync(keyringPath, "utf8")).toBe(originalKeyring);
+    expect(readFileSync(envFile, "utf8")).toBe(originalEnv);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(false);
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(false);
+  });
+
+  it("marks a pre-existing default keyring pending during first-time provisioning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-existing-keyring-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    const keyringDir = join(configHome, "virtual-engineer");
+    const keyringPath = join(keyringDir, "backup-keyring.json");
+    mkdirSync(dataDir);
+    mkdirSync(keyringDir, { recursive: true, mode: 0o700 });
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\n");
+    const keyringContents = `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: "existing-key",
+      keys: { "existing-key": "a".repeat(64) },
+    })}\n`;
+    writeFileSync(keyringPath, keyringContents, { mode: 0o600 });
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(true);
+    expect(readFileSync(keyringPath, "utf8")).toBe(keyringContents);
+  });
+
+  it("marks a pre-existing keyring pending when first-admin onboarding is already pending", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-pending-admin-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    const keyringDir = join(configHome, "virtual-engineer");
+    const keyringPath = join(keyringDir, "backup-keyring.json");
+    mkdirSync(dataDir);
+    mkdirSync(keyringDir, { recursive: true, mode: 0o700 });
+    writeFileSync(envFile, `ADMIN_AUTH_SECRET=${"b".repeat(64)}\n`);
+    writeFileSync(keyringPath, `${JSON.stringify({
+      format: "virtual-engineer-backup-keyring",
+      version: 1,
+      activeKeyId: "existing-key",
+      keys: { "existing-key": "a".repeat(64) },
+    })}\n`, { mode: 0o600 });
+    writeFileSync(join(dataDir, ".secrets-provisioned"), "");
+    writeFileSync(join(dataDir, ".admin-auth-secret-onboarding-pending"), "");
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+
+    expect(existsSync(join(dataDir, ".admin-auth-secret-onboarding-pending"))).toBe(true);
+    expect(existsSync(join(dataDir, ".backup-keyring-onboarding-pending"))).toBe(true);
+  });
+
+  it("refuses to generate replacement secrets after an instance was provisioned", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-setup-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    mkdirSync(dataDir);
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\n");
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir]);
+    const originalKeyring = join(configHome, "virtual-engineer", "backup-keyring.json");
+    const originalEnv = readFileSync(envFile, "utf8");
+    rmSync(originalKeyring);
+
+    expect(() => runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir])).toThrow();
+    expect(readFileSync(envFile, "utf8")).toBe(originalEnv);
+    expect(existsSync(originalKeyring)).toBe(false);
+  });
+
+  it("refuses first-time generation when database or backup data already exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-setup-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const dataDir = join(dir, "data");
+    const databasePath = join(dataDir, "virtual-engineer.db");
+    const backupDir = join(dataDir, "backups");
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    mkdirSync(dataDir);
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\n");
+    writeFileSync(databasePath, "existing database");
+    const helper = [
+      "unset ADMIN_AUTH_SECRET BACKUP_KEYRING_FILE",
+      'load_dotenv "$1"',
+      'ensure_instance_secrets "$1" "$2" "$3" "$4" "$5" "$6"',
+    ].join("; ");
+
+    expect(() => runHelper(helper, [envFile, dataDir, databasePath, backupDir, configHome, homeDir])).toThrow();
+    expect(readFileSync(envFile, "utf8")).toBe("ADMIN_AUTH_SECRET=\n");
+    expect(existsSync(join(configHome, "virtual-engineer", "backup-keyring.json"))).toBe(false);
+  });
+
+  it("generates and persists a private ADMIN_AUTH_SECRET once when it is empty", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-auth-secret-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    writeFileSync(envFile, "ADMIN_AUTH_SECRET=\nLOG_LEVEL=info\n");
+    const helper = 'unset ADMIN_AUTH_SECRET; load_dotenv "$1"; ensure_admin_auth_secret "$1"; printf "%s" "$ADMIN_AUTH_SECRET"';
+
+    const firstSecret = runHelper(helper, [envFile]);
+    const firstContent = readFileSync(envFile, "utf8");
+
+    expect(firstSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(firstContent.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
+    expect(firstContent).toContain(`ADMIN_AUTH_SECRET=${firstSecret}`);
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
+
+    const secondSecret = runHelper(helper, [envFile]);
+
+    expect(secondSecret).toBe(firstSecret);
+    expect(readFileSync(envFile, "utf8")).toBe(firstContent);
+  });
+
+  it("preserves an existing ADMIN_AUTH_SECRET from .env or the process environment", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-auth-secret-"));
+    tempDirs.push(dir);
+    const envFile = join(dir, ".env");
+    const storedSecret = "b".repeat(64);
+    const externalSecret = "c".repeat(64);
+    const storedContent = `ADMIN_AUTH_SECRET=${storedSecret}\nLOG_LEVEL=info\n`;
+    writeFileSync(envFile, storedContent);
+
+    const fromDotenv = runHelper(
+      'unset ADMIN_AUTH_SECRET; load_dotenv "$1"; ensure_admin_auth_secret "$1"; printf "%s" "$ADMIN_AUTH_SECRET"',
+      [envFile],
+    );
+    const fromEnvironment = runHelper(
+      'load_dotenv "$1"; ensure_admin_auth_secret "$1"; printf "%s" "$ADMIN_AUTH_SECRET"',
+      [envFile],
+      { ADMIN_AUTH_SECRET: externalSecret },
+    );
+
+    expect(fromDotenv).toBe(storedSecret);
+    expect(fromEnvironment).toBe(externalSecret);
+    expect(readFileSync(envFile, "utf8")).toBe(storedContent);
+  });
+
+  it("explains the backup keyring requirement when it is not configured", () => {
+    const notice = runHelper('backup_keyring_startup_notice "$1"', [""]);
+
+    expect(notice).toContain("new backups and encrypted restores will fail");
+    expect(notice).toContain("BACKUP_KEYRING_FILE");
+    expect(notice).toContain("README.md");
+  });
+
+  it("does not show the backup keyring notice when it is configured", () => {
+    expect(runHelper(
+      'backup_keyring_startup_notice "$1"',
+      ["/secure/backup-keyring.json"],
+    )).toBe("");
+  });
+
+  it("creates and reuses a private versioned default backup keyring", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-keyring-"));
+    tempDirs.push(dir);
+    const configHome = join(dir, "config");
+    const homeDir = join(dir, "home");
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir);
+    const helper = 'ensure_default_backup_keyring_file "$1" "$2" "$3"; printf "%s\\n%s" "$BACKUP_KEYRING_FILE" "$BACKUP_KEYRING_CREATED"';
+
+    const firstResult = runHelper(helper, [configHome, homeDir, dataDir]).split("\n");
+    const keyringPath = firstResult[0];
+    expect(keyringPath).toBe(join(configHome, "virtual-engineer", "backup-keyring.json"));
+    expect(firstResult[1]).toBe("true");
+    if (!keyringPath) throw new Error("Expected a generated backup keyring path");
+
+    const keyring = JSON.parse(readFileSync(keyringPath, "utf8")) as {
+      format: string;
+      version: number;
+      activeKeyId: string;
+      keys: Record<string, string>;
+    };
+    expect(keyring.format).toBe("virtual-engineer-backup-keyring");
+    expect(keyring.version).toBe(1);
+    expect(keyring.keys[keyring.activeKeyId]).toMatch(/^[a-f0-9]{64}$/);
+    expect(statSync(keyringPath).mode & 0o777).toBe(0o600);
+    expect(statSync(join(configHome, "virtual-engineer")).mode & 0o777).toBe(0o700);
+    const markerPath = join(dataDir, ".backup-keyring-onboarding-pending");
+    expect(existsSync(markerPath)).toBe(true);
+    expect(statSync(markerPath).mode & 0o777).toBe(0o600);
+    const loadedKeyring = await loadBackupKeyring(keyringPath);
+    expect(loadedKeyring.activeKeyId).toBe(keyring.activeKeyId);
+    expect(loadedKeyring.keys.get(keyring.activeKeyId)?.byteLength).toBe(32);
+
+    const originalContent = readFileSync(keyringPath, "utf8");
+    rmSync(markerPath);
+    const secondResult = runHelper(helper, [configHome, homeDir, dataDir]).split("\n");
+    expect(secondResult).toEqual([keyringPath, "false"]);
+    expect(readFileSync(keyringPath, "utf8")).toBe(originalContent);
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  it("uses HOME config when XDG_CONFIG_HOME is unset", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-keyring-"));
+    tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir);
+
+    const result = runHelper(
+      'ensure_default_backup_keyring_file "" "$1" "$2"; printf "%s\\n%s" "$BACKUP_KEYRING_FILE" "$BACKUP_KEYRING_CREATED"',
+      [homeDir, dataDir],
+    ).split("\n");
+
+    expect(result).toEqual([
+      join(homeDir, ".config", "virtual-engineer", "backup-keyring.json"),
+      "true",
+    ]);
+  });
+
+  it("refuses to create the default keyring inside DATA_DIR", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-keyring-"));
+    tempDirs.push(dir);
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir);
+
+    expect(() => runHelper(
+      'ensure_default_backup_keyring_file "$1" "$2" "$3"',
+      [join(dataDir, "config"), join(dir, "home"), dataDir],
+    )).toThrow();
+  });
+
+  it("provisions secrets only for normal starts after option validation", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const optionValidationIndex = script.indexOf('REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}")');
+    const ensureIndex = script.lastIndexOf('ensure_instance_secrets "$ROOT_DIR/.env"');
+
+    expect(optionValidationIndex).toBeGreaterThan(-1);
+    expect(ensureIndex).toBeGreaterThan(optionValidationIndex);
+    expect(script).toContain('if [[ -n "$RESTORE_ARCHIVE" ]]; then');
+  });
+
+  it("provisions secrets on normal starts, preserves process overrides, and skips restore", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const secretSetup = script.lastIndexOf('ensure_instance_secrets "$ROOT_DIR/.env"');
+    const dockerArgs = script.indexOf('DOCKER_RUN_ARGS=(');
+    const restoreBranch = script.lastIndexOf('if [[ -n "$RESTORE_ARCHIVE" ]]; then', secretSetup);
+
+    expect(secretSetup).toBeGreaterThan(-1);
+    expect(restoreBranch).toBeGreaterThan(-1);
+    expect(script.slice(restoreBranch, secretSetup)).toContain("confirm_backup_restore");
+    expect(script.slice(restoreBranch, secretSetup)).not.toContain("ensure_instance_secrets");
+    expect(secretSetup).toBeLessThan(dockerArgs);
+    expect(script).toContain("-e ADMIN_AUTH_SECRET");
+  });
+
+  it("keeps setup and startup in one script and delegates directly from the installer", () => {
+    const startScript = readFileSync("scripts/start.sh", "utf8");
+    const installerScript = readFileSync("scripts/install.sh", "utf8");
+
+    expect(startScript).toContain("--setup-only");
+    expect(startScript).not.toContain('source "$SCRIPT_DIR/start-lib.sh"');
+    expect(installerScript).not.toContain("setup.sh");
+    expect(installerScript).toContain('bash "${INSTALL_DIR}/scripts/start.sh"');
+    expect(existsSync("scripts/setup.sh")).toBe(false);
+    expect(existsSync("scripts/start-lib.sh")).toBe(false);
+  });
+
+  it("shows the backup keyring notice after loading .env", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const dotenvIndex = script.indexOf('load_dotenv "$ROOT_DIR/.env"');
+    const noticeIndex = script.indexOf('backup_keyring_startup_notice "${BACKUP_KEYRING_FILE:-}"');
+    const optionValidationIndex = script.indexOf('REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}")');
+
+    expect(dotenvIndex).toBeGreaterThan(-1);
+    expect(noticeIndex).toBeGreaterThan(dotenvIndex);
+    expect(noticeIndex).toBeGreaterThan(optionValidationIndex);
+  });
+
+  it("accepts only an existing regular restore archive", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-restore-"));
+    tempDirs.push(dir);
+    const archivePath = join(dir, "backup.tar.gz");
+    const symlinkPath = join(dir, "backup-link.tar.gz");
+    writeFileSync(archivePath, "archive");
+    symlinkSync(archivePath, symlinkPath);
+
+    expect(runHelper('resolve_restore_archive "$1"', [archivePath])).toBe(archivePath);
+    expect(() => runHelper('resolve_restore_archive "$1"', [symlinkPath])).toThrow();
+    expect(() => runHelper('resolve_restore_archive "$1"', [join(dir, "missing.tar.gz")])).toThrow();
+  });
+
+  it("requires a regular backup keyring outside DATA_DIR", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-keyring-"));
+    tempDirs.push(dir);
+    const dataDir = join(dir, "data");
+    const keyringPath = join(dir, "backup-keyring.json");
+    const nestedKeyringPath = join(dataDir, "backup-keyring.json");
+    mkdirSync(dataDir);
+    writeFileSync(keyringPath, "{}\n");
+    writeFileSync(nestedKeyringPath, "{}\n");
+
+    expect(runHelper('resolve_backup_keyring_file "$1" "$2"', [keyringPath, dataDir])).toBe(keyringPath);
+    expect(() => runHelper('resolve_backup_keyring_file "$1" "$2"', [nestedKeyringPath, dataDir])).toThrow();
+    expect(() => runHelper('resolve_backup_keyring_file "$1" "$2"', [join(dir, "missing.json"), dataDir])).toThrow();
+  });
+
+  it("requires interactive restore confirmation or an explicit yes flag", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-restore-"));
+    tempDirs.push(dir);
+    const archivePath = join(dir, "backup.tar.gz");
+    writeFileSync(archivePath, "archive");
+
+    expect(runHelper(
+      'if confirm_backup_restore "$1" "$2" "$3"; then printf yes; fi',
+      [archivePath, join(dir, "data"), "true"],
+    )).toBe("yes");
+    expect(() => runHelper(
+      'confirm_backup_restore "$1" "$2" "$3"',
+      [archivePath, join(dir, "data"), "false"],
+    )).toThrow();
+  });
+
+  it("mounts a requested restore archive and stops the old instance first", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain("--restore <archive> [--force] [--yes]");
+    expect(script).toContain("--yes");
+    expect(script).toContain("target=/app/restore-backup,readonly");
+    expect(script).toContain("VE_RESTORE_FROM=/app/restore-backup");
+    expect(script).toContain("target=/app/backup-keyring.json,readonly");
+    expect(script).toContain("BACKUP_KEYRING_FILE=/app/backup-keyring.json");
+    expect(script).toContain("VE_RESTORE_FORCE=true");
+    const stopIndex = script.indexOf("Stopping the existing ve-orchestrator before restore");
+    const startIndex = script.indexOf('docker run "${DOCKER_RUN_ARGS[@]}" virtual-engineer:latest');
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
+    expect(script).toContain('docker rm -f ve-orchestrator');
+  });
+
   it.each([
     { value: "", expected: "2g" },
     { value: "512m", expected: "512m" },
@@ -588,6 +1089,22 @@ describe("start.sh helpers", () => {
 });
 
 describe("OpenShell deployment contract", () => {
+  it("formats orchestrator logs in the host's local timezone", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const logger = readFileSync("src/logger.ts", "utf8");
+
+    expect(script).toContain("Intl.DateTimeFormat().resolvedOptions().timeZone");
+    expect(script).toContain('-e "TZ=$ORCHESTRATOR_TIMEZONE"');
+    expect(logger).toContain('translateTime: "SYS:HH:MM:ss"');
+  });
+
+  it("passes the invoking user's group for read-only backup access", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('BACKUP_ACCESS_GID="${BACKUP_ACCESS_GID:-${SUDO_GID:-$(id -g)}}"');
+    expect(script).toContain('-e "BACKUP_ACCESS_GID=$BACKUP_ACCESS_GID"');
+  });
+
   it("keeps review diffs in a configurable size-limited tmpfs", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
 
@@ -619,7 +1136,7 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain('-v /var/run/docker.sock:/var/run/docker.sock');
     expect(script).toContain('OPENSHELL_GATEWAY_PKI_DIR=');
     expect(script).toContain('generate-certs --output-dir "$OPENSHELL_GATEWAY_PKI_DIR"');
-    expect(script.match(/stop_managed_openshell_port_forward/g)).toHaveLength(2);
+    expect(script.match(/stop_managed_openshell_port_forward/g)).toHaveLength(3);
     expect(script).toContain('OPENSHELL_GATEWAY_JWT_HASH=$(docker run --rm');
     expect(script).not.toContain('sha256sum "${OPENSHELL_GATEWAY_PKI_DIR}/jwt/public.pem"');
     expect(script).toContain("docker network inspect openshell-docker");
@@ -771,6 +1288,21 @@ describe("OpenShell deployment contract", () => {
     )).toBe("no");
   });
 
+  it("validates a selected encrypted StorageClass name", () => {
+    expect(runDeployHelper(
+      'if valid_storage_class_name "$1"; then printf yes; else printf no; fi',
+      ["encrypted-csi.storage.example"],
+    )).toBe("yes");
+    expect(runDeployHelper(
+      'if valid_storage_class_name "$1"; then printf yes; else printf no; fi',
+      ["Replace Me"],
+    )).toBe("no");
+    expect(runDeployHelper(
+      'if valid_storage_class_name "$1"; then printf yes; else printf no; fi',
+      [""],
+    )).toBe("no");
+  });
+
   it("mirrors the GHCR pull secret and pins both VE workloads", () => {
     const deployScript = readFileSync("deploy/k8s/deploy.sh", "utf8");
 
@@ -784,6 +1316,11 @@ describe("OpenShell deployment contract", () => {
     expect(deployScript).toContain('"*=${VE_ORCHESTRATOR_IMAGE}"');
     expect(deployScript).toContain('kubectl rollout restart deployment/virtual-engineer-orchestrator');
     expect(deployScript).toContain('kubectl rollout status deployment/virtual-engineer-orchestrator');
+    expect(deployScript).toContain("VE_ENCRYPTED_STORAGE_CLASS");
+    expect(deployScript).toContain("virtual-engineer-backup-keyring");
+    expect(deployScript).toContain("storageClassName");
+    expect(deployScript).toContain("VE_DATA_PVC_NAME");
+    expect(deployScript).toContain("Use a new PVC name for encrypted storage");
     expect(deployScript).not.toContain("REPLACE_ME");
   });
 

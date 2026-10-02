@@ -9,6 +9,7 @@ describe("Configuration routing", () => {
   it.each<[string, ConfigRoute]>([
     ["#config/prompts/system_review/copy", { section: "prompts", mode: "copy", id: "system_review" }],
     ["#config/integrations", { section: "integrations", mode: "list" }],
+    ["#config/backups", { section: "backups", mode: "list" }],
     ["#config/audit/export", { section: "audit", mode: "export" }],
     ["#config/integrations/new", { section: "integrations", mode: "create" }],
     ["#config/integrations/github%20primary", {
@@ -44,6 +45,7 @@ describe("Configuration routing", () => {
   it.each<ConfigRoute>([
     { section: "prompts", mode: "copy", id: "prompt/with spaces" },
     { section: "projects", mode: "list" },
+    { section: "backups", mode: "list" },
     { section: "audit", mode: "export" },
     { section: "projects", mode: "create" },
     { section: "projects", mode: "detail", id: "project/with spaces" },
@@ -63,6 +65,9 @@ describe("Configuration routing", () => {
   it.each([
     "#config/not-a-section",
     "#config/overview/new",
+    "#config/backups/new",
+    "#config/backups/archive.tar.gz",
+    "#config/backups/archive.tar.gz/edit",
     "#config/integrations/missing/edit/extra",
     "#config/oauth/gitlab",
     "#config/oauth/gitlab/not%ZZencoded",

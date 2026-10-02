@@ -320,6 +320,7 @@ describe("Configuration PBAC", () => {
     ["policies", "policy.manage"],
     ["audit", "audit.read"],
     ["system", "system.read"],
+    ["backups", "system.backup.manage"],
   ])("maps %s visibility to %s", (section, permission) => {
     const user: ApiMe = {
       id: "viewer-with-grant",

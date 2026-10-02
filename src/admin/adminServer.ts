@@ -29,6 +29,8 @@ import { registerProjectStatisticsRoutes } from "./adminProjectStatisticsRoutes.
 import { registerRuntimePolicyRoutes } from "./adminRuntimePolicyRoutes.js";
 import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
+import { registerBackupRoutes, serveBackupDownloadResponse, type BackupAdminController } from "./adminBackupRoutes.js";
+import { consumeBackupDownloadToken } from "./backupDownloadTokenStore.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
@@ -56,6 +58,7 @@ import { resourceTypeOf } from "./authorization/permissions.js";
 import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
 import type { AuthContext } from "./adminAuthService.js";
 import type { UserRole } from "../interfaces.js";
+import { isBackupFilename } from "../backup/backupArchive.js";
 
 export { getAuthContext } from "./authContext.js";
 export type { AuthContext } from "./adminAuthService.js";
@@ -184,6 +187,8 @@ export interface AdminServerDependencies {
    * persisted and hot-applied by the controller.
    */
   settings?: SettingsController | undefined;
+  /** When provided, mounts local backup inventory, settings, download and restore preparation routes. */
+  backups?: BackupAdminController | undefined;
   /** When provided, mounts runtime-policy CRUD + binding routes. */
   runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
   /** When provided, mounts the policy-denial audit-log routes. */
@@ -521,6 +526,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     agentStore: dependencies.agentStore,
   });
   registerSettingsRoutes(router, { settings: dependencies.settings });
+  registerBackupRoutes(router, { backups: dependencies.backups, auditStore });
   registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore, gateway: dependencies.runtimeGateway });
   registerDenialRoutes(router, { denialStore: dependencies.denialStore });
   registerWebhookRoutes(router, {
@@ -603,6 +609,32 @@ async function handleRequest(
       nonce,
       ...getProviderUrls(dependencies.pluginManager),
     }));
+    return;
+  }
+
+  // Native downloads cannot attach the SPA's session bearer header. Accept
+  // only a short-lived, single-use token scoped to this exact archive name.
+  const backupDownloadMatch = /^\/api\/admin\/backups\/([^/]+)\/download$/.exec(path);
+  if (method === "GET" && backupDownloadMatch && requestUrl.searchParams.has("t")) {
+    let filename: string;
+    try {
+      filename = decodeURIComponent(backupDownloadMatch[1] ?? "");
+    } catch {
+      writeJson(response, 400, { error: "Bad request: malformed URL encoding" });
+      return;
+    }
+    if (!isBackupFilename(filename)) {
+      writeJson(response, 400, { error: "Invalid backup filename" });
+      return;
+    }
+    const tokenValid = consumeBackupDownloadToken(requestUrl.searchParams.get("t") ?? "", filename);
+    const downloadAuthorized = tokenValid
+      && (!authRuntime.authService || await authRuntime.usersExist());
+    if (!downloadAuthorized) {
+      writeJson(response, 401, { error: "Unauthorized" });
+      return;
+    }
+    await serveBackupDownloadResponse(dependencies.backups, response, filename);
     return;
   }
 

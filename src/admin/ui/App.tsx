@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef, Component, type Reac
 import { TopBar } from "./shell/TopBar.tsx";
 import { AuthScreen } from "./shell/AuthScreen.tsx";
 import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
+import { SecuritySecretsOnboarding } from "./shell/BackupKeyringOnboarding.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
@@ -402,6 +403,7 @@ export function App() {
             />
           )}
         </div>
+        {currentUser?.role === "admin" && <SecuritySecretsOnboarding />}
         {showChangePassword && currentUser && currentUser.id !== null && (
           <ChangePasswordModal
             user={currentUser}

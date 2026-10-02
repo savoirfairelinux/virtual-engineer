@@ -7,8 +7,8 @@
  * (completed via `superRefine`).
  */
 import { z } from "zod";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { readFileSync, realpathSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 
 
 const booleanFromEnv = z.preprocess((value) => {
@@ -19,6 +19,16 @@ const booleanFromEnv = z.preprocess((value) => {
   }
   return value;
 }, z.boolean());
+
+const optionalPathFromEnv = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(1).optional(),
+);
+
+const optionalNonNegativeIntegerFromEnv = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.coerce.number().int().min(0).max(0xFFFFFFFF).optional(),
+);
 
 // ─── Load .env file if present ────────────────────────────────────────────────
 
@@ -52,6 +62,11 @@ const ConfigSchema = z.object({
     nodeEnv: z.enum(["development", "production", "test"]).default("development"),
     logLevel: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     databasePath: z.string().default("./data/virtual-engineer.db"),
+    backupDir: optionalPathFromEnv,
+    backupAccessGid: optionalNonNegativeIntegerFromEnv,
+    backupKeyringFile: optionalPathFromEnv,
+    restoreFrom: optionalPathFromEnv,
+    restoreForce: z.preprocess((value) => value === "" ? false : value, booleanFromEnv).default(false),
     adminApiEnabled: booleanFromEnv.default(true),
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
@@ -98,7 +113,12 @@ const ConfigSchema = z.object({
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
   });
 
-export type AppConfig = z.infer<typeof ConfigSchema>;
+type ParsedAppConfig = z.infer<typeof ConfigSchema>;
+export type AppConfig = Omit<ParsedAppConfig, "backupDir" | "backupKeyringFile" | "restoreFrom"> & {
+  backupDir: string;
+  backupKeyringFile: string | undefined;
+  restoreFrom: string | undefined;
+};
 
 /** Map environment variables to the keys expected by `ConfigSchema`. */
 function fromEnv(): Record<string, string | undefined> {
@@ -106,6 +126,11 @@ function fromEnv(): Record<string, string | undefined> {
     nodeEnv: process.env["NODE_ENV"],
     logLevel: process.env["LOG_LEVEL"],
     databasePath: process.env["DATABASE_PATH"],
+    backupDir: process.env["BACKUP_DIR"],
+    backupAccessGid: process.env["BACKUP_ACCESS_GID"],
+    backupKeyringFile: process.env["BACKUP_KEYRING_FILE"],
+    restoreFrom: process.env["VE_RESTORE_FROM"],
+    restoreForce: process.env["VE_RESTORE_FORCE"],
     adminApiEnabled: process.env["ADMIN_API_ENABLED"],
     adminApiHost: process.env["ADMIN_API_HOST"],
     adminApiPort: process.env["ADMIN_API_PORT"],
@@ -129,6 +154,22 @@ function fromEnv(): Record<string, string | undefined> {
 
 let _config: AppConfig | null = null;
 
+function physicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(physicalPath(parent), basename(path));
+  }
+}
+
+function isDirectoryInside(parent: string, directory: string): boolean {
+  const pathFromParent = relative(physicalPath(parent), physicalPath(directory));
+  return pathFromParent !== ".." && !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
+}
+
 /** Parse and validate configuration from environment variables. Throws on invalid config. */
 export function getConfig(): AppConfig {
   if (_config) return _config;
@@ -141,7 +182,26 @@ export function getConfig(): AppConfig {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
 
-  _config = result.data;
+  const backupDir = resolve(result.data.backupDir ?? join(dirname(result.data.databasePath), "backups"));
+  const backupKeyringFile = result.data.backupKeyringFile === undefined
+    ? undefined
+    : resolve(result.data.backupKeyringFile);
+  if (backupKeyringFile !== undefined) {
+    const keyringDirectory = dirname(backupKeyringFile);
+    if (isDirectoryInside(dirname(physicalPath(resolve(result.data.databasePath))), keyringDirectory)) {
+      throw new Error("Invalid configuration:\n  backupKeyringFile: BACKUP_KEYRING_FILE must be stored outside the DATABASE_PATH directory.");
+    }
+    if (isDirectoryInside(backupDir, keyringDirectory)) {
+      throw new Error("Invalid configuration:\n  backupKeyringFile: BACKUP_KEYRING_FILE must be stored outside BACKUP_DIR.");
+    }
+  }
+
+  _config = {
+    ...result.data,
+    backupDir,
+    backupKeyringFile,
+    restoreFrom: result.data.restoreFrom === undefined ? undefined : resolve(result.data.restoreFrom),
+  };
   return _config;
 }
 

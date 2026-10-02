@@ -342,6 +342,7 @@ describe("GuidedTour", () => {
       groups: '[data-tour="groups-new"]',
       policies: '[data-tour="policies-new"]',
       audit: '[data-tour="audit-refresh"]',
+      backups: '[data-tour="backups-schedule"]',
       system: '[data-tour="system-settings"]',
     } as const;
     const deepTargets = {
@@ -356,6 +357,7 @@ describe("GuidedTour", () => {
       groups: '[data-tour="group-form-name"]',
       policies: '[data-tour="policy-form-name"]',
       audit: '[data-tour="audit-filters"]',
+      backups: '[data-tour="backups-run-now"]',
       system: '[data-tour="system-settings-form"]',
     } as const;
 

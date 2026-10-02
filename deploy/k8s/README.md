@@ -19,7 +19,7 @@ upload → exec → download lifecycle.
 | Piece | What it is |
 | --- | --- |
 | `virtual-engineer-orchestrator` Deployment | VE control plane + admin UI (single replica; owns admission + SQLite state). |
-| `virtual-engineer-data` PVC | SQLite WAL state store. |
+| `virtual-engineer-data` PVC | SQLite WAL state store, provisioned from the operator-selected encrypted CSI StorageClass. `VE_DATA_PVC_NAME` can select a new claim during migration. |
 | `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods over TLS. |
 
 The gateway Service is `ClusterIP` only. The Kubernetes mode of `scripts/start.sh`
@@ -107,15 +107,31 @@ rejected.
 Create `virtual-engineer-secret` from the example, replacing both placeholders.
 Prepare a Docker config JSON that can pull the private GHCR images, then run:
 
+The application and backup-keyring Secrets must be provisioned before
+`deploy.sh`. Create the namespace first so namespaced Secrets can be applied;
+then follow [Manual Secret Creation](#5-manual-secret-creation) and
+[Backup Keyring and Storage Encryption](#backup-keyring-and-storage-encryption).
+
 ```bash
 export OPENSHELL_OIDC_ISSUER=https://keycloak.example.com/realms/openshell
 export VE_ORCHESTRATOR_IMAGE=ghcr.io/acme/virtual-engineer@sha256:<digest>
 export VE_AGENT_IMAGE=ghcr.io/acme/virtual-engineer-workspace@sha256:<digest>
 export DOCKER_CONFIG_JSON_FILE="$HOME/.docker/config.json"
+export VE_ENCRYPTED_STORAGE_CLASS=encrypted-csi-class
+# Default for a new installation; use a new name to migrate from an old PVC.
+export VE_DATA_PVC_NAME=virtual-engineer-data
 
+kubectl apply -f deploy/k8s/00-namespace.yaml
 kubectl apply -f deploy/k8s/20-orchestrator-secret.yaml
 ./deploy/k8s/deploy.sh
 ```
+
+Replace `encrypted-csi-class` with a CSI StorageClass whose provider
+documentation and configuration you have verified to encrypt volumes at rest.
+The script checks that the class exists and that an existing selected PVC uses
+it; it cannot verify the provider's encryption configuration. The PVC manifest
+is rendered by `deploy.sh`, not applied directly. A bound PVC's StorageClass is
+immutable, so a mismatch fails closed rather than changing the existing claim.
 
 The script installs the chart by immutable OCI digest, pins the OpenShell 0.0.83
 gateway and supervisor images by digest, creates `ve-ghcr-pull` in both
@@ -167,11 +183,98 @@ rm -rf "$tmp_dir"
 ## 5. Manual Secret Creation
 
 ```bash
-# Create the application secret first (do not commit the filled-in copy):
+# Create the application secret (do not commit the filled-in copy):
 cp deploy/k8s/20-orchestrator-secret.example.yaml /tmp/ve-secret.yaml
 # Replace ADMIN_AUTH_SECRET and OPENSHELL_OIDC_CLIENT_SECRET independently.
 kubectl apply -f /tmp/ve-secret.yaml
 ```
+
+## Backup Keyring and Storage Encryption
+
+New `.tar.gz.enc` archives require a separate keyring file. Store it in an
+approved protected location outside the SQLite PVC and backup storage; never
+commit it or place its contents in `virtual-engineer-secret`, a ConfigMap, or
+the application environment. The keyring schema is:
+
+```json
+{
+  "format": "virtual-engineer-backup-keyring",
+  "version": 1,
+  "activeKeyId": "key-2026-09",
+  "keys": { "key-2026-09": "64 hexadecimal characters from openssl rand -hex 32" }
+}
+```
+
+Create the file with restrictive permissions, then provision the dedicated
+Kubernetes Secret from that file:
+
+```bash
+umask 077
+KEYRING_DIR=/secure/virtual-engineer
+install -d -m 0700 "$KEYRING_DIR"
+KEYRING_FILE="$KEYRING_DIR/backup-keyring.json"
+KEY_ID=key-2026-09
+KEY=$(openssl rand -hex 32)
+printf '{"format":"virtual-engineer-backup-keyring","version":1,"activeKeyId":"%s","keys":{"%s":"%s"}}\n' \
+  "$KEY_ID" "$KEY_ID" "$KEY" > "$KEYRING_FILE"
+unset KEY
+chmod 0600 "$KEYRING_FILE"
+kubectl create secret generic virtual-engineer-backup-keyring \
+  --namespace virtual-engineer \
+  --from-file=backup-keyring.json="$KEYRING_FILE" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+The orchestrator mounts this separate Secret read-only at
+`/app/backup-keyring.json` with mode `0440`; the keyring is not injected as an
+environment variable. Because the file is mounted with `subPath`, update the
+Secret and restart the Deployment after rotation. Add a new active key while
+keeping old keys until every archive encrypted with them has expired or been
+re-encrypted. Preserve an escrowed copy of every retained key. Also enable
+encryption at rest for Kubernetes Secrets in the cluster control plane and
+restrict Secret read access with RBAC; Kubernetes Secret objects are not
+automatically encrypted in etcd on every cluster.
+
+SQLite remains standard SQLite. The selected CSI StorageClass must protect the
+active PVC at rest. Docker deployments likewise need `DATA_DIR` on host
+block-encrypted storage (LUKS or equivalent). These platform properties require
+operator/provider evidence; Virtual Engineer cannot prove the backing media is
+encrypted.
+
+## Migrating an Existing PVC
+
+Do not change the StorageClass of a bound PVC. Keep the old PVC intact until the
+new volume and restore have been validated:
+
+1. Create an encrypted backup, copy it off-cluster, and preserve both the
+  matching keyring and original `ADMIN_AUTH_SECRET` in separate escrow.
+2. Verify the CSI class encrypts volumes at rest. Scale the current orchestrator
+  down before switching claims.
+3. Select a new claim name and deploy against the verified class:
+
+  ```bash
+  export VE_ENCRYPTED_STORAGE_CLASS=encrypted-csi-class
+  export VE_DATA_PVC_NAME=virtual-engineer-data-encrypted
+  ./deploy/k8s/deploy.sh
+  ```
+
+  Do not port-forward or otherwise expose/use the admin service while the new
+  instance is empty. The deployment creates the new claim and leaves the old
+  `virtual-engineer-data` PVC untouched. Keep both environment values set for
+  subsequent `deploy.sh` runs so the deployment does not switch back to the
+  default claim.
+4. Copy the encrypted archive into the new PVC at
+  `/app/data/restore.tar.gz.enc` using the running orchestrator pod. The new
+  instance will have created an empty SQLite database, so the restore below
+  uses `VE_RESTORE_FORCE=true`; the empty targets are quarantined first.
+5. Complete the restore procedure below, remove the one-shot variables, verify
+  the restored integrations/prompts and run a restore drill. Retain the old
+  PVC until the new volume and application have passed validation and rollback
+  is no longer required.
+
+The `deploy.sh` checks only the StorageClass name and existence, not its
+encryption semantics. Record the CSI/provider configuration and the resulting
+PV/StorageClass as deployment evidence.
 
 ## 6. Access the admin UI
 
@@ -180,6 +283,64 @@ kubectl -n virtual-engineer port-forward svc/virtual-engineer-admin 3100:3100
 # open http://127.0.0.1:3100 — Config → Policies to author sandbox policies,
 # Config → Policy Denials to audit.
 ```
+
+## Restore from backup
+
+The restore must run before the orchestrator opens SQLite. New encrypted
+`.tar.gz.enc` archives require both the mounted backup keyring and original
+`ADMIN_AUTH_SECRET`; legacy plaintext `.tar.gz` archives require the original
+admin secret only. Archives do not contain these keys, Keycloak/OIDC state,
+OpenShell state, or ephemeral workspaces. Preserve or reconfigure OIDC
+separately, and copy the archive off-cluster before restoring. A populated PVC
+requires an explicit forced restore; the existing database and prompt overrides
+are quarantined on that PVC as `.pre-restore-*`.
+
+For an existing deployment, stage the archive on the data PVC through the
+running orchestrator pod, then stop that pod before enabling the one-shot
+restore. Replace the local archive path below with the downloaded archive:
+
+```bash
+NAMESPACE=virtual-engineer
+DEPLOYMENT=virtual-engineer-orchestrator
+ARCHIVE=/secure/path/ve-backup-20260924T030000000Z-a1b2c3d4.tar.gz.enc
+POD=$(kubectl get pods -n "$NAMESPACE" \
+  -l app.kubernetes.io/name=virtual-engineer,app.kubernetes.io/component=orchestrator \
+  -o jsonpath='{.items[0].metadata.name}')
+test -n "$POD"
+kubectl exec -i "$POD" -n "$NAMESPACE" -c orchestrator -- \
+  sh -ec 'umask 077; cat > /app/data/restore.tar.gz.enc' < "$ARCHIVE"
+kubectl scale deployment/"$DEPLOYMENT" -n "$NAMESPACE" --replicas=0
+kubectl wait --for=delete "pod/$POD" -n "$NAMESPACE" --timeout=180s
+```
+
+The current PVC already contains the database, so replacing it requires the
+explicit force variable. Do not set it when restoring to an empty PVC. Start
+one restore rollout and wait for readiness:
+
+```bash
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
+  VE_RESTORE_FROM=/app/data/restore.tar.gz.enc VE_RESTORE_FORCE=true
+kubectl scale deployment/"$DEPLOYMENT" -n "$NAMESPACE" --replicas=1
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+```
+
+After the restore pod is ready, immediately remove both one-shot variables. This
+updates the Deployment and starts a normal pod against the restored database;
+leaving `VE_RESTORE_FORCE=true` set would reapply the archive on later restarts.
+Remove the staged archive only after that normal rollout succeeds, and retain
+the `.pre-restore-*` quarantine until the instance has been verified:
+
+```bash
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
+  VE_RESTORE_FROM- VE_RESTORE_FORCE-
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -c orchestrator -- \
+  rm -f /app/data/restore.tar.gz.enc
+```
+
+If restore validation or startup fails, keep the restore variables and staged
+archive in place while diagnosing the pod logs. The archive is never copied
+into a Kubernetes Secret or ConfigMap.
 
 ## Scheduling model
 

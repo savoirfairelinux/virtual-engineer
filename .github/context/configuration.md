@@ -19,6 +19,13 @@ All variables are optional. Only system/infra settings remain in the environment
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. `test` silences the logger by default. |
 | `LOG_LEVEL` | `info` | Pino level. |
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. |
+| `BACKUP_DIR` | `<DATABASE_PATH directory>/backups` | Local archive directory; new archives use `.tar.gz.enc` (AES-256-GCM), while existing `.tar.gz` archives remain restorable. Admin UI controls scheduling/retention, not this path. The directory also holds private temporary plaintext staging during creation, so it must be on encrypted storage. Download or copy completed archives to separate storage for disaster recovery. |
+| `BACKUP_ACCESS_GID` | unset for direct runs; `start.sh` uses the invoking user's primary group | Grants this group read/list access to local encrypted archives. The directory remains root-owned with mode `2750`; archives use `0640`. Group members can read ciphertext but cannot write or delete it. |
+| `BACKUP_KEYRING_FILE` | unset; `start.sh` setup or normal Docker startup generates a default for a fresh instance | JSON keyring path. Required to create new backups and restore `.tar.gz.enc` archives; not needed to restore legacy `.tar.gz` archives. Setup creates a random 32-byte key in `${XDG_CONFIG_HOME:-$HOME/.config}/virtual-engineer/backup-keyring.json` with mode `0600`, persists the resolved path in `.env`, and reuses an existing file without replacing it. An initialized instance with a missing keyring fails closed; restore the original instead of generating a replacement. Direct runs and Kubernetes deployments must provide their own keyring. It contains one 32-byte hex key per safe key ID plus `activeKeyId`; mount/read it read-only (`0600` locally, `0440` for the Kubernetes Secret volume). Keep it outside `DATA_DIR`/`BACKUP_DIR` and separately escrowed. Rotation adds a new active key while retaining old keys for all retained archives. |
+| `VE_RESTORE_FROM` | — | One-shot encrypted `.tar.gz.enc` or legacy `.tar.gz` archive path read at startup before SQLite opens. Restore requires the original `ADMIN_AUTH_SECRET`; encrypted archives additionally require their key in `BACKUP_KEYRING_FILE`. Archives do not contain these secrets or the deployment's OIDC/runtime configuration. Do not leave this set in a persistent environment after restore. |
+| `VE_RESTORE_FORCE` | `false` | Explicitly permit replacement of existing database/prompt targets; existing targets are preserved in a `.pre-restore-*` directory. A completed restore writes a marker bound to the canonical archive path, full archive SHA-256, file size/mtime, and secret fingerprint. When the marker matches and both installed targets remain present, restarts return `already-restored` even if force is still true. If the marker matches but a target is missing, restore errors unless force is true, in which case it reapplies the archive. A different archive path/hash/metadata or secret does not match the marker; any existing targets then require force before replacement. Clear the one-shot restore variables after a successful restore. |
+
+Direct startup rejects a configured keyring inside the directory containing the resolved SQLite file or inside `BACKUP_DIR`, including paths that traverse symlinks. Place it in an independent secrets directory before attempting a restore.
 
 ### Admin server
 
@@ -27,7 +34,7 @@ All variables are optional. Only system/infra settings remain in the environment
 | `ADMIN_API_ENABLED` | `true` | Boolean. |
 | `ADMIN_API_HOST` | `127.0.0.1` | Bind host. |
 | `ADMIN_API_PORT` | `3100` | Port. |
-| `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the documented generation command produces a 64-character value. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
+| `ADMIN_AUTH_SECRET` | —; `start.sh` setup or normal Docker startup generates a value for a fresh instance | Required whenever provider credentials are created or already stored. Setup generates a random 32-byte value, persists it in `.env` with mode `0600`, and reuses existing `.env` or exported values without replacing them. An initialized instance with a missing value fails closed; explicit archive restore skips generation and requires the original. Newly generated values are available to the first admin through an explicit, one-time no-store reveal. Direct `npm run dev` and Kubernetes deployments must provide it explicitly. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. Backup creation and restore require the original secret for v2 manifest HMAC authentication of the SQLite checksum and deterministically sorted prompt-override filename/hash inventory; it is never stored in the archive and is separate from the backup encryption keyring. New encrypted archives also require `BACKUP_KEYRING_FILE` to restore. Earlier v1 manifests are not accepted by the v2 restore path. `ConfigSchema` enforces a 32-character minimum when set (throws `Invalid configuration` with a message pointing to `openssl rand -hex 32`); the generated value is 64 hexadecimal characters. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, derive the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Enable only behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
 
 There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value exists only as an optional dependency field wired into the admin server (used to render webhook URLs), not as configuration parsed by `src/config.ts`.
@@ -55,7 +62,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Image the OpenShell sandbox is created from (`sandbox create --from`). |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
 
-There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
+There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 26 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
 
 ### Read outside `ConfigSchema`
 
@@ -84,6 +91,24 @@ example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun `./scripts/start.sh` wh
 no tasks are active. The mount option participates in the existing run-config
 hash, so changing it recreates the orchestrator container. This setting does not
 change OpenShell sandbox limits or Kubernetes deployment storage.
+
+### Restore launcher
+
+`./scripts/start.sh --restore <archive> [--force] [--yes]` validates the local
+archive, asks the operator to type `restore`, then stops/removes the existing
+`ve-orchestrator` before starting its replacement with the archive mounted
+read-only. When `BACKUP_KEYRING_FILE` is set, the launcher also mounts that file
+read-only from outside `DATA_DIR`; without it, new backups and encrypted restores
+fail closed while legacy `.tar.gz` restores remain available. The restore path
+does not generate a replacement keyring, because encrypted archives need their
+original key; a normal launcher start generates the default keyring when unset.
+`--yes` skips only the interactive confirmation and is intended for explicit
+automation. `--force` is separate: use it only when replacing a
+populated database or prompt directory is intended; the old targets are
+quarantined under the data directory. The launcher-based restore works with
+either OpenShell compute driver because the orchestrator remains a Docker
+container. For the manifests-based Kubernetes deployment, follow the PVC
+procedure in [deploy/k8s/README.md](../../deploy/k8s/README.md).
 
 ## Boot-time validation
 

@@ -23,6 +23,7 @@ import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
 import { AuditExportSection }   from "./AuditExportSection.tsx";
+import { BackupsSection }       from "./BackupsSection.tsx";
 import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
 import { DenialsSection }       from "./DenialsSection.tsx";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
@@ -40,6 +41,7 @@ const CONFIG_NAV = [
   { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers" },
   { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config" },
   { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock" },
+  { id: "backups",       label: "Backups",          sub: "Recovery archives", icon: "file" },
   { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
 
@@ -68,7 +70,7 @@ const CONFIG_GROUPS: ReadonlyArray<{
   {
     id: "operations",
     label: "Operations & audit",
-    sections: ["audit", "system"],
+    sections: ["audit", "backups", "system"],
   },
 ];
 
@@ -334,6 +336,7 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "audit" && effectiveRoute.mode === "export" && (
         <AuditExportSection onBack={() => navigate({ section: "audit", mode: "list" })} />
       )}
+      {effectiveSec === "backups" && <BackupsSection onDirtyChange={routedProps.setDirty} />}
       {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} onDirtyChange={routedProps.setDirty} />}
     </>
   );
