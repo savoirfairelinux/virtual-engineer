@@ -651,18 +651,9 @@ export class ReviewOrchestrator {
     const withinDeadline = <T>(operation: Promise<T>): Promise<T> =>
       this.withAbortSignal(operation, deadlineController.signal, timeoutError);
     startDeadline();
+    let cycleLease: ConcurrencyLease | undefined;
 
     try {
-      emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
-
-      const details = await withinDeadline(
-        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
-      );
-      const diff = await withinDeadline(
-        this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset, deadlineController.signal)
-      );
-
-      // Resolve the VE project directly from the task (set by startReviewTask).
       const project = task.projectId
         ? await withinDeadline(this.deps.stateStore.getProjectById(task.projectId))
         : null;
@@ -672,6 +663,33 @@ export class ReviewOrchestrator {
           `Ensure startReviewTask was called before runReview.`
         );
       }
+
+      if (this.deps.concurrencyTracker !== undefined) {
+        const lifecycleCanCancelQueue = lifecycleSignal !== undefined;
+        if (lifecycleCanCancelQueue) pauseDeadline();
+        cycleLease = await this.awaitSignalAware(
+          this.deps.concurrencyTracker.acquireWhenAvailable(
+            project.id,
+            project.agentId,
+            deadlineController.signal,
+            taskId,
+            task.createdAt.getTime(),
+          ),
+          deadlineController.signal,
+          timeoutError,
+        );
+        if (lifecycleCanCancelQueue) startDeadline();
+        await withinDeadline(this.assertReviewStillActive(taskId));
+      }
+
+      emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
+
+      const details = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
+      const diff = await withinDeadline(
+        this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset, deadlineController.signal)
+      );
 
       const reviewConfig = await withinDeadline(
         this.deps.stateStore.getProjectReviewConfig(project.id)
@@ -830,25 +848,9 @@ export class ReviewOrchestrator {
       const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
 
       let handle: WorkspaceHandle | undefined;
-      let cycleLease: ConcurrencyLease | undefined;
       let rawOutput: string;
 
       try {
-        if (this.deps.concurrencyTracker !== undefined) {
-          const lifecycleCanCancelQueue = lifecycleSignal !== undefined;
-          if (lifecycleCanCancelQueue) pauseDeadline();
-          cycleLease = await this.awaitSignalAware(
-            this.deps.concurrencyTracker.acquireWhenAvailable(
-              project.id,
-              project.agentId,
-              deadlineController.signal,
-            ),
-            deadlineController.signal,
-            timeoutError,
-          );
-          if (lifecycleCanCancelQueue) startDeadline();
-          await withinDeadline(this.assertReviewStillActive(taskId));
-        }
         handle = await this.awaitSignalAware(
           this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
           deadlineController.signal,
@@ -934,7 +936,10 @@ export class ReviewOrchestrator {
             log.warn({ err, taskId }, "failed to destroy review workspace")
           );
         }
-        if (cycleLease !== undefined) this.deps.concurrencyTracker?.release(cycleLease);
+        if (cycleLease !== undefined) {
+          this.deps.concurrencyTracker?.release(cycleLease);
+          cycleLease = undefined;
+        }
       }
 
       emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
@@ -1172,6 +1177,10 @@ export class ReviewOrchestrator {
       }
       return;
     } catch (err) {
+      if (cycleLease !== undefined) {
+        this.deps.concurrencyTracker?.release(cycleLease);
+        cycleLease = undefined;
+      }
       if (err instanceof ReviewSupersededError) {
         await this.deps.stateStore.updateExternalChangeId(
           taskId,

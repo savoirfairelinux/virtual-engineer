@@ -240,6 +240,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
               <StatePill state={taskWithDetails.state} />
+              {task.waitingForAgentSlot && <Tag tone="warn">Queued</Tag>}
               {/* action bar */}
               {canOperate && (
                 <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>

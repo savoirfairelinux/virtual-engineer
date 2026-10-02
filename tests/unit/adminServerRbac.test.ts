@@ -330,8 +330,10 @@ describe("adminServer PBAC project scoping", () => {
   let store: SqliteStateStore;
   let server: ReturnType<typeof createAdminServer>;
   let baseUrl: string;
+  let waitingTaskIds: Set<string>;
 
   beforeEach(async () => {
+    waitingTaskIds = new Set();
     store = await SqliteStateStore.create(tempDbPath());
     server = createAdminServer({
       stateStore: store,
@@ -355,6 +357,7 @@ describe("adminServer PBAC project scoping", () => {
           perProject: { "concurrency-project": 1 },
           perAgent: { "concurrency-agent": 1 },
         }),
+        isWaiting: (taskId) => waitingTaskIds.has(taskId),
       },
       providers: [
         {
@@ -1052,14 +1055,21 @@ describe("adminServer PBAC project scoping", () => {
       undefined,
       project.id
     );
+    waitingTaskIds.add(taskId);
 
     const ownerList = await fetch(`${baseUrl}/api/admin/tasks`, authed(owner.token));
-    const ownerBody = (await ownerList.json()) as { tasks: Array<{ ticketId: string }> };
+    const ownerBody = (await ownerList.json()) as { tasks: Array<{ ticketId: string; waitingForAgentSlot: boolean }> };
     expect(ownerBody.tasks.map((task) => task.ticketId)).toContain("OWN-1");
+    expect(ownerBody.tasks.find((task) => task.ticketId === "OWN-1")?.waitingForAgentSlot).toBe(true);
 
     const delegateBefore = await fetch(`${baseUrl}/api/admin/tasks`, authed(delegate.token));
     const delegateBeforeBody = (await delegateBefore.json()) as { tasks: Array<{ ticketId: string }> };
     expect(delegateBeforeBody.tasks.map((task) => task.ticketId)).not.toContain("OWN-1");
+    const controller = new AbortController();
+    const stream = await fetch(`${baseUrl}/api/admin/events/stream`, { ...authed(delegate.token), signal: controller.signal });
+    const { value } = await stream.body!.getReader().read();
+    controller.abort();
+    expect(new TextDecoder().decode(value)).not.toContain(taskId);
 
     const group = await store.createGroup({ name: "Delegated project owners" });
     await store.addUserToGroup(group.id, delegate.user.id);

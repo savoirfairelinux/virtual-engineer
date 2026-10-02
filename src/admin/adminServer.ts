@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
 import { oauthAppResourceId, parseOAuthAppResourceId } from "../domain/accessControl.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, EffectivePolicyRule, ProjectId, ResourceType, Task } from "../interfaces.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, EffectivePolicyRule, ProjectId, ResourceType, Task, TaskId } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -177,6 +177,7 @@ export interface AdminServerDependencies {
   concurrency?: {
     /** Live in-memory run-slot counters from {@link ConcurrencyTracker}. */
     snapshot(): { global: number; perProject: Record<string, number>; perAgent: Record<string, number> };
+    isWaiting?(taskId: TaskId): boolean;
   };
   /**
    * When provided, mounts `GET/PUT /api/admin/settings` for editing the runtime
@@ -458,6 +459,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   registerStreamRoutes(router, {
     stateStore: dependencies.stateStore,
     projectStore: dependencies.projectStore,
+    isTaskWaiting: (taskId) => dependencies.concurrency?.isWaiting?.(taskId) ?? false,
   });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
   registerAuthRoutes(router, {
@@ -479,6 +481,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     projectStore: dependencies.projectStore,
     taskControl: dependencies.taskControl,
     auditStore,
+    isTaskWaiting: (taskId) => dependencies.concurrency?.isWaiting?.(taskId) ?? false,
   });
   registerIntegrationRoutes(router, {
     integrationStore: dependencies.integrationStore,

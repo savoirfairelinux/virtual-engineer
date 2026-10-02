@@ -330,13 +330,11 @@ describe("SqliteStateStore — PromptStore", () => {
       ).rejects.toThrow(/invalid|empty|label/i);
     });
 
-    it("accepts special characters and normalizes them", async () => {
+    it("accepts special characters in labels while keeping opaque ids", async () => {
       const prompt = await store.createPrompt("My@Test#Prompt!", "content", "instructions");
 
-      expect(prompt.id).toBeDefined();
-      // id should be normalized (special chars removed/replaced)
-      expect(typeof prompt.id).toBe("string");
-      expect(prompt.id.length).toBeGreaterThan(0);
+      expect(prompt.id).toMatch(/^prompt-[0-9a-f-]{36}$/);
+      expect(prompt.label).toBe("My@Test#Prompt!");
     });
 
     it("stores multi-line content correctly", async () => {
@@ -441,19 +439,17 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(prompt.label).toBe("Mixed Case Label");
     });
 
-    it("truncates very long labels to reasonable length", async () => {
+    it("keeps long labels unchanged because ids are opaque UUIDs", async () => {
       const longLabel = "a".repeat(100);
       const prompt = await store.createPrompt(longLabel, "content", "instructions");
-      expect(prompt.id.length).toBeLessThanOrEqual(100);
+      expect(prompt.id).toMatch(/^prompt-[0-9a-f-]{36}$/);
+      expect(prompt.label).toBe(longLabel);
     });
 
-    it("removes or replaces special characters", async () => {
+    it("preserves special characters in labels and keeps id format stable", async () => {
       const prompt = await store.createPrompt("Label@With#Special$Chars!", "content", "instructions");
-      // Should not throw, and id should be a valid string
-      expect(typeof prompt.id).toBe("string");
-      expect(prompt.id.length).toBeGreaterThan(0);
-      // Should not contain special chars (except dashes)
-      expect(prompt.id).toMatch(/^[a-z0-9\-]+$/);
+      expect(prompt.id).toMatch(/^prompt-[0-9a-f-]{36}$/);
+      expect(prompt.label).toBe("Label@With#Special$Chars!");
     });
   });
 });

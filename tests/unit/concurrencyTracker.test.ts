@@ -3,7 +3,7 @@ import {
   createConcurrencyTracker,
   type ConcurrencyTrackerDeps,
 } from "../../src/orchestrator/concurrencyTracker.js";
-import type { AgentId, AgentRecord, ProjectId } from "../../src/interfaces.js";
+import { makeTaskId, type AgentId, type AgentRecord, type ProjectId } from "../../src/interfaces.js";
 
 function pid(s: string): ProjectId {
   return s as ProjectId;
@@ -59,6 +59,78 @@ describe("ConcurrencyTracker", () => {
     const second = await queued;
     expect(tracker.snapshot().global).toBe(1);
     tracker.release(second);
+    expect(tracker.snapshot().global).toBe(0);
+  });
+
+  it("reports a task as queued until its slot is granted or its wait is cancelled", async () => {
+    const tracker = createConcurrencyTracker(makeStubs({ perAgent: 1 }).deps);
+    const first = await tracker.acquire(pid("p1"), aid("a1"));
+    const nextId = makeTaskId("next");
+    const cancelledId = makeTaskId("cancelled");
+    const controller = new AbortController();
+    const next = tracker.acquireWhenAvailable(pid("p1"), aid("a1"), undefined, nextId);
+    const cancelled = tracker.acquireWhenAvailable(pid("p1"), aid("a1"), controller.signal, cancelledId);
+
+    expect(tracker.isWaiting(nextId)).toBe(true);
+    expect(tracker.isWaiting(cancelledId)).toBe(true);
+    controller.abort(new Error("cancelled"));
+    await expect(cancelled).rejects.toThrow("cancelled");
+    expect(tracker.isWaiting(cancelledId)).toBe(false);
+
+    tracker.release(first!);
+    const nextLease = await next;
+    expect(tracker.isWaiting(nextId)).toBe(false);
+    tracker.release(nextLease);
+  });
+
+  it("does not let a direct acquisition bypass an earlier waiter on the same integration", async () => {
+    const agent = { id: aid("a1"), integrationId: "copilot-1", maxConcurrent: 2 } as AgentRecord;
+    let lookupCount = 0;
+    let resolveQueuedLookup: ((record: AgentRecord) => void) | undefined;
+    const tracker = createConcurrencyTracker({
+      cacheTtlMs: 0,
+      agentStore: {
+        async getAgentById() {
+          lookupCount += 1;
+          if (lookupCount === 2) {
+            return new Promise<AgentRecord>((resolve) => { resolveQueuedLookup = resolve; });
+          }
+          return agent;
+        },
+      },
+    });
+    const active = await tracker.acquire(pid("p1"), aid("a1"));
+    const queued = tracker.acquireWhenAvailable(pid("p2"), aid("a1"));
+    const bypass = await tracker.acquire(pid("p3"), aid("a1"));
+    resolveQueuedLookup?.(agent);
+    if (bypass !== null) tracker.release(bypass);
+    const next = await queued;
+
+    expect(bypass).toBeNull();
+    tracker.release(active!);
+    tracker.release(next);
+  });
+
+  it("grants the next slot to the older task even when a newer task enqueues first", async () => {
+    const tracker = createConcurrencyTracker(makeStubs({ perAgent: 1 }).deps);
+    const active = await tracker.acquire(pid("p1"), aid("a1"));
+    // Newer task (higher createdAt) enqueues first, then older task (lower createdAt).
+    const newer = tracker.acquireWhenAvailable(
+      pid("p2"), aid("a1"), undefined, makeTaskId("newer"), 200,
+    );
+    const older = tracker.acquireWhenAvailable(
+      pid("p3"), aid("a1"), undefined, makeTaskId("older"), 100,
+    );
+
+    tracker.release(active!);
+    // Older task (lower priority) must win the first freed slot.
+    const olderLease = await older;
+    expect(tracker.snapshot().global).toBe(1);
+    tracker.release(olderLease);
+    // Only after the older task releases does the newer task acquire.
+    const newerLease = await newer;
+    expect(tracker.snapshot().global).toBe(1);
+    tracker.release(newerLease);
     expect(tracker.snapshot().global).toBe(0);
   });
 

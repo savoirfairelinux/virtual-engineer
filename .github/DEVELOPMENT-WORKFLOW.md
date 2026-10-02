@@ -14,7 +14,7 @@ You: describe task → Coordinator: clarify & propose stages → You: approve
 ## Starting the Workflow
 
 1. **Open Copilot Chat** in VS Code
-2. **Select agent**: `dev-coordinator`
+2. **Select agent**: `Development Coordinator` (id: `dev-coordinator`)
 3. **Describe your task**:
 
    ```text
@@ -103,7 +103,7 @@ All agent definitions live under [.github/agents/](./agents/). The full inventor
 | `codebase-analyst` | Read-only code audit and issue detection | User-invocable |
 | `doc-engineer` | Generates AI-consumable documentation | User-invocable |
 | `doc-auditor` | Read-only drift check: docs vs. actual code | User-invocable |
-| `dev-coordinator` | Orchestrates multi-stage workflow, runs quality gates | User-invocable |
+| `Development Coordinator` (`dev-coordinator`) | Orchestrates multi-stage workflow, runs quality gates | User-invocable |
 | `dev-preplanner` | Quick viability and risk assessment | Subagent |
 | `dev-planner` | Designs detailed implementation plan (3–5 phases) | Subagent |
 | `dev-plan-validator` | Validates plan against actual codebase | Subagent |

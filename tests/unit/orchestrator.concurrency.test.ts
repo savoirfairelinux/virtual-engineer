@@ -203,15 +203,15 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
       undefined,
     );
     await store.setTaskProjectId(failingTask.taskId, project.id);
+    await store.transition(failingTask.taskId, "CONTEXT_BUILDING");
+    const runnable = (await store.getTask(failingTask.taskId))!;
 
-    await expect(
-      (orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }).runAgentCycle(failingTask),
-    ).rejects.toThrow();
-
+    await (orch as unknown as { runWorkflow: (task: unknown) => Promise<void> }).runWorkflow(runnable);
+    expect((await store.getTask(failingTask.taskId))?.state).toBe("FAILED");
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
-  it("resumeStalledCodeGenTask advances a CONTEXT_BUILDING task once the slot frees up", async () => {
+  it("queues a CONTEXT_BUILDING task until the slot frees up without a polling retry", async () => {
     const project = await seedProjectAndAgent(store, { agentMax: 1 });
     const tracker = createConcurrencyTracker({
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
@@ -230,18 +230,94 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     await store.setTaskProjectId(task.taskId, project.id);
     await store.transition(task.taskId, "CONTEXT_BUILDING");
 
-    // Slot saturated externally → resume defers without advancing the task.
     const lease = await tracker.acquire(project.id, project.agentId);
     expect(lease).not.toBeNull();
-    await orch.resumeStalledCodeGenTask(task.taskId);
-    expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
+    const resumed = orch.resumeStalledCodeGenTask(task.taskId);
+    try {
+      await vi.waitFor(() => expect(tracker.isWaiting(task.taskId)).toBe(true));
+      expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
+      await orch.resumeStalledCodeGenTask(task.taskId);
+    } finally {
+      tracker.release(lease!);
+      await resumed;
+    }
 
-    // Free the slot → next resume drives the cycle to completion (FAILED here
-    // because the mock workspace cannot clone), and releases the slot.
-    tracker.release(lease!);
-    await orch.resumeStalledCodeGenTask(task.taskId);
     expect((await store.getTask(task.taskId))!.state).toBe("FAILED");
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
+  });
+
+  it("removes an abandoned code task from the queue without failing it", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
+    const tracker = createConcurrencyTracker({
+      agentStore: { getAgentById: (id) => store.getAgentById(id) },
+    });
+    const orch = buildOrchestrator(store, tracker);
+    const task = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "abandon-waiting" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined,
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+    const active = await tracker.acquire(project.id, project.agentId);
+    const waiting = orch.resumeStalledCodeGenTask(task.taskId);
+
+    try {
+      await vi.waitFor(() => expect(tracker.isWaiting(task.taskId)).toBe(true));
+      const abandoned = await orch.abandonTask(task.taskId);
+      await waiting;
+
+      expect(abandoned.state).toBe("ABANDONED");
+      expect((await store.getTask(task.taskId))?.state).toBe("ABANDONED");
+      expect(tracker.isWaiting(task.taskId)).toBe(false);
+      expect(tracker.snapshot().global).toBe(1);
+    } finally {
+      tracker.release(active!);
+    }
+  });
+
+  it("cancels a queued code-gen cycle through task cancellation", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
+    let queueSignal: AbortSignal | undefined;
+    const tracker = {
+      acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
+        queueSignal = signal;
+        return new Promise<import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease>(
+          (_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }
+        );
+      }),
+      release: vi.fn(),
+      acquire: vi.fn().mockResolvedValue(null),
+      isWaiting: vi.fn().mockReturnValue(true),
+      snapshot: vi.fn().mockReturnValue({ global: 0, perProject: {}, perAgent: {} }),
+      reset: vi.fn(),
+    } as unknown as ConcurrencyTracker;
+    const orch = buildOrchestrator(store, tracker);
+    const task = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "cancel-waiting" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined,
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+
+    const waiting = orch.resumeStalledCodeGenTask(task.taskId);
+    await vi.waitFor(() => expect(tracker.acquireWhenAvailable).toHaveBeenCalledOnce());
+    const abandoned = await orch.abandonTask(task.taskId);
+    await waiting;
+
+    expect(queueSignal?.aborted).toBe(true);
+    expect(abandoned.state).toBe("ABANDONED");
+    expect((await store.getTask(task.taskId))?.state).toBe("ABANDONED");
+    expect(tracker.release).not.toHaveBeenCalled();
   });
 
   it("does not drive the same stalled task concurrently", async () => {
@@ -304,5 +380,42 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     await orch.resumeStalledCodeGenTask(task.taskId);
     // State is unchanged — the method returned early without running a cycle.
     expect((await store.getTask(task.taskId))!.state).toBe("IN_REVIEW");
+  });
+
+  it("resumeStalledCodeGenTask does not start while workflow is already active", async () => {
+    const project = await seedProjectAndAgent(store);
+    const orch = buildOrchestrator(store, undefined);
+    const task = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "stall-active-workflow" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+    const stalledTask = (await store.getTask(task.taskId))!;
+
+    let finishFirstRun: (() => void) | undefined;
+    const firstRunBlocked = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+    const runFromContextBuilding = vi.fn().mockReturnValue(firstRunBlocked);
+    const internal = orch as unknown as {
+      runWorkflow(task: unknown): Promise<void>;
+      runFromContextBuilding(task: unknown): Promise<void>;
+    };
+    internal.runFromContextBuilding = runFromContextBuilding;
+
+    const firstRun = internal.runWorkflow(stalledTask);
+    await vi.waitFor(() => expect(runFromContextBuilding).toHaveBeenCalledTimes(1));
+
+    await orch.resumeStalledCodeGenTask(task.taskId);
+    expect(runFromContextBuilding).toHaveBeenCalledTimes(1);
+
+    finishFirstRun!();
+    await firstRun;
+    expect(runFromContextBuilding).toHaveBeenCalledTimes(1);
   });
 });

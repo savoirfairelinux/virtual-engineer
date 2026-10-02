@@ -1,5 +1,5 @@
 import { makeTaskId } from "../interfaces.js";
-import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task } from "../interfaces.js";
+import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task, TaskId } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
@@ -19,6 +19,7 @@ export interface StreamRouteStore {
 export interface StreamRouteDeps {
   stateStore: StreamRouteStore;
   projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> } | undefined;
+  isTaskWaiting?: ((taskId: TaskId) => boolean) | undefined;
 }
 
 async function canReadTask(req: import("node:http").IncomingMessage, task: Task, deps: StreamRouteDeps): Promise<boolean> {
@@ -202,7 +203,10 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
           : filterTasksByReadScope(req, candidates);
         const sorted = visible
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
-        res.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
+        res.write(`event: tasks\ndata: ${JSON.stringify(sorted.map((task) => ({
+          ...task,
+          waitingForAgentSlot: deps.isTaskWaiting?.(task.taskId) ?? false,
+        })))}\n\n`);
       } catch { /* ignore */ }
     };
 

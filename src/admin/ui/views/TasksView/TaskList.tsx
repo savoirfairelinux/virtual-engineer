@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
+import { Tag } from "../../components/Tag.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { isActiveState } from "../../states.ts";
 import { relativeTime } from "../../api.ts";
@@ -71,6 +72,7 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <StatePill state={task.state} size="sm" />
+        {task.waitingForAgentSlot && <Tag tone="warn">Queued</Tag>}
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: "10px", color: "var(--text-ghost)" }}>
           {relativeTime(task.updatedAt)}

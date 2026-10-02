@@ -29,6 +29,7 @@ export interface ApiTask {
   displayId: string | null;
   createdAt: string;
   updatedAt: string;
+  waitingForAgentSlot?: boolean;
   changesPerRepo?: ChangePerRepo[];
 }
 

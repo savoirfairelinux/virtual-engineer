@@ -1,6 +1,6 @@
 import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
-import type { AgentCycle, ProjectId, ProjectRecord, StateTransition, Task } from "../interfaces.js";
+import type { AgentCycle, ProjectId, ProjectRecord, StateTransition, Task, TaskId } from "../interfaces.js";
 import type { IncomingMessage } from "node:http";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
@@ -81,6 +81,7 @@ export interface TaskRouteDeps {
   stateStore: TaskRouteStore;
   projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> } | undefined;
   auditStore?: AuditCapableStore | undefined;
+  isTaskWaiting?: ((taskId: TaskId) => boolean) | undefined;
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
@@ -108,6 +109,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     writeJson(res, 200, {
       tasks: deduplicated.map((t) => {
         const s = serializeTask(t);
+        s["waitingForAgentSlot"] = deps.isTaskWaiting?.(t.taskId) ?? false;
         if (!s["reviewUrl"]) s["reviewUrl"] = cprReviewUrlByTaskId.get(t.taskId) ?? null;
         return s;
       }),
@@ -120,6 +122,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
     const serialized = serializeTask(task);
+    serialized["waitingForAgentSlot"] = deps.isTaskWaiting?.(taskId) ?? false;
     serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
       repoKey: c.repoKey,
       changeId: c.changeId,

@@ -94,7 +94,7 @@ This project uses **Conventional Commits** with the following constraints enforc
 - Body lines: **≤72 characters**.
 - Footer: `Closes #<n>` or `BREAKING CHANGE: <desc>` when applicable.
 - Language: write the entire commit message in English.
-- AI attribution: when AI generates or materially contributes to the work, add a `Co-authored-by:` trailer identifying the AI assistant (for example, `Co-authored-by: GitHub Copilot <copilot@github.com>`).
+- AI attribution: when AI generates or materially contributes to the work, add the repository-standard trailer: `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
 
 ### Types
 

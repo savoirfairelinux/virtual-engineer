@@ -63,11 +63,12 @@ git commit -m "feat(state): add CLOSING state to schema" -m "<body: why>"
 - Separate concerns (schema changes vs. orchestrator integration)
 - Reference issues — `Closes #123`
 - Keep commits small — < 300 lines of diff ideally
+- Keep each commit green against the canonical three gates documented in `ve-tdd` / `typescript-standard`
 
 ### ❌ Don't
 - Mix concerns — no feature + unrelated bugfix in one commit
 - Create dependency inversions — if commit A needs commit B, reorder
-- Break the gates — each commit should pass `npm test`, `npm run typecheck`, `npm run lint`
+- Break the required quality gates
 - Commit commented-out code
 - Make typo-fix commits — fold into the previous commit with `git commit --amend`
 

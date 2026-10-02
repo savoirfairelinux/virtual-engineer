@@ -52,6 +52,16 @@ the active task to `REVIEW_FAILED`; a compatible binding with an unavailable
 runtime leaves the task unchanged. Review tasks never fall through to the
 code-generation continuation path.
 
+Code-generation cycles and review passes share an in-process agent-slot queue.
+Review tasks claim a slot before fetching provider details and diffs, so a
+pending review cannot fill the shared review-diff tmpfs while another agent is
+working. Code tasks claim the same integration-scoped slot before building
+context or creating a workspace. The wait queue is ordered by task creation
+time, so recovery and concurrent triggers grant the next freed slot to the
+oldest waiting task even when a newer task reaches the queue first; queued
+waits are cancellable and disappear on shutdown/restart. The admin task list
+and detail display this live wait separately from persisted task states.
+
 ## Layers
 
 ### Polling — `src/orchestrator/pollingLoop.ts`

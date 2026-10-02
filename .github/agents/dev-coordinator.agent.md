@@ -81,13 +81,9 @@ For each stage:
 
 ## Verification Gates
 
-After implementation (and after any loop-back fix), you may run the three quality gates yourself via `execute`:
-
-```
-npm test            # must pass
-npm run typecheck   # zero errors
-npm run lint        # zero errors
-```
+After implementation (and after any loop-back fix), you may run the canonical
+three quality gates yourself via `execute` as defined in `ve-tdd` and
+`.github/copilot-instructions.md`.
 
 You run gates and delegate everything else — you never edit code yourself.
 

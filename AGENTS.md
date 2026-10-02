@@ -29,13 +29,11 @@ All provider configuration lives in SQLite and is managed through the admin UI. 
 
 ## Quality gates (run before every commit)
 
-```bash
-npm test            # Vitest — all unit + integration tests must pass
-npm run typecheck   # zero TS errors (tsconfig.json + tsconfig.agent.json)
-npm run lint        # zero ESLint errors (src, tests, agent-worker/src)
-```
+Use the canonical gate commands documented in:
+- [.github/copilot-instructions.md](.github/copilot-instructions.md) (repo-wide default)
+- [.github/skills/ve-tdd/SKILL.md](.github/skills/ve-tdd/SKILL.md) (implementation workflow)
 
-Also: `npm run dev` (start orchestrator), `npm run build:ui` (admin SPA), `npm run db:migrate` (migrations).
+Common operational commands (`npm run dev`, `npm run build:ui`, `npm run db:migrate`) are documented in the context files linked above.
 
 ## Non-negotiables
 
@@ -45,12 +43,7 @@ Also: `npm run dev` (start orchestrator), `npm run build:ui` (admin SPA), `npm r
 - **Commit policy**: assistant-created or assistant-organized commits use English Conventional Commits and include a `Co-authored-by:` trailer when AI generated or materially contributed to the work. See the [`typescript-standard` skill](.github/skills/typescript-standard/SKILL.md) for the canonical format and scopes.
 - **Secrets & safety**: provider credentials live in the DB, never in env or code. Never commit secrets. Confirm before destructive/irreversible actions.
 
-## Critical facts (memorise)
+## Critical facts
 
-- Timestamps are stored in **seconds** → `datetime(col, 'unixepoch')`, never `col / 1000`.
-- `tasks` primary key is `task_id` (TEXT); there is **no** `id` column.
-- Pause/resume are `state_transitions` rows where `from_state == to_state` (metadata `action`), not boolean columns.
-- Agents run in **ephemeral OpenShell sandboxes** (upload → exec → download); isolation comes from deny-by-default runtime policies, and the host owns all git plumbing and push credentials.
-- Editing an integration hot-refreshes runtime deps — no orchestrator restart needed.
-- Rebuild the agent image after touching `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, `src/agents/aiderAdapter.ts`, `src/agents/gooseAdapter.ts`, `src/agents/codexAdapter.ts`, `src/agents/geminiAdapter.ts`, `src/agents/opencodeAdapter.ts`, `src/agents/cursorAdapter.ts`, `agent-worker/src/**`, or `Dockerfile.agent`:
-  `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .`
+Keep `.github/copilot-instructions.md` as the canonical source for invariants
+and boundaries. Do not duplicate those lists here.

@@ -355,6 +355,58 @@ describe("createAdminServer", () => {
     }
   });
 
+  it("reports live agent-slot waiters in task lists, details, and the tasks stream", async () => {
+    const queued = makeTask({
+      taskId: makeTaskId("queued"),
+      ticketId: makeTicketId("queued-ticket"),
+      externalChangeId: makeExternalChangeId("Iqueued"),
+      state: "REVIEW_RUNNING",
+    });
+    const other = makeTask({
+      taskId: makeTaskId("other"),
+      ticketId: makeTicketId("other-ticket"),
+      externalChangeId: makeExternalChangeId("Iother"),
+    });
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getAllTasks: async () => [queued, other],
+        getTask: async (id) => id === queued.taskId ? queued : other,
+      }),
+      config: { nodeEnv: "test", logLevel: "info", maxAgentCycles: 3, maxRetryAttempts: 5, pollingIntervalMs: 30_000 },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+      providers: providerSummaries,
+      concurrency: {
+        snapshot: () => ({ global: 0, perProject: {}, perAgent: {} }),
+        isWaiting: (taskId) => taskId === queued.taskId,
+      },
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const list = await fetch(`${baseUrl}/api/admin/tasks`);
+      const listBody = await list.json() as { tasks: Array<{ taskId: string; waitingForAgentSlot: boolean }> };
+      expect(listBody.tasks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ taskId: queued.taskId, waitingForAgentSlot: true }),
+        expect.objectContaining({ taskId: other.taskId, waitingForAgentSlot: false }),
+      ]));
+
+      const detail = await fetch(`${baseUrl}/api/admin/tasks/${queued.taskId}`);
+      await expect(detail.json()).resolves.toEqual({
+        task: expect.objectContaining({ taskId: queued.taskId, waitingForAgentSlot: true }),
+      });
+
+      const controller = new AbortController();
+      const stream = await fetch(`${baseUrl}/api/admin/events/stream`, { signal: controller.signal });
+      const { value } = await stream.body!.getReader().read();
+      const event = new TextDecoder().decode(value);
+      controller.abort();
+      expect(event).toContain('"waitingForAgentSlot":true');
+      expect(event).toContain('"waitingForAgentSlot":false');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("prefers the newer retried task when ticket tasks share the same updatedAt", async () => {
     const updatedAt = new Date("2026-04-07T10:00:00.000Z");
     const abandonedTask = makeTask({

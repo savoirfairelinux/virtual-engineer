@@ -70,7 +70,8 @@ export async function recoverActiveReviews(
 ): Promise<ReviewRecoveryResult> {
   const result: ReviewRecoveryResult = { recovered: 0, failed: 0, unavailable: 0 };
   const activeTasks = await store.getActiveTasks();
-  const reviewTasks = activeTasks.filter((task) => task.taskType === "code-review");
+  const reviewTasks = activeTasks.filter((task) => task.taskType === "code-review")
+    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
 
   await Promise.all(reviewTasks.map(async (task) => {
     try {

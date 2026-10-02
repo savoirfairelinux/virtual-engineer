@@ -23,9 +23,7 @@ You are a runtime debugger for the virtual-engineer project. You diagnose failur
 1. **Identify the root cause** — Read the log or stack trace. Find the exact file and line responsible. DO NOT edit anything yet.
 2. **Reproduce** — Write a failing unit test in `tests/unit/` that captures the bug. The test must fail on the current code.
 3. **Fix** — Make the minimal code change to fix the root cause.
-4. **Verify** — Run `npm test`. All tests must pass, including your new regression test.
-5. **Type-check** — `npm run typecheck` must produce zero errors (runs `tsc --noEmit` for both `tsconfig.json` and `tsconfig.agent.json`).
-6. **Lint** — `npm run lint` must produce zero errors.
+4. **Run canonical gates** — Execute the three required gates from `ve-tdd` (`npm test`, `npm run typecheck`, `npm run lint`) and ensure your regression test is included.
 7. **Commit** — Follow the canonical commit policy in the `typescript-standard` skill.
 
 ## Debug Reference

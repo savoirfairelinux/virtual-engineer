@@ -514,6 +514,7 @@ async function main(): Promise<void> {
       integrationStreams: integrationStreamEvents,
       concurrency: {
         snapshot: () => concurrencyTracker.snapshot(),
+        isWaiting: (taskId) => concurrencyTracker.isWaiting(taskId),
       },
       settings: settingsController,
       runtimePolicyStore: stateStore,

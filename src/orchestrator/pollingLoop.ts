@@ -621,12 +621,9 @@ export class PollingLoop {
   // ─── Stalled code-gen task polling ─────────────────────────────────────────
 
   /**
-   * Re-drive code-gen tasks that stalled in `CONTEXT_BUILDING` or `RETRY_CYCLE`
-   * while waiting for a free agent concurrency slot. `runAgentCycle` defers
-   * such tasks without re-queuing them, so absent this poll they would never
-   * advance until the next process restart. The orchestrator's in-flight guard
-   * makes re-driving an already-running task a no-op, so this is safe to run
-   * every tick.
+   * Re-drive code-gen tasks left in `CONTEXT_BUILDING` or `RETRY_CYCLE` after
+   * an interrupted workflow. Tasks already waiting for an agent slot are
+   * guarded by the orchestrator's active-workflow check.
    */
   async pollStalledCodeGenTasks(): Promise<void> {
     const activeTasks = await this.stateStore.getActiveTasks();
@@ -635,7 +632,7 @@ export class PollingLoop {
         t.taskType === "code-gen" &&
         (t.state === "CONTEXT_BUILDING" || t.state === "RETRY_CYCLE")
     );
-    log.debug({ count: stalledTasks.length }, "polling stalled code-gen tasks awaiting agent slot");
+    log.debug({ count: stalledTasks.length }, "polling stalled code-gen tasks");
 
     for (const task of stalledTasks) {
       Promise.resolve()

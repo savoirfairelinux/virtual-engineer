@@ -101,7 +101,7 @@ Once approved, the plan proceeds to **tested-engineer** for TDD implementation.
 
 ## Tips
 
-- **Use semantic_search** to find patterns in similar modules
 - **Read test files first** to understand what's already validated
-- **Check git history** for recent changes to target files
+- **Use `search` aggressively** to find similar patterns in nearby modules before concluding
+- **Use only read/search evidence** (no shell history or runtime commands)
 - **Verify env vars** in config.ts for new dependencies

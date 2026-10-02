@@ -16,7 +16,7 @@
  * cache to avoid hammering SQLite). Edits via the admin UI take
  * effect within the cache TTL.
  */
-import type { AgentId, AgentRecord, ProjectId } from "../interfaces.js";
+import type { AgentId, AgentRecord, ProjectId, TaskId } from "../interfaces.js";
 import { toRejectionError } from "../utils/rejection.js";
 import { getLogger } from "../logger.js";
 
@@ -61,7 +61,15 @@ export interface ConcurrencyTracker {
   acquire(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease | null>;
 
   /** Wait until a slot is available, then reserve and return it. */
-  acquireWhenAvailable(projectId: ProjectId, agentId: AgentId, signal?: AbortSignal): Promise<ConcurrencyLease>;
+  acquireWhenAvailable(
+    projectId: ProjectId,
+    agentId: AgentId,
+    signal?: AbortSignal,
+    taskId?: TaskId,
+    priority?: number,
+  ): Promise<ConcurrencyLease>;
+
+  isWaiting(taskId: TaskId): boolean;
 
   /**
    * Release a slot when a task reaches a terminal state. Idempotent: releasing
@@ -94,6 +102,15 @@ interface ActiveLease {
 interface PendingAcquisition {
   projectId: ProjectId;
   agentId: AgentId;
+  taskId: TaskId | undefined;
+  /**
+   * Creation-order priority for the wait queue. Lower values are served first,
+   * so an older task (smaller `createdAt`) is granted a slot before a newer
+   * task even if the newer task called `acquireWhenAvailable` first. Defaults
+   * to `Infinity` when no priority is supplied, preserving FIFO-by-call-order
+   * for callers that do not pass one.
+   */
+  priority: number;
   signal: AbortSignal | undefined;
   onAbort: (() => void) | undefined;
   settled: boolean;
@@ -164,9 +181,19 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     return true;
   }
 
-  async function acquireSlot(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease | null> {
+  async function hasEarlierWaiter(limits: ConcurrencyLimits, current?: PendingAcquisition): Promise<boolean> {
+    for (const pending of pendingAcquisitions) {
+      if (pending === current) break;
+      if (pending.settled) continue;
+      const pendingLimits = await loadLimits(pending.projectId, pending.agentId);
+      if (!pending.settled && pendingLimits.integrationKey === limits.integrationKey) return true;
+    }
+    return false;
+  }
+
+  async function acquireSlot(projectId: ProjectId, agentId: AgentId, current?: PendingAcquisition): Promise<ConcurrencyLease | null> {
     const limits = await loadLimits(projectId, agentId);
-    if (!check(limits, projectId, agentId)) return null;
+    if (await hasEarlierWaiter(limits, current) || !check(limits, projectId, agentId)) return null;
     activeGlobal += 1;
     perProject.set(projectId, (perProject.get(projectId) ?? 0) + 1);
     perIntegration.set(limits.integrationKey, (perIntegration.get(limits.integrationKey) ?? 0) + 1);
@@ -214,7 +241,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
           }
           let lease: ConcurrencyLease | null;
           try {
-            lease = await acquireSlot(pending.projectId, pending.agentId);
+            lease = await acquireSlot(pending.projectId, pending.agentId, pending);
           } catch (err) {
             pendingAcquisitions.splice(index, 1);
             index -= 1;
@@ -249,7 +276,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     /** Check whether a new task can start without mutating counters. */
     async canStart(projectId, agentId): Promise<boolean> {
       const limits = await loadLimits(projectId, agentId);
-      return check(limits, projectId, agentId);
+      return !(await hasEarlierWaiter(limits)) && check(limits, projectId, agentId);
     },
 
     /** Atomically claim a slot if limits allow, incrementing all three counters. */
@@ -257,7 +284,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
       return acquireSlot(projectId, agentId);
     },
 
-    async acquireWhenAvailable(projectId, agentId, signal): Promise<ConcurrencyLease> {
+    async acquireWhenAvailable(projectId, agentId, signal, taskId, priority): Promise<ConcurrencyLease> {
       return new Promise<ConcurrencyLease>((resolve, reject) => {
         if (signal?.aborted === true) {
           reject(toRejectionError(signal.reason));
@@ -266,6 +293,8 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
         const pending: PendingAcquisition = {
           projectId,
           agentId,
+          taskId,
+          priority: priority ?? Number.POSITIVE_INFINITY,
           signal,
           onAbort: undefined,
           settled: false,
@@ -283,11 +312,24 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
           };
           signal.addEventListener("abort", pending.onAbort, { once: true });
         }
-        pendingAcquisitions.push(pending);
+        // Insert in ascending priority order so the drain loop and
+        // `hasEarlierWaiter` (both array-order scans) serve older tasks first.
+        let insertAt = pendingAcquisitions.length;
+        for (let i = 0; i < pendingAcquisitions.length; i += 1) {
+          if (pendingAcquisitions[i]!.priority > pending.priority) {
+            insertAt = i;
+            break;
+          }
+        }
+        pendingAcquisitions.splice(insertAt, 0, pending);
         void drainPendingAcquisitions().catch((err: unknown) => {
           log.error({ err, projectId, agentId }, "failed to drain concurrency waiters");
         });
       });
+    },
+
+    isWaiting(taskId): boolean {
+      return pendingAcquisitions.some((pending) => !pending.settled && pending.taskId === taskId);
     },
 
     /** Consume a lease once and decrement exactly the counters it acquired. */

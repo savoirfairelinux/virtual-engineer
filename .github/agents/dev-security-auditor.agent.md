@@ -48,7 +48,7 @@ Any hit is **critical** — the pipeline halts until the user removes the secret
 - Logging passwords/tokens? Secrets in error messages? PII stored unencrypted?
 
 ### 5. Dependency Vulnerabilities
-Run `npm audit` (and `npm outdated` if relevant). Flag high/critical CVEs and unmaintained packages.
+Run dependency checks only when dependency manifests or lockfiles changed in the reviewed diff (for example `package.json`, `package-lock.json`, `npm-shrinkwrap.json`). In that case, run `npm audit` (and `npm outdated` if relevant). Flag high/critical CVEs and unmaintained packages.
 
 ### 6. Error Handling & Information Disclosure
 - Stack traces or system details exposed to users? Log sensitive context (connection strings, tokens)?
@@ -78,7 +78,7 @@ Return a short markdown report containing:
 - **Risk level** — low / medium / high / critical
 - **Secret scan result** — clean, or list of hits (file + line, redact the value)
 - **Findings** — per finding: severity, category, file:line, issue, risk, recommended fix
-- **Dependency findings** — from `npm audit`, if any
+- **Dependency findings** — from `npm audit` when dependency manifests/lockfiles changed; otherwise state "not run (no dependency file changes)"
 - **Verdict** — proceed to commit organization, or loop back to tested-engineer with findings
 
 **If HIGH or CRITICAL:** require explicit user approval or a loop-back before proceeding. **If secrets found:** halt unconditionally until removed.

@@ -42,6 +42,17 @@ function makeStore(activeTasks: Task[]) {
 }
 
 describe("recoverActiveReviews", () => {
+  it("starts older interrupted reviews first when recovery returns them out of order", async () => {
+    const newer = makeTask({ taskId: makeTaskId("review-newer"), createdAt: new Date("2026-04-08T00:00:00Z") });
+    const older = makeTask({ taskId: makeTaskId("review-older"), createdAt: new Date("2026-04-07T00:00:00Z") });
+    const recoverReview = vi.fn(async () => undefined);
+
+    await recoverActiveReviews(makeStore([newer, older]), async () => ({ recoverReview }));
+
+    expect(recoverReview).toHaveBeenNthCalledWith(1, older.taskId);
+    expect(recoverReview).toHaveBeenNthCalledWith(2, newer.taskId);
+  });
+
   it("recovers only active review tasks and isolates per-task failures", async () => {
     const pending = makeTask({ taskId: makeTaskId("review-pending") });
     const running = makeTask({ taskId: makeTaskId("review-running"), state: "REVIEW_RUNNING" });

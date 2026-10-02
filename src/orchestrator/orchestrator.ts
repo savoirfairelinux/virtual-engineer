@@ -77,6 +77,7 @@ export interface OrchestratorConfig {
 export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
   private readonly activeWorkflows = new Map<string, Promise<void>>();
+  private readonly activeTaskSignals = new Map<string, AbortSignal>();
   private readonly reviewProgressService: ReviewProgressService;
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
@@ -246,7 +247,8 @@ export class Orchestrator {
     const activeTasks = await this.stateStore.getActiveTasks();
     // Code-review tasks are managed by ReviewOrchestrator (via the polling loop);
     // do not resume them through the ticket workflow.
-    const ticketTasks = activeTasks.filter((t) => t.taskType !== "code-review");
+    const ticketTasks = activeTasks.filter((t) => t.taskType !== "code-review")
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
     log.info({ count: ticketTasks.length }, "resuming active tasks");
     for (const task of ticketTasks) {
       this.runWorkflow(task).catch((err: unknown) => {
@@ -255,16 +257,9 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Resume a single code-gen task that stalled while waiting for an agent
-   * concurrency slot. Called by the polling loop for tasks left in
-   * `CONTEXT_BUILDING` or `RETRY_CYCLE`: `runAgentCycle` defers (without
-   * re-queuing) whenever the shared agent slot is busy, so without this poll
-   * these tasks would never advance until the next process restart. The
-   * in-flight guard in `runWorkflow` prevents double-driving a task whose
-   * previous resume is still executing.
-   */
+  /** Resume a task left in a pre-cycle state after an interrupted workflow. */
   async resumeStalledCodeGenTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    if (this.activeWorkflows.has(taskId)) return;
     const task = await this.stateStore.getTask(taskId);
     if (!task || task.taskType === "code-review") return;
     if (task.state !== "CONTEXT_BUILDING" && task.state !== "RETRY_CYCLE") return;
@@ -508,7 +503,14 @@ export class Orchestrator {
   }
 
   private async runTaskLifecycle(taskId: Task["taskId"], operation: () => Promise<void>): Promise<void> {
-    await this.lifecycleCoordinator.runTask(taskId, async () => operation());
+    await this.lifecycleCoordinator.runTask(taskId, async (signal) => {
+      this.activeTaskSignals.set(taskId, signal);
+      try {
+        await operation();
+      } finally {
+        this.activeTaskSignals.delete(taskId);
+      }
+    });
   }
 
   private async executeWorkflow(task: Task): Promise<void> {
@@ -588,57 +590,63 @@ export class Orchestrator {
     if (!task.projectId && projectIdForCycle) {
       task.projectId = projectIdForCycle;
     }
-    try {
-    if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
-      const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
-      if (project) {
-        const acquiredLease = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
-        if (acquiredLease === null) {
-          if (task.state === "AGENT_RUNNING") {
-            task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", {
-              reason: "waiting for available agent slot",
-            });
-          }
-          log.info(
-            { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
-            "ai adapter at capacity; retrying on next poll tick"
-          );
-          return;
-        }
-        cycleLease = acquiredLease;
-      }
-    }
-
-    const ticketConnector = await this.resolveTicketConnector(task);
-    const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const currentCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
+    const existingRunningCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
       ? (await this.stateStore.getAgentCycles(task.taskId)).find(
           (cycle) => cycle.cycleNumber === task.cycleCount && cycle.result.status === "running"
         )
       : undefined;
-    const runningResult = {
-      status: "running" as const,
-      modifiedFiles: [],
-      summary: "",
-      agentLogs: "",
-      metadata: {},
-    };
-    let cycleNumber: number;
-    if (currentCycle !== undefined) {
-      cycleNumber = currentCycle.cycleNumber;
-      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, runningResult);
-    } else {
-      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-      cycleNumber = await this.stateStore.startAgentCycle(task.taskId, runningResult);
+    if (task.state === "AGENT_RUNNING" && task.cycleCount > 0 && existingRunningCycle === undefined) {
+      task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", undefined, "AGENT_RUNNING");
     }
-
-    log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
-
-    let handle: WorkspaceHandle | undefined;
     try {
-      const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
-      handle = activeHandle;
+      if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
+        const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
+        if (project) {
+          const signal = this.activeTaskSignals.get(task.taskId);
+          if (signal === undefined) {
+            throw new Error(
+              `Missing lifecycle signal while acquiring concurrency slot for task ${task.taskId}`
+            );
+          }
+          try {
+            cycleLease = await this.projectMode.concurrencyTracker.acquireWhenAvailable(
+              project.id, project.agentId, signal, task.taskId, task.createdAt.getTime(),
+            );
+          } catch (err) {
+            if (signal.aborted === true) return;
+            throw err;
+          }
+        }
+      }
+
+      const ticketConnector = await this.resolveTicketConnector(task);
+      const ticket = await ticketConnector.getTicket(task.ticketId);
+      const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
+      const currentCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
+        ? existingRunningCycle
+        : undefined;
+      const runningResult = {
+        status: "running" as const,
+        modifiedFiles: [],
+        summary: "",
+        agentLogs: "",
+        metadata: {},
+      };
+      let cycleNumber: number;
+      if (currentCycle !== undefined) {
+        cycleNumber = currentCycle.cycleNumber;
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, runningResult);
+      } else {
+        task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+        cycleNumber = await this.stateStore.startAgentCycle(task.taskId, runningResult);
+      }
+
+      log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
+
+      let handle: WorkspaceHandle | undefined;
+      try {
+        const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
+        handle = activeHandle;
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -850,31 +858,31 @@ export class Orchestrator {
           }
         }
       }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Agent cycle failed";
-      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
-        status: "failed",
-        modifiedFiles: [],
-        summary: message,
-        agentLogs: "",
-        metadata: { error: message },
-      }).catch((saveErr: unknown) => {
-        log.warn({ err: saveErr, taskId: task.taskId }, "failed to save agent failure cycle");
-      });
-      clearTaskEventBuffer(task.taskId);
-      throw err;
-    } finally {
-      if (handle !== undefined) {
-        try {
-          await this.workspaceRunner.destroyWorkspace(handle);
-        } catch (err) {
-          log.warn(
-            { taskId: task.taskId, err },
-            "workspace cleanup failed (non-fatal, task state unaffected)"
-          );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Agent cycle failed";
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
+          status: "failed",
+          modifiedFiles: [],
+          summary: message,
+          agentLogs: "",
+          metadata: { error: message },
+        }).catch((saveErr: unknown) => {
+          log.warn({ err: saveErr, taskId: task.taskId }, "failed to save agent failure cycle");
+        });
+        clearTaskEventBuffer(task.taskId);
+        throw err;
+      } finally {
+        if (handle !== undefined) {
+          try {
+            await this.workspaceRunner.destroyWorkspace(handle);
+          } catch (err) {
+            log.warn(
+              { taskId: task.taskId, err },
+              "workspace cleanup failed (non-fatal, task state unaffected)"
+            );
+          }
         }
       }
-    }
     } finally {
       if (cycleLease !== null && this.projectMode?.concurrencyTracker) {
         this.projectMode.concurrencyTracker.release(cycleLease);

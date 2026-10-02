@@ -1696,7 +1696,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     expect(runner.createWorkspace).not.toHaveBeenCalled();
   });
 
-  it("holds review agent capacity only around workspace execution", async () => {
+  it("holds review agent capacity from the start of a pass until workspace cleanup", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
@@ -1715,9 +1715,82 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       makeProjectId("proj-1"),
       "agent-1",
       expect.any(AbortSignal),
+      initial.taskId,
+      expect.any(Number),
     );
     expect(concurrencyTracker.release).toHaveBeenCalledOnce();
     expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+  });
+
+  it("waits for an agent slot before fetching review details or diffs", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    let grantLease: ((value: typeof lease) => void) | undefined;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn(() => new Promise<typeof lease>((resolve) => {
+        grantLease = resolve;
+      })),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    const review = orch.runReview(initial.taskId);
+    await vi.waitFor(() => expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce());
+    const detailsBeforeSlot = vi.mocked(mocks.provider.getChangeDetails).mock.calls.length;
+    const diffsBeforeSlot = vi.mocked(mocks.provider.getChangeDiff).mock.calls.length;
+    grantLease?.(lease);
+    await review;
+
+    expect(detailsBeforeSlot).toBe(0);
+    expect(diffsBeforeSlot).toBe(0);
+    expect(mocks.provider.getChangeDiff).toHaveBeenCalledOnce();
+    expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+  });
+
+  it("releases the review slot if fetching the diff fails", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockRejectedValue(new Error("No space left on device"));
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn().mockResolvedValue(lease),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("No space left on device");
+
+    expect(concurrencyTracker.release).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("releases the review slot if fetching review details fails after queueing", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDetails).mockRejectedValue(new Error("upstream unavailable"));
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn().mockResolvedValue(lease),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("upstream unavailable");
+
+    expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce();
+    expect(concurrencyTracker.release).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(mocks.provider.getChangeDiff).not.toHaveBeenCalled();
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
   });
 
   it("does not consume the review execution timeout while waiting for agent capacity", async () => {
