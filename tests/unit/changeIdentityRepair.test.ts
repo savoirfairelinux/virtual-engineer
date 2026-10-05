@@ -329,4 +329,48 @@ describe("repairProviderChangeIdentities", () => {
       routingRepairs: [{ repoKey: "gerrit/project", integrationId: "gerrit-1", reviewSystem: "gerrit" }],
     }));
   });
+
+  it("blocks Gerrit continuity repair when commit-index 0 is missing", async () => {
+    const currentTask = task();
+    currentTask.externalChangeId = makeExternalChangeId("Itwo");
+    const stateStore = store({
+      getActiveTasks: vi.fn().mockResolvedValue([currentTask]),
+      listProjectPushTargets: vi.fn().mockResolvedValue([
+        target({ integrationId: "gerrit-1", repoKey: "gerrit/project", cloneUrl: "ssh://gerrit/project" }),
+      ]),
+      getChangesForTask: vi.fn().mockResolvedValue([
+        change({
+          repoKey: "gerrit/project",
+          changeId: "Itwo",
+          reviewUrl: "https://gerrit.example/c/Itwo",
+          integrationId: "gerrit-1",
+          reviewSystem: "gerrit",
+          commitIndex: 1,
+        }),
+      ]),
+      getIntegration: vi.fn().mockResolvedValue({ ...integration("gerrit-1"), provider: "gerrit" }),
+    });
+    const connector = {
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const report = await repairProviderChangeIdentities({
+      store: stateStore,
+      createConnector: vi.fn(() => connector),
+      apply: true,
+    });
+
+    expect(report).toMatchObject({ tasksRepairable: 0, tasksApplied: 0, blockedTasks: 1 });
+    expect(report.tasks[0]).toMatchObject({
+      status: "blocked",
+      targets: [
+        {
+          status: "blocked",
+          detail: "Missing primary commit-index 0 Gerrit change identity",
+        },
+      ],
+    });
+    expect(stateStore.applyChangeIdentityRepair).not.toHaveBeenCalled();
+  });
 });

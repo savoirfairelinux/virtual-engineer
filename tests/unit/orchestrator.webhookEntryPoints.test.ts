@@ -346,6 +346,71 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
     });
 
+    it("scopes bare-IID fallback to the qualified repository and skips ORPHANED rows", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const changes = [
+        {
+          id: "task-1:root-current",
+          taskId: task.taskId,
+          repoKey: "org/root",
+          changeId: "7",
+          reviewUrl: "https://gitlab.example/org/root/-/merge_requests/7",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: "task-1:root-orphaned",
+          taskId: task.taskId,
+          repoKey: "org/root",
+          changeId: "7",
+          reviewUrl: "https://gitlab.example/org/root/-/merge_requests/7",
+          status: "ORPHANED",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 1,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: "task-1:child",
+          taskId: task.taskId,
+          repoKey: "org/child",
+          changeId: "7",
+          reviewUrl: "https://gitlab.example/org/child/-/merge_requests/7",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 0,
+          subjectHash: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ];
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getTask: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue(changes),
+      });
+      const orch = makeOrchestrator(stateStore);
+
+      await orch.markChangeMerged("gitlab-int", "org/root#7");
+
+      expect(stateStore.updateChangePerRepositoryStatus).toHaveBeenCalledTimes(1);
+      expect(stateStore.updateChangePerRepositoryStatus).toHaveBeenCalledWith(
+        task.taskId,
+        "org/root",
+        "MERGED",
+        "7",
+      );
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
+    });
+
     it("transitions REVIEW_WATCHING → REVIEW_DONE for merged review tasks", async () => {
       const task = makeTask({ state: "REVIEW_WATCHING" });
       const stateStore = makeStateStore({

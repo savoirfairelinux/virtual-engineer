@@ -379,11 +379,17 @@ export class Orchestrator {
       if (perRepoChanges.length > 0) {
         const separator = externalChangeId.indexOf("#");
         const eventIsQualified = separator > 0 && separator < externalChangeId.length - 1;
+        const qualifiedRepoKey = eventIsQualified ? externalChangeId.slice(0, separator) : undefined;
         const legacyBareId = eventIsQualified ? externalChangeId.slice(separator + 1) : externalChangeId;
         const matchingChanges = perRepoChanges.filter((change) =>
           change.integrationId === integrationId &&
+          change.status !== "ORPHANED" &&
           (change.changeId === externalChangeId ||
-            (eventIsQualified && !change.changeId.includes("#") && change.changeId === legacyBareId))
+            (eventIsQualified &&
+              qualifiedRepoKey !== undefined &&
+              change.repoKey === qualifiedRepoKey &&
+              !change.changeId.includes("#") &&
+              change.changeId === legacyBareId))
         );
         if (matchingChanges.length === 0) {
           log.warn(

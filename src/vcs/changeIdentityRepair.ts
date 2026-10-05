@@ -169,6 +169,16 @@ async function resolveTarget(
         detail: "No persisted Gerrit change identity was found",
       };
     }
+    if (current.commitIndex !== 0) {
+      return {
+        repoKey: target.repoKey,
+        provider: integration.provider,
+        currentChangeIds: active.map((row) => row.changeId),
+        resolvedChangeId: null,
+        status: "blocked",
+        detail: "Missing primary commit-index 0 Gerrit change identity",
+      };
+    }
     const routingMismatch = active.some((row) =>
       row.integrationId !== target.integrationId || row.reviewSystem !== connector.reviewSystemLabel);
     return {
