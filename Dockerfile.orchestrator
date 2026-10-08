@@ -84,7 +84,23 @@ COPY agent-worker/ ./agent-worker/
 COPY prompts/ ./prompts/
 COPY prompts/ ./dist/prompts/
 
+# Root package.json is the runtime source of the reported version.
+COPY package.json ./
+
 RUN mkdir -p /app/data
+
+# Build metadata reported at startup and by GET /api/admin/status. Declared
+# last so changing values only invalidate this metadata layer.
+ARG VE_VERSION=unknown
+ARG VE_GIT_SHA=
+ARG VE_BUILD_DATE=
+ENV VE_GIT_SHA=${VE_GIT_SHA} \
+    VE_BUILD_DATE=${VE_BUILD_DATE}
+LABEL org.opencontainers.image.title="virtual-engineer" \
+      org.opencontainers.image.source="https://github.com/savoirfairelinux/virtual-engineer" \
+      org.opencontainers.image.version="${VE_VERSION}" \
+      org.opencontainers.image.revision="${VE_GIT_SHA}" \
+      org.opencontainers.image.created="${VE_BUILD_DATE}"
 
 EXPOSE 3100
 
