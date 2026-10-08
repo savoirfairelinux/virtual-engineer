@@ -64,4 +64,50 @@ describe("TopBar tutorial launcher", () => {
     expect(text).toContain("3 projects");
     expect(text).not.toContain("integrations");
   });
+
+  it("shows the running version with build details in a tooltip", () => {
+    render(
+      <TopBar
+        view="overview"
+        setView={() => undefined}
+        theme="dark"
+        toggleTheme={() => undefined}
+        user={{ id: "user-1", username: "admin", role: "admin" }}
+        canViewConfig
+        onChangePassword={() => undefined}
+        onStartTutorial={() => undefined}
+        onLogout={() => undefined}
+        taskCount={0}
+        activeCount={0}
+        projectCount={0}
+        pollingRunning={false}
+        buildInfo={{ version: "1.2.3", gitSha: "abc1234", buildDate: "2026-10-08T12:00:00Z" }}
+      />,
+    );
+
+    const badge = screen.getByText("v1.2.3");
+    expect(badge.getAttribute("title")).toBe("Version 1.2.3 · commit abc1234 · built 2026-10-08T12:00:00Z");
+  });
+
+  it("omits the version badge until build info is loaded", () => {
+    const { container } = render(
+      <TopBar
+        view="overview"
+        setView={() => undefined}
+        theme="dark"
+        toggleTheme={() => undefined}
+        user={{ id: "user-1", username: "admin", role: "admin" }}
+        canViewConfig
+        onChangePassword={() => undefined}
+        onStartTutorial={() => undefined}
+        onLogout={() => undefined}
+        taskCount={0}
+        activeCount={0}
+        projectCount={0}
+        pollingRunning={false}
+      />,
+    );
+
+    expect(container.textContent ?? "").not.toMatch(/\bv\d+\.\d+/);
+  });
 });
