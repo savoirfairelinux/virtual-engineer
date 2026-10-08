@@ -11,6 +11,7 @@ Thank you for your interest in contributing! This document covers how to set up 
 - [Commit Messages](#commit-messages)
 - [Adding a New Integration](#adding-a-new-integration)
 - [Pull Request Guidelines](#pull-request-guidelines)
+- [Releases and Versioning](#releases-and-versioning)
 
 ---
 
@@ -129,3 +130,29 @@ See existing descriptors (e.g. `src/plugins/descriptors/gitlab.ts`) for the expe
 - Ensure the CI gates pass (typecheck, lint, tests)
 - Update relevant docs in `.github/context/` in the same commit as code changes
 - Security-sensitive changes should be discussed via private advisory first (see [SECURITY.md](SECURITY.md))
+
+---
+
+## Releases and Versioning
+
+Versions follow [Semantic Versioning](https://semver.org/) and are managed by
+[release-please](https://github.com/googleapis/release-please)
+(`.github/workflows/release-please.yml`, `release-please-config.json`,
+`.release-please-manifest.json`).
+
+1. Merge PRs into `main` with Conventional Commit subjects. `fix:` bumps the
+   patch version, `feat:` the minor version, and `feat!:` / `BREAKING CHANGE:`
+   the major version (minor while below 1.0.0).
+2. release-please opens or updates a `chore(main): release X.Y.Z` PR that bumps
+   `package.json`, `agent-worker/package.json`, both lockfiles, and
+   `CHANGELOG.md`.
+3. Merge that PR when you want to publish. release-please then creates the
+   `vX.Y.Z` tag and the GitHub Release.
+
+To force a specific version, add a `Release-As: X.Y.Z` footer to a commit on
+`main`. Release PRs opened with the default `GITHUB_TOKEN` do not trigger CI.
+
+The running version is reported at startup, by `GET /api/admin/status`
+(`version`), and in the admin UI top bar. `./scripts/start.sh` injects the Git
+commit (`VE_GIT_SHA`) and build date (`VE_BUILD_DATE`) into the orchestrator
+image. Without `VE_GIT_SHA`, a local checkout falls back to `git rev-parse`.
