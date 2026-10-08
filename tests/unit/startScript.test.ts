@@ -818,6 +818,18 @@ describe("OpenShell deployment contract", () => {
     expect(values).toContain("0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f");
   });
 
+  it("stamps the orchestrator image with version, commit, and build date", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const dockerfile = readFileSync("Dockerfile.orchestrator", "utf8");
+
+    expect(script).toContain('--build-arg VE_GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"');
+    expect(script).toContain('--build-arg VE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"');
+    expect(script).toContain("--build-arg VE_VERSION=");
+    expect(dockerfile).toContain("COPY package.json ./");
+    expect(dockerfile).toMatch(/ENV VE_GIT_SHA=\$\{VE_GIT_SHA\}/);
+    expect(dockerfile).toContain('org.opencontainers.image.revision="${VE_GIT_SHA}"');
+  });
+
   it("fails closed with named-profile Keycloak OIDC", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const values = readFileSync("deploy/k8s/openshell-gateway-values.yaml", "utf8");

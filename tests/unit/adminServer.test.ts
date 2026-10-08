@@ -220,6 +220,7 @@ describe("createAdminServer", () => {
         getIntervals: () => ({ intervalMs: 30_000 }),
       },
       providers: providerSummaries,
+      buildInfo: { version: "1.2.3", gitSha: "abc1234", buildDate: "2026-10-08T12:00:00Z" },
     });
 
     try {
@@ -230,6 +231,7 @@ describe("createAdminServer", () => {
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       await expect(response.json()).resolves.toEqual({
+        version: { version: "1.2.3", gitSha: "abc1234", buildDate: "2026-10-08T12:00:00Z" },
         polling: {
           running: true,
           intervalMs: 30_000,

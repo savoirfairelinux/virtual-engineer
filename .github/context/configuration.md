@@ -65,6 +65,7 @@ These are read directly from `process.env` and are **not** part of `AppConfig`:
 | `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `src/admin/skillSourceDiscovery.ts`, `src/workspace/skillSources.ts`, `src/workspace/skillSourceInstaller.ts` | `npx` package used both to **list** installable skills for the project form and to **install** them host-side before workspace upload — see [modules/workspace.md](modules/workspace.md#external-skill-sources). |
 | `OPENSHELL_GATEWAY` / `OPENSHELL_GATEWAY_ENDPOINT` | — | `src/runtime/runtimeStartup.ts` (`resolveOpenShellGateway`) | Gateway endpoint used for the startup health probe; `OPENSHELL_GATEWAY` wins. |
 | `OPENSHELL_OIDC_CLIENT_SECRET` | — | `src/index.ts` | Presence enables the OpenShell client-credentials re-login path. |
+| `VE_GIT_SHA` / `VE_BUILD_DATE` | — | `src/version.ts` | Build metadata reported at startup, by `GET /api/admin/status`, and in the admin top bar. `scripts/start.sh` passes them as orchestrator image build args. Without `VE_GIT_SHA`, a local checkout uses `git rev-parse --short HEAD`. The version always comes from the root `package.json`. |
 | `SSH_AUTH_SOCK` | — | `src/admin/adminIntegrationRoutes.ts`, `src/admin/skillSourceDiscovery.ts` | Host-side SSH agent for admin-side discovery/validation only; never forwarded into a sandbox. |
 
 ### Docker launcher

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
+import { getBuildInfo, type BuildInfo } from "../version.js";
 import { oauthAppResourceId, parseOAuthAppResourceId } from "../domain/accessControl.js";
 import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, EffectivePolicyRule, ProjectId, ResourceType, Task, TaskId } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
@@ -192,6 +193,8 @@ export interface AdminServerDependencies {
   runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
   /** When provided, mounts the policy-denial audit-log routes. */
   denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
+  /** Build metadata surfaced at GET /api/admin/status; defaults to getBuildInfo(). */
+  buildInfo?: BuildInfo | undefined;
   /** OpenShell gateway health probe surfaced at GET /api/admin/runtime/status. */
   runtimeGateway?: { healthy(): Promise<boolean>; address: string | undefined } | undefined;
   /**
@@ -399,6 +402,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   router.add("GET", "/api/admin/status", (_req, res, _params) => {
     const intervals = dependencies.polling.getIntervals();
     writeJson(res, 200, {
+      version: dependencies.buildInfo ?? getBuildInfo(),
       polling: { running: dependencies.polling.isRunning(), intervalMs: intervals.intervalMs },
       runtime: {
         nodeEnv: dependencies.config.nodeEnv,

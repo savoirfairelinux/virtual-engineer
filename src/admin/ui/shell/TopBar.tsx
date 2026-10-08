@@ -1,6 +1,6 @@
 import { Icon } from "../components/Icon.tsx";
 import { Tag } from "../components/Tag.tsx";
-import type { ApiMe } from "../types.ts";
+import type { ApiBuildInfo, ApiMe } from "../types.ts";
 import logoUrl from "../icons/virtual_engineer.png";
 
 type ViewId = "overview" | "tasks" | "config";
@@ -19,6 +19,15 @@ interface TopBarProps {
   activeCount: number;
   projectCount: number;
   pollingRunning: boolean;
+  buildInfo?: ApiBuildInfo | undefined;
+}
+
+function buildInfoTitle({ version, gitSha, buildDate }: ApiBuildInfo): string {
+  return [
+    `Version ${version}`,
+    gitSha && `commit ${gitSha}`,
+    buildDate && `built ${buildDate}`,
+  ].filter(Boolean).join(" · ");
 }
 
 const ROLE_TONE = { admin: "active", operator: "info", viewer: "muted" } as const;
@@ -31,7 +40,7 @@ const NAV: { id: ViewId; label: string; icon: string; configOnly?: boolean }[] =
 
 export function TopBar({
   view, setView, theme, toggleTheme, user, canViewConfig, onChangePassword, onStartTutorial, onLogout,
-  taskCount, activeCount, projectCount, pollingRunning,
+  taskCount, activeCount, projectCount, pollingRunning, buildInfo,
 }: TopBarProps) {
   const visibleNav = NAV.filter((n) => !n.configOnly || canViewConfig);
   return (
@@ -56,6 +65,11 @@ export function TopBar({
           <div style={{ fontWeight: 600, fontSize: "14px", letterSpacing: "-0.01em" }}>Virtual Engineer</div>
           <div className="mono" style={{ fontSize: "9.5px", color: "var(--text-faint)", letterSpacing: "0.04em" }}>
             orchestrator
+            {buildInfo && (
+              <span title={buildInfoTitle(buildInfo)} style={{ marginLeft: "6px", cursor: "help" }}>
+                v{buildInfo.version}
+              </span>
+            )}
           </div>
         </div>
       </div>

@@ -495,6 +495,9 @@ if [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \
 else
   info "Building orchestrator image with OpenShell CLI (${OPENSHELL_VERSION})..."
   docker build -f Dockerfile.orchestrator \
+    --build-arg VE_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n1)" \
+    --build-arg VE_GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)" \
+    --build-arg VE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --build-arg INSTALL_OPENSHELL=true \
     --build-arg OPENSHELL_VERSION="$OPENSHELL_VERSION" \
     --build-arg OPENSHELL_INSTALLER_SHA256="$OPENSHELL_INSTALLER_SHA256" \
