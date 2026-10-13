@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdminUser, UserSession } from "../../src/interfaces.js";
 import {
   createAdminAuthService,
@@ -8,6 +8,9 @@ import {
   SESSION_TTL_MS,
   type AdminAuthStateStore,
 } from "../../src/admin/adminAuthService.js";
+import type { PasswordAuthentication, PasswordAuthenticator } from "../../src/admin/authentication/passwordAuthenticator.js";
+import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function makeUser(overrides: Partial<AdminUser> = {}): AdminUser {
   return {
@@ -210,5 +213,72 @@ describe("createAdminAuthService — logout", () => {
   it("returns false for an empty token", async () => {
     const service = createAdminAuthService({ stateStore: makeStore() });
     await expect(service.logout("")).resolves.toBe(false);
+  });
+});
+
+describe("createAdminAuthService — injected authenticator", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDatabasePath("ve-auth-service-authenticator"));
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  /** An authenticator that records every call and answers with a fixed outcome. */
+  function recordingAuthenticator(outcome: () => Promise<PasswordAuthentication>): PasswordAuthenticator & {
+    calls: Array<[string, string]>;
+  } {
+    const calls: Array<[string, string]> = [];
+    return {
+      calls,
+      authenticate(username, password) {
+        calls.push([username, password]);
+        return outcome();
+      },
+    };
+  }
+
+  async function sessionCount(): Promise<number> {
+    return store.purgeExpiredSessions(new Date(Date.now() + 2 * SESSION_TTL_MS));
+  }
+
+  it("forwards the credentials and issues a session for the user it returns", async () => {
+    // The stored hash is not a scrypt hash, so success can only come from the injected authenticator.
+    const user = await store.createUser({ id: "user-dir", username: "carol", passwordHash: "not-a-scrypt-hash", role: "operator" });
+    const authenticator = recordingAuthenticator(() => Promise.resolve({ status: "authenticated", user }));
+    const service = createAdminAuthService({ stateStore: store, authenticator });
+
+    const session = await service.login("carol", "directory-Pass-1");
+
+    expect(authenticator.calls).toEqual([["carol", "directory-Pass-1"]]);
+    expect(session?.user).toEqual({ id: "user-dir", username: "carol", role: "operator" });
+    await expect(service.validateSession(session?.token ?? "")).resolves.toEqual({
+      userId: "user-dir",
+      username: "carol",
+      role: "operator",
+    });
+  });
+
+  it("returns null and creates no session when the authenticator rejects", async () => {
+    const hash = await hashPassword("local-Pass-1");
+    await store.createUser({ id: "user-local", username: "dave", passwordHash: hash, role: "viewer" });
+    const authenticator = recordingAuthenticator(() => Promise.resolve({ status: "rejected" }));
+    const service = createAdminAuthService({ stateStore: store, authenticator });
+
+    // Even the correct local password is refused: the injected authenticator replaces the default.
+    await expect(service.login("dave", "local-Pass-1")).resolves.toBeNull();
+    expect(authenticator.calls).toEqual([["dave", "local-Pass-1"]]);
+    await expect(sessionCount()).resolves.toBe(0);
+  });
+
+  it("propagates authenticator failures without creating a session", async () => {
+    const authenticator = recordingAuthenticator(() => Promise.reject(new Error("directory exploded")));
+    const service = createAdminAuthService({ stateStore: store, authenticator });
+
+    await expect(service.login("erin", "any-Pass-1")).rejects.toThrow("directory exploded");
+    await expect(sessionCount()).resolves.toBe(0);
   });
 });

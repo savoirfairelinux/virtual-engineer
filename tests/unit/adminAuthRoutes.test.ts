@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
+import type { PasswordAuthenticator } from "../../src/admin/authentication/passwordAuthenticator.js";
+import { createLocalPasswordAuthenticator } from "../../src/admin/authentication/localPasswordAuthenticator.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const SECRET = "test-admin-secret";
@@ -13,9 +15,11 @@ function tempDbPath(): string {
 function makeServer(
   store: SqliteStateStore,
   adminAuthSecret: string | null = SECRET,
+  authenticator?: PasswordAuthenticator,
 ): ReturnType<typeof createAdminServer> {
   return createAdminServer({
     stateStore: store,
+    ...(authenticator ? { authenticator } : {}),
     config: {
       nodeEnv: "test",
       logLevel: "info",
@@ -669,6 +673,44 @@ describe("adminAuthRoutes", () => {
         body: JSON.stringify({ username: "admin", password: "Str0ng-Pass-1x" }),
       });
       expect(fromOther.status).toBe(200);
+    });
+  });
+
+  describe("injected authenticator", () => {
+    it("routes login through the server's authenticator with shared normalization, rate limiting, and audit", async () => {
+      const calls: Array<[string, string]> = [];
+      const local = createLocalPasswordAuthenticator(store);
+      // Accepts one extra credential for carol and defers every other login to local passwords.
+      const authenticator: PasswordAuthenticator = {
+        async authenticate(username, password) {
+          calls.push([username, password]);
+          if (username !== "carol") return local.authenticate(username, password);
+          const carol = await store.getUserByUsername("carol");
+          return carol && password === "directory-Pass-1" ? { status: "authenticated", user: carol } : { status: "rejected" };
+        },
+      };
+      await closeServer(server);
+      server = makeServer(store, SECRET, authenticator);
+      baseUrl = await listen(server);
+      await runSetup(baseUrl);
+      await store.createUser({ id: "user-carol", username: "carol", passwordHash: "not-a-scrypt-hash", role: "viewer" });
+      const attempt = (password: string): Promise<Response> => fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: " Carol ", password }),
+      });
+
+      const accepted = await attempt("directory-Pass-1");
+      expect(accepted.status).toBe(200);
+      await expect(accepted.json()).resolves.toMatchObject({ user: { id: "user-carol", username: "carol" } });
+      expect(calls.at(-1)).toEqual(["carol", "directory-Pass-1"]);
+      const { entries: logins } = await store.listAuditEntries({ action: "auth.login" });
+      expect(logins.some((entry) => entry.actorUserId === "user-carol")).toBe(true);
+
+      for (let i = 0; i < 5; i++) expect((await attempt("wrong-Pass-1")).status).toBe(401);
+      expect((await attempt("directory-Pass-1")).status).toBe(429);
+      const { entries: failures } = await store.listAuditEntries({ action: "auth.login_failed" });
+      expect(failures).toHaveLength(5);
     });
   });
 });
