@@ -150,9 +150,18 @@ Versions follow [Semantic Versioning](https://semver.org/) and are managed by
    `vX.Y.Z` tag and the GitHub Release.
 
 To force a specific version, add a `Release-As: X.Y.Z` footer to a commit on
-`main`. Release PRs opened with the default `GITHUB_TOKEN` do not trigger CI.
+`main`.
+
+The release workflow uses the built-in `GITHUB_TOKEN`; no additional secret is
+required. Enable "Allow GitHub Actions to create and approve pull requests" in
+Settings > Actions > General. Release PRs created with this token do not trigger
+CI automatically. If branch protection requires checks, arrange for validation
+before merging rather than bypassing those checks.
 
 The running version is reported at startup, by `GET /api/admin/status`
 (`version`), and in the admin UI top bar. `./scripts/start.sh` injects the Git
 commit (`VE_GIT_SHA`) and build date (`VE_BUILD_DATE`) into the orchestrator
 image. Without `VE_GIT_SHA`, a local checkout falls back to `git rev-parse`.
+The image cache includes the Git revision, so even a documentation-only commit
+refreshes the reported SHA. `VE_BUILD_DATE` is the image construction time and
+does not change when an unchanged image is reused.

@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { getBuildInfo, resolveBuildInfo } from "../../src/version.js";
 
 const rootPackage = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
 const workerPackage = JSON.parse(readFileSync(new URL("../../agent-worker/package.json", import.meta.url), "utf8")) as { version: string };
 const manifest = JSON.parse(readFileSync(new URL("../../.release-please-manifest.json", import.meta.url), "utf8")) as Record<string, string>;
+const rootLock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8")) as { version: string; packages: Record<string, { version?: string }> };
+const workerLock = JSON.parse(readFileSync(new URL("../../agent-worker/package-lock.json", import.meta.url), "utf8")) as { version: string; packages: Record<string, { version?: string }> };
 
 describe("resolveBuildInfo", () => {
   it("prefers injected build metadata over the git fallback", () => {
@@ -57,8 +60,36 @@ describe("getBuildInfo", () => {
 });
 
 describe("release versioning", () => {
-  it("keeps the agent worker and release manifest aligned with the root package", () => {
+  it("keeps the agent worker, lockfiles, and release manifest aligned with the root package", () => {
     expect(workerPackage.version).toBe(rootPackage.version);
+    expect(rootLock.version).toBe(rootPackage.version);
+    expect(rootLock.packages[""]?.version).toBe(rootPackage.version);
+    expect(workerLock.version).toBe(rootPackage.version);
+    expect(workerLock.packages[""]?.version).toBe(rootPackage.version);
     expect(manifest["."]).toBe(rootPackage.version);
+  });
+
+  it("grants release-please its required workflow permissions", () => {
+    const workflow = parseYaml(readFileSync(new URL("../../.github/workflows/release-please.yml", import.meta.url), "utf8")) as {
+      permissions: Record<string, string>;
+    };
+
+    expect(workflow.permissions).toEqual({
+      contents: "write",
+      issues: "write",
+      "pull-requests": "write",
+    });
+  });
+
+  it("uses the default GitHub token without requiring an extra secret", () => {
+    const workflow = parseYaml(readFileSync(new URL("../../.github/workflows/release-please.yml", import.meta.url), "utf8")) as {
+      jobs: Record<string, { steps: { uses?: string; with?: Record<string, string> }[] }>;
+    };
+    const steps = workflow.jobs["release-please"]?.steps;
+    const action = steps?.[0];
+
+    expect(steps).toHaveLength(1);
+    expect(action?.uses).toMatch(/^googleapis\/release-please-action@/);
+    expect(action?.with?.["token"]).toBeUndefined();
   });
 });

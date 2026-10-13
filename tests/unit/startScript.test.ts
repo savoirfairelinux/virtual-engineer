@@ -818,11 +818,33 @@ describe("OpenShell deployment contract", () => {
     expect(values).toContain("0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f");
   });
 
+  it("invalidates the orchestrator image cache when only the commit changes", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const hashScript = script.slice(
+      script.indexOf("# Skip the build when its inputs"),
+      script.indexOf("ORCH_MARKER="),
+    );
+    const calculateHash = (commit: string): string => runHelper(
+      `git() { printf '%s' "$VE_TEST_SHA"; }
+       build_inputs_hash() { printf 'unchanged-sources'; }
+       OPENSHELL_VERSION=v0.0.83
+       OPENSHELL_INSTALLER_SHA256=unchanged-installer
+       ${hashScript}
+       printf '%s' "$ORCH_HASH"`,
+      [],
+      { VE_TEST_SHA: commit },
+    );
+
+    expect(calculateHash("abc1234")).toBe(calculateHash("abc1234"));
+    expect(calculateHash("def5678")).not.toBe(calculateHash("abc1234"));
+  });
+
   it("stamps the orchestrator image with version, commit, and build date", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const dockerfile = readFileSync("Dockerfile.orchestrator", "utf8");
 
-    expect(script).toContain('--build-arg VE_GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"');
+    expect(script).toContain('ORCH_GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || true)');
+    expect(script).toContain('--build-arg VE_GIT_SHA="$ORCH_GIT_SHA"');
     expect(script).toContain('--build-arg VE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"');
     expect(script).toContain("--build-arg VE_VERSION=");
     expect(dockerfile).toContain("COPY package.json ./");
