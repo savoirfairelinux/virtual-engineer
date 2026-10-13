@@ -397,6 +397,7 @@ export function App() {
           activeCount={activeTasks}
           projectCount={projects.filter((p) => p.enabled).length}
           pollingRunning={status?.polling.running ?? false}
+          buildInfo={status?.version}
         />
         {loadError && (
           <div role="alert" style={{ padding: "8px 16px", background: "var(--danger-soft)", color: "var(--danger)", display: "flex", alignItems: "center", gap: "12px" }}>

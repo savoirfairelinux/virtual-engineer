@@ -481,20 +481,24 @@ fi
 
 # ─── Orchestrator image (always includes the OpenShell CLI) ───────────────────
 # Skip the build when its inputs (Dockerfile + src + agent-worker + prompts +
-# package/tsconfig/vite files + the pinned OpenShell version) are unchanged and
-# the image already exists. The build's own layer cache is a fallback, but
+# package/tsconfig/vite files + the pinned OpenShell version + Git revision)
+# are unchanged and the image already exists. The build's own layer cache is a fallback, but
 # skipping the invocation avoids buildkit's metadata/context overhead.
-ORCH_HASH=$(printf '%s\n%s\n%s\n' "$OPENSHELL_VERSION" "$OPENSHELL_INSTALLER_SHA256" \
+ORCH_GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
+ORCH_HASH=$(printf '%s\n%s\n%s\n%s\n' "$OPENSHELL_VERSION" "$OPENSHELL_INSTALLER_SHA256" "$ORCH_GIT_SHA" \
   "$(build_inputs_hash Dockerfile.orchestrator src agent-worker prompts \
       package.json package-lock.json tsconfig.json tsconfig.admin-ui.json vite.admin.config.ts)" \
   | sha256sum | cut -d' ' -f1)
 ORCH_MARKER="${DATA_DIR}/.orchestrator-image-hash"
 if [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \
    && docker image inspect virtual-engineer:latest >/dev/null 2>&1; then
-  info "Orchestrator image up to date (sources unchanged) — skipping build."
+  info "Orchestrator image up to date (inputs unchanged) — skipping build."
 else
   info "Building orchestrator image with OpenShell CLI (${OPENSHELL_VERSION})..."
   docker build -f Dockerfile.orchestrator \
+    --build-arg VE_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n1)" \
+    --build-arg VE_GIT_SHA="$ORCH_GIT_SHA" \
+    --build-arg VE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --build-arg INSTALL_OPENSHELL=true \
     --build-arg OPENSHELL_VERSION="$OPENSHELL_VERSION" \
     --build-arg OPENSHELL_INSTALLER_SHA256="$OPENSHELL_INSTALLER_SHA256" \

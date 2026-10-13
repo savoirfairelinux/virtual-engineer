@@ -11,6 +11,7 @@
  */
 import { getConfig } from "./config.js";
 import { getLogger, setLogContextResolver } from "./logger.js";
+import { getBuildInfo } from "./version.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
 import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
   const config = getConfig();
   const openShellGateway = resolveOpenShellGateway(process.env);
 
-  log.info({ nodeEnv: config.nodeEnv }, "Virtual Engineer starting");
+  log.info({ nodeEnv: config.nodeEnv, ...getBuildInfo() }, "Virtual Engineer starting");
 
   // Ensure required directories exist
   await mkdir(config.workspaceBaseDir, { recursive: true });

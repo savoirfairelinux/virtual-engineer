@@ -296,7 +296,14 @@ export interface ApiOAuthApp {
   ownerUserId?: string | null;
 }
 
+export interface ApiBuildInfo {
+  version: string;
+  gitSha?: string | undefined;
+  buildDate?: string | undefined;
+}
+
 export interface ApiStatus {
+  version?: ApiBuildInfo | undefined;
   polling: { running: boolean; intervalMs: number };
   runtime: {
     nodeEnv: string;
