@@ -156,6 +156,16 @@ export function TopBar({
           </div>
         )}
         <div style={{ width: "1px", height: "22px", background: "var(--border-soft)", margin: "0 3px" }} />
+        <a
+          className="iconbtn"
+          href="https://github.com/savoirfairelinux/virtual-engineer/issues/new"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Report an issue"
+          aria-label="Report an issue"
+        >
+          <Icon name="alert" size={16} />
+        </a>
         <button className="iconbtn" onClick={toggleTheme} title="Toggle theme">
           <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
         </button>
