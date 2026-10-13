@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a reproducible problem with Virtual Engineer.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem with Virtual Engineer.
+        Issues are public. Do not include passwords, tokens, SSH keys, private code, or other sensitive information.
+        For security vulnerabilities, follow our [security policy](https://github.com/savoirfairelinux/virtual-engineer/security/policy) instead of opening a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: Virtual Engineer version
+      description: Version shown next to the application name, or the Git commit SHA.
+      placeholder: Version or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker (scripts/start.sh)
+        - Kubernetes
+        - Local Node.js
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and any error message you observed.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open...
+        2. Select...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the OS, browser, agent engine, and integrations involved, when relevant.
+      placeholder: |
+        OS:
+        Browser:
+        Agent engine:
+        Integrations:
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Remove credentials, private code, and sensitive instance data before sharing logs or screenshots.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues for this problem.
+          required: true
+        - label: I have removed sensitive information from this report.
+          required: true

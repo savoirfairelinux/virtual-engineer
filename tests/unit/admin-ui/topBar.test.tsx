@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TopBar } from "../../../src/admin/ui/shell/TopBar.js";
 
 describe("TopBar issue reporting", () => {
-  it.each(["overview", "tasks", "config"] as const)("links to the new GitHub issue form from %s", (view) => {
+  it.each(["overview", "tasks", "config"] as const)("links to the GitHub bug report form from %s", (view) => {
     render(
       <TopBar
         view={view}
@@ -25,7 +25,7 @@ describe("TopBar issue reporting", () => {
     );
 
     const report = screen.getByRole("link", { name: "Report an issue" });
-    expect(report.getAttribute("href")).toBe("https://github.com/savoirfairelinux/virtual-engineer/issues/new");
+    expect(report.getAttribute("href")).toBe("https://github.com/savoirfairelinux/virtual-engineer/issues/new?template=bug_report.yml");
     expect(report.getAttribute("target")).toBe("_blank");
     expect(report.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
     expect(report.getAttribute("title")).toBe("Report an issue");

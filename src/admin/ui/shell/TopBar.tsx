@@ -158,7 +158,7 @@ export function TopBar({
         <div style={{ width: "1px", height: "22px", background: "var(--border-soft)", margin: "0 3px" }} />
         <a
           className="iconbtn"
-          href="https://github.com/savoirfairelinux/virtual-engineer/issues/new"
+          href="https://github.com/savoirfairelinux/virtual-engineer/issues/new?template=bug_report.yml"
           target="_blank"
           rel="noopener noreferrer"
           title="Report an issue"
