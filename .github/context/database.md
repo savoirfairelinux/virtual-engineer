@@ -51,6 +51,12 @@ to reflect edits. This read-time API adds no schema, index, or migration.
 - `getReviewVoteCounts(taskIds, since?)` reads numeric review scores from `agent_cycles.agent_result` with SQLite JSON functions and groups them in SQL, without hydrating full cycle payloads. It accepts only the caller's readable review task IDs, batches IDs below SQLite's parameter limit, skips malformed JSON and non-numeric scores, and uses the existing epoch-seconds `created_at` cutoff. No schema or migration change is needed.
 - `getProjectStatistics()` excludes `deleted_at` rows from operational task, period, execution, and timing counts to avoid resurfacing soft-deleted tasks in project health metrics.
 
+## Admin Authentication Sources
+
+- `auth_sources` (TEXT `id` PK) stores external credential authorities for admin login: unique `name`, `kind` (CHECK `IN ('ldap')`), `enabled` (INTEGER, default 1), `priority` (INTEGER, default 100; lower values are tried first), `config_json` (TEXT, default `{}`), and second-based `created_at` / `updated_at`. Introduced by `0006_natural_nocturne.sql`.
+- `config_json` holds the kind-specific settings validated by `ldapConfigSchema` (`src/admin/authentication/ldapConfig.ts`): URL, StartTLS, optional CA PEM, service bind DN/password, user search base/filter, and attribute names. `bindPassword` is always stored as a `veenc:v1:` envelope; the admin API masks it and never returns ciphertext.
+- `AuthSourceStoreApi` (`src/state/stores/authSourceStore.ts`): `createAuthSource`, `getAuthSourceById`, `listAuthSources` (ordered by `priority`, then `name`), `updateAuthSource`, `deleteAuthSource`. Name collisions throw `code = "DUPLICATE"`.
+
 ## Audit trail store
 
 - `AuditStoreApi.listAuditEntries()` supports action, actor, target-type, integration-reference, and UTC calendar-boundary filters in addition to pagination. Integration filtering matches both an integration target ID and `details_json.integrationId`; it adds no schema change.

@@ -55,8 +55,10 @@ function openMemoryDatabase(): Database.Database {
   return raw;
 }
 
-function removePostBridgeOwnershipSchema(raw: Database.Database): void {
+/** Strip every tracked migration after the frozen bridge so the fixture looks ledgerless-legacy. */
+function removePostBridgeSchema(raw: Database.Database): void {
   raw.exec(`
+    DROP TABLE auth_sources;
     DROP INDEX uq_posted_review_comments_task_active_hash;
     ALTER TABLE posted_review_comments DROP COLUMN provider_comment_url;
     ALTER TABLE posted_review_comments DROP COLUMN disposition;
@@ -289,7 +291,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         DROP INDEX idx_agent_cycles_created_at;
@@ -345,7 +347,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         ALTER TABLE project_vendor_components ADD COLUMN note TEXT NOT NULL DEFAULT '';
@@ -397,7 +399,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -496,7 +498,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         CREATE TABLE project_ticket_source (
@@ -524,7 +526,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -571,7 +573,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO agents (
@@ -606,7 +608,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO integrations (
@@ -637,7 +639,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         INSERT INTO audit_log (
@@ -713,7 +715,7 @@ describe("runDatabaseMigrations", () => {
     const raw = openMemoryDatabase();
     try {
       runDatabaseMigrations(raw);
-      removePostBridgeOwnershipSchema(raw);
+      removePostBridgeSchema(raw);
       raw.exec(`
         DROP TABLE __drizzle_migrations;
         ALTER TABLE prompts ADD COLUMN private_note TEXT;

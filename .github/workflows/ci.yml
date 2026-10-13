@@ -42,8 +42,18 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Provide OpenLDAP for directory tests
+        # The install brings slapd's shared libraries; tests run an extracted copy that the system AppArmor profile does not confine.
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends slapd
+          cd "$RUNNER_TEMP" && apt-get download slapd && dpkg -x slapd_*.deb slapd-root
+          echo "VE_SLAPD_ROOT=$RUNNER_TEMP/slapd-root" >> "$GITHUB_ENV"
+
       - name: Test with coverage
         run: npm run test:coverage
+        env:
+          VE_REQUIRE_LDAP_TESTS: "1"
 
       - name: Build
         run: npm run build
