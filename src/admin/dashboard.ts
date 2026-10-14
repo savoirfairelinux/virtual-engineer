@@ -51,12 +51,14 @@ export function renderAdminDashboardHtml(options?: {
   const entry = manifest?.["index.html"];
   const jsFile  = entry ? `/admin-ui/${entry.file}` : null;
   const cssFiles: string[] = entry?.css?.map((f) => `/admin-ui/${f}`) ?? [];
+  const faviconFile = manifest?.["icons/virtual_engineer.png"]?.file;
 
   return `<!doctype html>
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    ${faviconFile ? `<link rel="icon" type="image/png" href="/admin-ui/${faviconFile}" />` : ""}
     <title>Virtual Engineer — Admin</title>
     ${cssFiles.map((f) => `<link rel="stylesheet" href="${f}" />`).join("\n    ")}
   </head>
