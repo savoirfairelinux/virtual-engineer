@@ -735,3 +735,25 @@ export const authSources = sqliteTable(
     chkAuthSourceKind: check("chk_auth_sources_kind", sql`${table.kind} IN ('ldap')`),
   })
 );
+
+/**
+ * Links a local user to one external directory account. Linked users sign in
+ * through their source only; the source cannot be deleted while links exist.
+ */
+export const userIdentities = sqliteTable(
+  "user_identities",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+    authSourceId: text("auth_source_id").notNull().references(() => authSources.id),
+    /** Stable directory identifier (e.g. entryUUID); survives renames. */
+    externalSubject: text("external_subject").notNull(),
+    /** Directory sign-in name used for lookups; refreshed on every login. */
+    externalUsername: text("external_username").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    lastLoginAt: integer("last_login_at", { mode: "timestamp" }),
+  },
+  (table) => ({
+    uqSourceSubject: unique("uq_user_identities_source_subject").on(table.authSourceId, table.externalSubject),
+  })
+);

@@ -4,6 +4,7 @@ import type { Router } from "./router.js";
 import { readBody, requireStore, toIsoTimestamp, writeJson, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { AuthSourceRecord, AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
+import type { UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
 import { parseLdapConfigInput, publicLdapConfig, serializeLdapConfig, type LdapConfig } from "./authentication/ldapConfig.js";
 import { testLdapConnection } from "./authentication/ldapDirectory.js";
 import { StoredCredentialDecryptionError } from "../utils/encryption.js";
@@ -22,6 +23,7 @@ const testSchema = z.object({ id: z.string().min(1).optional(), kind: z.literal(
 
 export interface AuthSourceRouteDeps {
   authSourceStore?: AuthSourceStoreApi | undefined;
+  identityStore?: Pick<UserIdentityStoreApi, "countUserIdentitiesForSource"> | undefined;
   auditStore?: AuditCapableStore | undefined;
   adminAuthSecret?: string | undefined;
 }
@@ -208,7 +210,18 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
     if (!requireStore(store, res, unavailable)) return;
     const id = params["id"] ?? "";
     const existing = await store.getAuthSourceById(id);
-    if (!existing || !(await store.deleteAuthSource(id))) {
+    if (!existing) {
+      writeJson(res, 404, { error: "Authentication source not found" });
+      return;
+    }
+    const linked = (await deps.identityStore?.countUserIdentitiesForSource(id)) ?? 0;
+    if (linked > 0) {
+      writeJson(res, 409, {
+        error: `${linked} ${linked === 1 ? "user signs" : "users sign"} in through this source; unlink or delete them first, or disable the source`,
+      });
+      return;
+    }
+    if (!(await store.deleteAuthSource(id))) {
       writeJson(res, 404, { error: "Authentication source not found" });
       return;
     }

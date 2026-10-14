@@ -37,6 +37,12 @@ import type { AgentEngineStateStore } from "../agents/agentEngines.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
 import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
 import type { AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
+import type { UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
+import {
+  createDirectoryAccountResolver,
+  createDirectoryAuthenticator,
+  type DirectoryAuthenticatorStore,
+} from "./authentication/directoryAuthenticator.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
@@ -270,6 +276,9 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
 /** Combined user-store surface needed for session auth + user management. */
 type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 
+/** Directory-link surface shared by the authenticator and the user routes. */
+type AdminIdentityStore = DirectoryAuthenticatorStore & UserIdentityStoreApi & AuthSourceStoreApi;
+
 /** Feature-detect the user-store methods required by admin session auth. */
 function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
   const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
@@ -331,6 +340,20 @@ function extractAuthSourceStore(stateStore: unknown): AuthSourceStoreApi | null 
     : null;
 }
 
+/** Feature-detect the directory-identity store backing linked (LDAP) users. */
+function extractUserIdentityStore(stateStore: unknown): AdminIdentityStore | null {
+  const candidate = stateStore as Partial<AdminIdentityStore> | null | undefined;
+  return candidate &&
+    extractAuthSourceStore(candidate) &&
+    typeof candidate.getUserById === "function" &&
+    typeof candidate.getUserByUsername === "function" &&
+    typeof candidate.getUserIdentityByUserId === "function" &&
+    typeof candidate.getUserIdentityBySubject === "function" &&
+    typeof candidate.linkUserIdentity === "function"
+    ? (candidate as AdminIdentityStore)
+    : null;
+}
+
 /** Feature-detect the policy-binding surface used to assign role-default policies. */
 function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | null {
   const candidate = stateStore as Partial<DefaultPolicyBinderStore> | null | undefined;
@@ -380,8 +403,12 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
   if (!pbacStore && !dependencies.allowUnauthenticatedAdmin) {
     throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
   }
+  const identityStore = extractUserIdentityStore(dependencies.stateStore);
+  const authenticator = dependencies.authenticator ?? (userStore && identityStore
+    ? createDirectoryAuthenticator({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
+    : undefined);
   const authService = userStore && !dependencies.allowUnauthenticatedAdmin
-    ? createAdminAuthService({ stateStore: userStore, authenticator: dependencies.authenticator })
+    ? createAdminAuthService({ stateStore: userStore, authenticator })
     : null;
   let usersExistCache: boolean | null = null;
   return {
@@ -490,10 +517,15 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     isTaskWaiting: (taskId) => dependencies.concurrency?.isWaiting?.(taskId) ?? false,
   });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
+  const identityStore = extractUserIdentityStore(dependencies.stateStore) ?? undefined;
   registerAuthRoutes(router, {
     userStore: authRuntime.userStore ?? undefined,
     auditStore,
     authService: authRuntime.authService ?? undefined,
+    identityStore,
+    directoryAccounts: identityStore
+      ? createDirectoryAccountResolver({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
+      : undefined,
     credentialEncryptionConfigured: Boolean(dependencies.config.adminAuthSecret),
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
     ...(policyBinder
@@ -503,6 +535,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerAuthSourceRoutes(router, {
     authSourceStore: extractAuthSourceStore(dependencies.stateStore) ?? undefined,
+    identityStore,
     auditStore,
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });

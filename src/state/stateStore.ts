@@ -20,6 +20,8 @@ import type { AuditStoreApi } from "./stores/auditStore.js";
 import { createAuditStore } from "./stores/auditStore.js";
 import type { AuthSourceStoreApi } from "./stores/authSourceStore.js";
 import { createAuthSourceStore } from "./stores/authSourceStore.js";
+import type { UserIdentityStoreApi } from "./stores/userIdentityStore.js";
+import { createUserIdentityStore } from "./stores/userIdentityStore.js";
 import type { CostStoreApi } from "./stores/costStore.js";
 import { createCostStore } from "./stores/costStore.js";
 import type { ProjectStatisticsStoreApi } from "./stores/projectStatisticsStore.js";
@@ -82,7 +84,8 @@ type ComposedStoreApi =
   & RuntimePolicyStoreApi
   & DenialStoreApi
   & OpenShellProviderStoreApi
-  & AuthSourceStoreApi;
+  & AuthSourceStoreApi
+  & UserIdentityStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -106,6 +109,7 @@ export class SqliteStateStore {
   private readonly denialStore: DenialStoreApi;
   private readonly openShellProviderStore: OpenShellProviderStoreApi;
   private readonly authSourceStore: AuthSourceStoreApi;
+  private readonly userIdentityStore: UserIdentityStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
   private readonly logContextStatements = new Map<LogEntityKind, Database.Statement>();
 
@@ -140,6 +144,7 @@ export class SqliteStateStore {
     this.denialStore = createDenialStore({ db: this.db });
     this.openShellProviderStore = createOpenShellProviderStore({ db: this.db });
     this.authSourceStore = createAuthSourceStore({ db: this.db });
+    this.userIdentityStore = createUserIdentityStore({ db: this.db });
 
     Object.assign(
       this,
@@ -159,7 +164,8 @@ export class SqliteStateStore {
       this.runtimePolicyStore,
       this.denialStore,
       this.openShellProviderStore,
-      this.authSourceStore
+      this.authSourceStore,
+      this.userIdentityStore
     );
   }
 

@@ -10,6 +10,9 @@ import { serializeEffectivePermissions } from "./authorization/policyEngine.js";
 import { recordAudit, UNAUTHENTICATED_ACTOR_NAME } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
 import { getPasswordStrength } from "./commonPasswords.js";
+import type { DirectoryAccountResolution, DirectoryAccountResolver } from "./authentication/directoryAuthenticator.js";
+import type { AuthSourceRecord } from "../state/stores/authSourceStore.js";
+import type { UserIdentityRecord, UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
 
 const log = getLogger("admin-auth");
 
@@ -68,11 +71,12 @@ export interface AuthRouteUserStore {
   createInitialAdmin?: ((input: { id: string; username: string; passwordHash: string }) => Promise<AdminUser>) | undefined;
   getUserById(id: string): Promise<AdminUser | null>;
   listUsers(): Promise<AdminUser[]>;
+  /** Rejects with `LAST_ADMIN` / `LAST_LOCAL_ADMIN` instead of removing the last (local) admin. */
   updateUser(id: string, partial: { role?: UserRole; enabled?: boolean }): Promise<AdminUser | null>;
   updateUserPassword(id: string, passwordHash: string): Promise<boolean>;
+  /** Same last-admin guards as `updateUser`. */
   deleteUser(id: string): Promise<boolean>;
   countUsers(): Promise<number>;
-  countEnabledAdmins(): Promise<number>;
   deleteSessionsForUser(userId: string): Promise<number>;
 }
 
@@ -88,10 +92,24 @@ export interface AuthRouteAuditStore {
   }): Promise<unknown>;
 }
 
+/** Directory-link surface; absent when the store predates `user_identities`. */
+export type AuthRouteIdentityStore = Pick<
+  UserIdentityStoreApi,
+  | "getUserIdentityByUserId"
+  | "listUserIdentities"
+  | "createExternalUser"
+  | "linkUserIdentity"
+  | "unlinkUserIdentity"
+> & {
+  listAuthSources(): Promise<AuthSourceRecord[]>;
+};
+
 export interface AuthRouteDeps {
   userStore?: AuthRouteUserStore | undefined;
   auditStore?: AuthRouteAuditStore | undefined;
   authService?: AdminAuthService | undefined;
+  identityStore?: AuthRouteIdentityStore | undefined;
+  directoryAccounts?: DirectoryAccountResolver | undefined;
   credentialEncryptionConfigured: boolean;
   /** Invalidates the server-level users-exist cache after setup / user create / delete. */
   onUsersChanged?: (() => void) | undefined;
@@ -109,15 +127,64 @@ export interface AuthRouteDeps {
   trustProxy?: boolean | undefined;
 }
 
-function serializeUser(user: AdminUser): Record<string, unknown> {
+function serializeUser(
+  user: AdminUser,
+  identity: UserIdentityRecord | null = null,
+  sourceNames: ReadonlyMap<string, string> = new Map()
+): Record<string, unknown> {
   return {
     id: user.id,
     username: user.username,
     role: user.role,
     enabled: user.enabled,
+    authSource: identity
+      ? {
+          id: identity.authSourceId,
+          name: sourceNames.get(identity.authSourceId) ?? identity.authSourceId,
+          externalUsername: identity.externalUsername,
+          lastLoginAt: identity.lastLoginAt ? toIsoTimestamp(identity.lastLoginAt) : null,
+        }
+      : null,
     createdAt: toIsoTimestamp(user.createdAt),
     updatedAt: toIsoTimestamp(user.updatedAt),
   };
+}
+
+function hasErrorCode(err: unknown, code: string): boolean {
+  return err instanceof Error && "code" in err && (err as { code?: unknown }).code === code;
+}
+
+/** Map the store's last-admin guards to 409; returns true when one was written. */
+function writeLastAdminConflict(res: ServerResponse, err: unknown, action: string): boolean {
+  if (hasErrorCode(err, "LAST_ADMIN")) {
+    writeJson(res, 409, { error: `Cannot ${action} the last enabled admin` });
+    return true;
+  }
+  if (hasErrorCode(err, "LAST_LOCAL_ADMIN")) {
+    writeJson(res, 409, { error: `Cannot ${action} the last enabled local admin; keep one password account for directory outages` });
+    return true;
+  }
+  return false;
+}
+
+/** Map a failed directory lookup to its HTTP response; returns true when one was written. */
+function writeDirectoryLookupFailure(res: ServerResponse, lookup: DirectoryAccountResolution, externalUsername: string): boolean {
+  switch (lookup.status) {
+    case "found":
+      return false;
+    case "source_not_found":
+      writeJson(res, 400, { error: "Authentication source not found" });
+      return true;
+    case "not_found":
+      writeJson(res, 400, { error: `No directory account matches "${externalUsername}"` });
+      return true;
+    case "ambiguous":
+      writeJson(res, 400, { error: `More than one directory account matches "${externalUsername}"; tighten the user filter` });
+      return true;
+    case "unavailable":
+      writeJson(res, 502, { error: `Directory lookup failed: ${lookup.error}` });
+      return true;
+  }
 }
 
 function extractBearerToken(req: IncomingMessage): string | null {
@@ -253,8 +320,8 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       throw err;
     }
     deps.onUsersChanged?.();
-    const session = await deps.authService.login(credentials.username, credentials.password);
-    if (!session) {
+    const login = await deps.authService.login(credentials.username, credentials.password);
+    if (login.status !== "ok") {
       writeJson(res, 500, { error: "Failed to establish session after setup" });
       return;
     }
@@ -267,7 +334,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       details: { username: user.username, role: user.role, sourceIp: requestIp(req, trustProxy) },
     });
     log.info({ username: user.username }, "first admin user created via setup");
-    writeJson(res, 201, session);
+    writeJson(res, 201, login.session);
   });
 
   // Public — username + password login.
@@ -297,8 +364,18 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeRateLimited(res, limited.retryAfterMs);
       return;
     }
-    const session = await deps.authService.login(username, password);
-    if (!session) {
+    const login = await deps.authService.login(username, password);
+    if (login.status === "unavailable") {
+      // Not a credential failure: no directory answered, so the rate limiter is untouched.
+      recordAudit(deps.auditStore, req, {
+        action: "auth.login_unavailable",
+        targetType: "user",
+        details: { username, sourceIp: requestIp(req, trustProxy) },
+      });
+      writeJson(res, 503, { error: "Sign-in is temporarily unavailable because the directory could not be reached. Try again later." });
+      return;
+    }
+    if (login.status === "rejected") {
       recordAuthFailure(req, username);
       recordAudit(deps.auditStore, req, {
         action: "auth.login_failed",
@@ -308,13 +385,18 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 401, { error: "Invalid username or password" });
       return;
     }
+    const { session } = login;
     recordAuthSuccess(req, username);
     recordAudit(deps.auditStore, req, {
       action: "auth.login",
       targetType: "user",
       targetId: session.user.id,
       actor: { userId: session.user.id, username: session.user.username },
-      details: { username: session.user.username, sourceIp: requestIp(req, trustProxy) },
+      details: {
+        username: session.user.username,
+        sourceIp: requestIp(req, trustProxy),
+        ...(login.authSourceId !== null ? { authSourceId: login.authSourceId } : {}),
+      },
     });
     writeJson(res, 200, session);
   });
@@ -329,21 +411,39 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     res.end();
   }, { authenticated: true });
 
-  router.add("GET", "/api/admin/auth/me", (req, res, _params) => {
+  router.add("GET", "/api/admin/auth/me", async (req, res, _params) => {
     const context = getAuthContext(req);
     if (!context) {
       writeJson(res, 401, { error: "Unauthorized" });
-      return Promise.resolve();
+      return;
     }
     const perms = getEffectivePermissions(req);
+    const identity = context.userId !== null && deps.identityStore
+      ? await deps.identityStore.getUserIdentityByUserId(context.userId)
+      : null;
+    const source = identity
+      ? (await deps.identityStore?.listAuthSources())?.find((candidate) => candidate.id === identity.authSourceId)
+      : undefined;
     writeJson(res, 200, {
       id: context.userId,
       username: context.username,
       role: context.role,
+      authSource: identity ? { id: identity.authSourceId, name: source?.name ?? identity.authSourceId } : null,
       ...(perms ? { capabilities: serializeEffectivePermissions(perms) } : {}),
     });
-    return Promise.resolve();
   }, { authenticated: true });
+
+  async function loadIdentityContext(): Promise<{ identities: Map<string, UserIdentityRecord>; sourceNames: Map<string, string> }> {
+    if (!deps.identityStore) return { identities: new Map(), sourceNames: new Map() };
+    const [identities, sources] = await Promise.all([
+      deps.identityStore.listUserIdentities(),
+      deps.identityStore.listAuthSources(),
+    ]);
+    return {
+      identities: new Map(identities.map((identity) => [identity.userId, identity])),
+      sourceNames: new Map(sources.map((source) => [source.id, source.name])),
+    };
+  }
 
   // ─── User management (admin only) ─────────────────────────────────────────
 
@@ -357,20 +457,76 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     const offset = Math.max(parseNonNegativeInt(requestUrl.searchParams.get("offset")) ?? 0, 0);
     const users = await deps.userStore.listUsers();
     const page = users.slice(offset, offset + limit);
-    writeJson(res, 200, { users: page.map(serializeUser), total: users.length, limit, offset });
+    const { identities, sourceNames } = await loadIdentityContext();
+    writeJson(res, 200, {
+      users: page.map((user) => serializeUser(user, identities.get(user.id) ?? null, sourceNames)),
+      total: users.length,
+      limit,
+      offset,
+    });
   }, { permission: "user.manage" });
+
+  async function createDirectoryUser(req: IncomingMessage, res: ServerResponse, body: Record<string, unknown> | null, role: UserRole): Promise<void> {
+    const authSourceId = typeof body?.["authSourceId"] === "string" ? body["authSourceId"] : "";
+    const externalUsername = typeof body?.["externalUsername"] === "string" ? body["externalUsername"].trim() : "";
+    if (!deps.identityStore || !deps.directoryAccounts) {
+      writeJson(res, 503, { error: "Directory accounts are not available" });
+      return;
+    }
+    if (externalUsername === "") {
+      writeJson(res, 400, { error: "externalUsername must be a non-empty string" });
+      return;
+    }
+    const requested = typeof body?.["username"] === "string" ? normalizeUsername(body["username"]) : "";
+    const lookup = await deps.directoryAccounts.resolve(authSourceId, externalUsername);
+    if (writeDirectoryLookupFailure(res, lookup, externalUsername) || lookup.status !== "found") return;
+    const username = requested !== "" ? requested : normalizeUsername(lookup.account.username);
+    try {
+      const { user } = await deps.identityStore.createExternalUser({
+        username,
+        role,
+        authSourceId: lookup.source.id,
+        externalSubject: lookup.account.subject,
+        externalUsername: lookup.account.username,
+      });
+      deps.onUsersChanged?.();
+      try {
+        await deps.onUserCreated?.(user.id, user.role);
+      } catch {
+        // Default-policy binding is best-effort; user creation still succeeds.
+      }
+      recordAudit(deps.auditStore, req, {
+        action: "user.create",
+        targetType: "user",
+        targetId: user.id,
+        details: { username: user.username, role: user.role, authSourceId: lookup.source.id, externalUsername: lookup.account.username },
+      });
+      const identity = await deps.identityStore.getUserIdentityByUserId(user.id);
+      writeJson(res, 201, { user: serializeUser(user, identity, new Map([[lookup.source.id, lookup.source.name]])) });
+    } catch (err: unknown) {
+      if (isDuplicateError(err)) {
+        writeJson(res, 409, { error: `Username "${username}" or directory account "${lookup.account.username}" is already in use` });
+        return;
+      }
+      throw err;
+    }
+  }
 
   router.add("POST", "/api/admin/users", async (req, res, _params) => {
     if (!requireStore(deps.userStore, res, "User store not available")) return;
     const body = await readBody(req);
-    const credentials = validateCredentials(body);
-    if ("error" in credentials) {
-      writeJson(res, 400, { error: credentials.error });
-      return;
-    }
     const role = body?.["role"];
     if (typeof role !== "string" || !VALID_ROLES.includes(role as UserRole)) {
       writeJson(res, 400, { error: `role must be one of: ${VALID_ROLES.join(", ")}` });
+      return;
+    }
+    if (body?.["authSourceId"] !== undefined && body["authSourceId"] !== null) {
+      await createDirectoryUser(req, res, body, role as UserRole);
+      return;
+    }
+    const credentials = validateCredentials(body);
+    if ("error" in credentials) {
+      writeJson(res, 400, { error: credentials.error });
       return;
     }
     const passwordHash = await hashPassword(credentials.password);
@@ -418,18 +574,16 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 400, { error: "Nothing to update: provide role and/or enabled" });
       return;
     }
-    const losesAdmin =
-      target.role === "admin" &&
-      target.enabled &&
-      ((role !== undefined && role !== "admin") || enabled === false);
-    if (losesAdmin && (await deps.userStore.countEnabledAdmins()) <= 1) {
-      writeJson(res, 409, { error: "Cannot demote or disable the last enabled admin" });
-      return;
+    let updated: AdminUser | null;
+    try {
+      updated = await deps.userStore.updateUser(id, {
+        ...(role !== undefined ? { role: role as UserRole } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      });
+    } catch (err) {
+      if (writeLastAdminConflict(res, err, "demote or disable")) return;
+      throw err;
     }
-    const updated = await deps.userStore.updateUser(id, {
-      ...(role !== undefined ? { role: role as UserRole } : {}),
-      ...(enabled !== undefined ? { enabled } : {}),
-    });
     if (!updated) { writeJson(res, 404, { error: "User not found" }); return; }
     if (enabled === false) {
       await deps.userStore.deleteSessionsForUser(id);
@@ -444,7 +598,8 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
         ...(enabled !== undefined ? { enabled } : {}),
       },
     });
-    writeJson(res, 200, { user: serializeUser(updated) });
+    const { identities, sourceNames } = await loadIdentityContext();
+    writeJson(res, 200, { user: serializeUser(updated, identities.get(updated.id) ?? null, sourceNames) });
   }, { permission: "user.manage" });
 
   // Admin resets anyone; a non-admin may change their OWN password with currentPassword.
@@ -455,6 +610,10 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     if (!context) { writeJson(res, 401, { error: "Unauthorized" }); return; }
     const target = await deps.userStore.getUserById(id);
     if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
+    if (deps.identityStore && (await deps.identityStore.getUserIdentityByUserId(id))) {
+      writeJson(res, 409, { error: "This account signs in through a directory; its password is managed there" });
+      return;
+    }
     const body = await readBody(req);
     const password = typeof body?.["password"] === "string" ? body["password"] : "";
     const passwordError = validatePasswordStrength(password);
@@ -486,13 +645,10 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     const id = params["id"] ?? "";
     const target = await deps.userStore.getUserById(id);
     if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
-    if (target.role === "admin" && target.enabled && (await deps.userStore.countEnabledAdmins()) <= 1) {
-      writeJson(res, 409, { error: "Cannot delete the last enabled admin" });
-      return;
-    }
     try {
       await deps.userStore.deleteUser(id);
     } catch (err) {
+      if (writeLastAdminConflict(res, err, "delete")) return;
       if (
         err instanceof Error &&
         "code" in err &&
@@ -506,5 +662,86 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     deps.onUsersChanged?.();
     recordAudit(deps.auditStore, req, { action: "user.delete", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });
+  }, { permission: "user.manage" });
+
+  // Link replaces the local password with directory sign-in and revokes sessions.
+  router.add("PUT", "/api/admin/users/:id/identity", async (req, res, params) => {
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
+    if (!deps.identityStore || !deps.directoryAccounts) {
+      writeJson(res, 503, { error: "Directory accounts are not available" });
+      return;
+    }
+    const id = params["id"] ?? "";
+    const target = await deps.userStore.getUserById(id);
+    if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
+    const body = await readBody(req);
+    const authSourceId = typeof body?.["authSourceId"] === "string" ? body["authSourceId"] : "";
+    const externalUsername = typeof body?.["externalUsername"] === "string" ? body["externalUsername"].trim() : "";
+    if (externalUsername === "") {
+      writeJson(res, 400, { error: "externalUsername must be a non-empty string" });
+      return;
+    }
+    const lookup = await deps.directoryAccounts.resolve(authSourceId, externalUsername);
+    if (writeDirectoryLookupFailure(res, lookup, externalUsername) || lookup.status !== "found") return;
+    let identity: UserIdentityRecord;
+    try {
+      identity = await deps.identityStore.linkUserIdentity({
+        userId: id,
+        authSourceId: lookup.source.id,
+        externalSubject: lookup.account.subject,
+        externalUsername: lookup.account.username,
+      });
+    } catch (err) {
+      if (hasErrorCode(err, "NOT_FOUND")) { writeJson(res, 404, { error: "User not found" }); return; }
+      if (hasErrorCode(err, "ALREADY_LINKED")) { writeJson(res, 409, { error: "User is already linked to a directory account" }); return; }
+      if (hasErrorCode(err, "DUPLICATE")) {
+        writeJson(res, 409, { error: `Directory account "${lookup.account.username}" is already linked to another user` });
+        return;
+      }
+      if (hasErrorCode(err, "LAST_LOCAL_ADMIN")) {
+        writeJson(res, 409, { error: "Cannot link the last enabled local admin; keep one password account for directory outages" });
+        return;
+      }
+      throw err;
+    }
+    recordAudit(deps.auditStore, req, {
+      action: "user.identity_link",
+      targetType: "user",
+      targetId: id,
+      details: { username: target.username, authSourceId: lookup.source.id, externalUsername: lookup.account.username },
+    });
+    writeJson(res, 200, { user: serializeUser(target, identity, new Map([[lookup.source.id, lookup.source.name]])) });
+  }, { permission: "user.manage" });
+
+  // Unlink converts the account back to a local password and revokes sessions.
+  router.add("DELETE", "/api/admin/users/:id/identity", async (req, res, params) => {
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
+    if (!deps.identityStore) {
+      writeJson(res, 503, { error: "Directory accounts are not available" });
+      return;
+    }
+    const id = params["id"] ?? "";
+    const target = await deps.userStore.getUserById(id);
+    if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
+    const identity = await deps.identityStore.getUserIdentityByUserId(id);
+    if (!identity) { writeJson(res, 404, { error: "User is not linked to a directory account" }); return; }
+    const body = await readBody(req);
+    const password = typeof body?.["password"] === "string" ? body["password"] : "";
+    const passwordError = validatePasswordStrength(password);
+    if (passwordError) {
+      writeJson(res, 400, { error: passwordError });
+      return;
+    }
+    if (!(await deps.identityStore.unlinkUserIdentity(id, await hashPassword(password)))) {
+      writeJson(res, 404, { error: "User is not linked to a directory account" });
+      return;
+    }
+    recordAudit(deps.auditStore, req, {
+      action: "user.identity_unlink",
+      targetType: "user",
+      targetId: id,
+      details: { username: target.username, authSourceId: identity.authSourceId, externalUsername: identity.externalUsername },
+    });
+    writeJson(res, 200, { user: serializeUser(target) });
   }, { permission: "user.manage" });
 }

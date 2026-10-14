@@ -37,7 +37,7 @@ export function hashSessionToken(token: string): string {
 /** Subset of the state store the auth service needs (satisfied by SqliteStateStore). */
 export interface AdminAuthStateStore {
   getUserByUsername(username: string): Promise<AdminUser | null>;
-  createSession(input: { tokenHash: string; userId: string; expiresAt: Date }): Promise<UserSession>;
+  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null }): Promise<UserSession>;
   getSessionByTokenHash(tokenHash: string): Promise<(UserSession & { user: AdminUser }) | null>;
   touchSession(tokenHash: string, update: { lastSeenAt: Date; expiresAt: Date }): Promise<void>;
   deleteSessionByTokenHash(tokenHash: string): Promise<boolean>;
@@ -45,8 +45,7 @@ export interface AdminAuthStateStore {
 }
 
 export interface AdminAuthService {
-  /** Null when the authenticator rejects the credentials. */
-  login(username: string, password: string): Promise<AdminLoginSession | null>;
+  login(username: string, password: string): Promise<AdminLoginResult>;
   /** Resolve a bearer token to an AuthContext; refreshes sliding expiry (throttled). */
   validateSession(token: string): Promise<AuthContext | null>;
   /** Revoke the session behind the token; false when no such session existed. */
@@ -57,6 +56,12 @@ export interface AdminLoginSession {
   token: string;
   user: { id: string; username: string; role: UserRole };
 }
+
+/** `unavailable`: no credential authority could answer (e.g. directory down). */
+export type AdminLoginResult =
+  | { status: "ok"; session: AdminLoginSession; authSourceId: string | null }
+  | { status: "rejected" }
+  | { status: "unavailable" };
 
 export interface AdminAuthServiceDeps {
   stateStore: AdminAuthStateStore;
@@ -69,7 +74,7 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
   const { stateStore } = deps;
   const authenticator = deps.authenticator ?? createLocalPasswordAuthenticator(stateStore);
 
-  async function issueSession(user: AdminUser): Promise<AdminLoginSession> {
+  async function issueSession(user: AdminUser, identityId: string | null): Promise<AdminLoginSession> {
     const now = new Date();
     try {
       await stateStore.purgeExpiredSessions(now);
@@ -81,15 +86,22 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
       tokenHash: hashSessionToken(token),
       userId: user.id,
       expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+      identityId,
     });
     return { token, user: { id: user.id, username: user.username, role: user.role } };
   }
 
   return {
-    async login(username, password): Promise<AdminLoginSession | null> {
+    async login(username, password): Promise<AdminLoginResult> {
       const outcome = await authenticator.authenticate(username, password);
-      if (outcome.status !== "authenticated") return null;
-      return issueSession(outcome.user);
+      if (outcome.status !== "authenticated") return outcome;
+      try {
+        return { status: "ok", session: await issueSession(outcome.user, outcome.identityId), authSourceId: outcome.authSourceId };
+      } catch (err) {
+        // The account was linked or unlinked while its credentials were being checked.
+        if (err instanceof Error && "code" in err && err.code === "IDENTITY_CHANGED") return { status: "rejected" };
+        throw err;
+      }
     },
 
     async validateSession(token): Promise<AuthContext | null> {

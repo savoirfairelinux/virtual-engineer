@@ -112,36 +112,47 @@ describe("createAdminAuthService — login", () => {
     const service = createAdminAuthService({ stateStore: store });
 
     const result = await service.login("alice", "hunter2hunter2");
-    expect(result).not.toBeNull();
-    expect(result?.token).toMatch(/^[0-9a-f]{64}$/);
-    expect(result?.user).toEqual({ id: "user-1", username: "alice", role: "admin" });
+    if (result.status !== "ok") throw new Error(`expected ok, got ${result.status}`);
+    expect(result.authSourceId).toBeNull();
+    expect(result.session.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.session.user).toEqual({ id: "user-1", username: "alice", role: "admin" });
 
     // The stored session holds the sha256 of the token, not the raw token.
-    const session = store.sessions.get(hashSessionToken(result?.token ?? ""));
+    const session = store.sessions.get(hashSessionToken(result.session.token));
     expect(session).toBeDefined();
     expect(session?.userId).toBe("user-1");
     expect(session?.expiresAt.getTime()).toBeGreaterThan(Date.now() + SESSION_TTL_MS - 60_000);
     expect(store.purgeCalls).toBe(1);
   });
 
-  it("returns null for an unknown user", async () => {
+  it("rejects an unknown user", async () => {
     const service = createAdminAuthService({ stateStore: makeStore() });
-    await expect(service.login("nobody", "whateverpw")).resolves.toBeNull();
+    await expect(service.login("nobody", "whateverpw")).resolves.toEqual({ status: "rejected" });
   });
 
-  it("returns null for a wrong password", async () => {
+  it("rejects a wrong password", async () => {
     const passwordHash = await hashPassword("hunter2hunter2");
     const store = makeStore([makeUser({ passwordHash })]);
     const service = createAdminAuthService({ stateStore: store });
-    await expect(service.login("alice", "not-the-password")).resolves.toBeNull();
+    await expect(service.login("alice", "not-the-password")).resolves.toEqual({ status: "rejected" });
     expect(store.sessions.size).toBe(0);
   });
 
-  it("returns null for a disabled user even with the right password", async () => {
+  it("rejects a disabled user even with the right password", async () => {
     const passwordHash = await hashPassword("hunter2hunter2");
     const store = makeStore([makeUser({ passwordHash, enabled: false })]);
     const service = createAdminAuthService({ stateStore: store });
-    await expect(service.login("alice", "hunter2hunter2")).resolves.toBeNull();
+    await expect(service.login("alice", "hunter2hunter2")).resolves.toEqual({ status: "rejected" });
+  });
+
+  it("passes an unavailable authenticator outcome through without a session", async () => {
+    const store = makeStore([makeUser()]);
+    const service = createAdminAuthService({
+      stateStore: store,
+      authenticator: { authenticate: () => Promise.resolve({ status: "unavailable" }) },
+    });
+    await expect(service.login("alice", "hunter2hunter2")).resolves.toEqual({ status: "unavailable" });
+    expect(store.sessions.size).toBe(0);
   });
 });
 
@@ -151,8 +162,8 @@ describe("createAdminAuthService — validateSession", () => {
     const store = makeStore([makeUser({ passwordHash })]);
     const service = createAdminAuthService({ stateStore: store });
     const result = await service.login("alice", "hunter2hunter2");
-    if (!result) throw new Error("login failed in test setup");
-    return { service, store, token: result.token };
+    if (result.status !== "ok") throw new Error("login failed in test setup");
+    return { service, store, token: result.session.token };
   }
 
   it("resolves a valid token to an AuthContext", async () => {
@@ -203,11 +214,12 @@ describe("createAdminAuthService — logout", () => {
     const store = makeStore([makeUser({ passwordHash })]);
     const service = createAdminAuthService({ stateStore: store });
     const result = await service.login("alice", "hunter2hunter2");
-    if (!result) throw new Error("login failed in test setup");
+    if (result.status !== "ok") throw new Error("login failed in test setup");
+    const { token } = result.session;
 
-    await expect(service.logout(result.token)).resolves.toBe(true);
-    await expect(service.validateSession(result.token)).resolves.toBeNull();
-    await expect(service.logout(result.token)).resolves.toBe(false);
+    await expect(service.logout(token)).resolves.toBe(true);
+    await expect(service.validateSession(token)).resolves.toBeNull();
+    await expect(service.logout(token)).resolves.toBe(false);
   });
 
   it("returns false for an empty token", async () => {
@@ -248,29 +260,34 @@ describe("createAdminAuthService — injected authenticator", () => {
   it("forwards the credentials and issues a session for the user it returns", async () => {
     // The stored hash is not a scrypt hash, so success can only come from the injected authenticator.
     const user = await store.createUser({ id: "user-dir", username: "carol", passwordHash: "not-a-scrypt-hash", role: "operator" });
-    const authenticator = recordingAuthenticator(() => Promise.resolve({ status: "authenticated", user }));
+    const authenticator = recordingAuthenticator(() => Promise.resolve({ status: "authenticated", user, authSourceId: "source-1", identityId: null }));
     const service = createAdminAuthService({ stateStore: store, authenticator });
 
-    const session = await service.login("carol", "directory-Pass-1");
+    const result = await service.login("carol", "directory-Pass-1");
 
     expect(authenticator.calls).toEqual([["carol", "directory-Pass-1"]]);
-    expect(session?.user).toEqual({ id: "user-dir", username: "carol", role: "operator" });
-    await expect(service.validateSession(session?.token ?? "")).resolves.toEqual({
+    if (result.status !== "ok") throw new Error(`expected ok, got ${result.status}`);
+    expect(result.authSourceId).toBe("source-1");
+    expect(result.session.user).toEqual({ id: "user-dir", username: "carol", role: "operator" });
+    await expect(service.validateSession(result.session.token)).resolves.toEqual({
       userId: "user-dir",
       username: "carol",
       role: "operator",
     });
   });
 
-  it("returns null and creates no session when the authenticator rejects", async () => {
+  it("creates no session when the authenticator rejects or is unavailable", async () => {
     const hash = await hashPassword("local-Pass-1");
     await store.createUser({ id: "user-local", username: "dave", passwordHash: hash, role: "viewer" });
-    const authenticator = recordingAuthenticator(() => Promise.resolve({ status: "rejected" }));
-    const service = createAdminAuthService({ stateStore: store, authenticator });
+    const rejecting = recordingAuthenticator(() => Promise.resolve({ status: "rejected" }));
+    const unavailable = recordingAuthenticator(() => Promise.resolve({ status: "unavailable" }));
 
     // Even the correct local password is refused: the injected authenticator replaces the default.
-    await expect(service.login("dave", "local-Pass-1")).resolves.toBeNull();
-    expect(authenticator.calls).toEqual([["dave", "local-Pass-1"]]);
+    await expect(createAdminAuthService({ stateStore: store, authenticator: rejecting }).login("dave", "local-Pass-1"))
+      .resolves.toEqual({ status: "rejected" });
+    await expect(createAdminAuthService({ stateStore: store, authenticator: unavailable }).login("dave", "local-Pass-1"))
+      .resolves.toEqual({ status: "unavailable" });
+    expect(rejecting.calls).toEqual([["dave", "local-Pass-1"]]);
     await expect(sessionCount()).resolves.toBe(0);
   });
 

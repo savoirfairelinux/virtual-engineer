@@ -13,31 +13,44 @@ import { userListConfig } from "./configListConfigs.ts";
 import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import type { ApiUser, UserRole } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
+import type { AuthSource } from "./AuthSourcesSection.tsx";
 
 const ROLE_TONE = { admin: "active", operator: "info", viewer: "muted" } as const;
 const ROLES: readonly UserRole[] = ["admin", "operator", "viewer"];
 // Backend maximum page size for GET /api/admin/users.
 const USERS_FETCH_LIMIT = 200;
 const USER_LIST_CONFIG = userListConfig();
+const LOCAL_SIGN_IN = "local";
+
+function sourceLabel(source: AuthSource): string {
+  return source.enabled ? source.name : `${source.name} (disabled)`;
+}
 
 /* ─── Create-user modal ───────────────────────────────────────────────── */
 
-function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function UserFormModal({ sources, onClose, onSaved }: { sources: AuthSource[]; onClose: () => void; onSaved: () => void }) {
+  const [signIn, setSignIn] = useState(LOCAL_SIGN_IN);
   const [username, setUsername] = useState("");
+  const [externalUsername, setExternalUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [role, setRole] = useState<UserRole>("viewer");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const directory = signIn !== LOCAL_SIGN_IN;
 
-  const canSubmit = username.trim().length > 0 && password.length >= 8 && confirm.length > 0;
+  const canSubmit = directory
+    ? externalUsername.trim().length > 0
+    : username.trim().length > 0 && password.length >= 8 && confirm.length > 0;
 
   async function handleSave() {
-    if (password !== confirm) { setError("Passwords do not match."); return; }
+    if (!directory && password !== confirm) { setError("Passwords do not match."); return; }
     setSaving(true);
     setError(null);
     try {
-      await api.post("/api/admin/users", { username: username.trim(), password, role });
+      await api.post("/api/admin/users", directory
+        ? { authSourceId: signIn, externalUsername: externalUsername.trim(), role, ...(username.trim() ? { username: username.trim() } : {}) }
+        : { username: username.trim(), password, role });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Create failed");
@@ -49,15 +62,32 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   return (
     <Modal title="New user" sub="Create a dashboard account" onClose={onClose}>
       <FormRow>
-        <Field label="Username" required>
+        {sources.length > 0 && (
+          <Field label="Sign-in method" hint="Directory accounts sign in with their directory password">
+            <FieldSelect value={signIn} onChange={(e) => setSignIn(e.target.value)}>
+              <option value={LOCAL_SIGN_IN}>Local password</option>
+              {sources.map((source) => <option key={source.id} value={source.id}>{sourceLabel(source)}</option>)}
+            </FieldSelect>
+          </Field>
+        )}
+        {directory && (
+          <Field label="Directory username" required hint="Looked up with the source's user filter">
+            <FieldInput value={externalUsername} autoComplete="off" onChange={(e) => setExternalUsername(e.target.value)} />
+          </Field>
+        )}
+        <Field label="Username" required={!directory} hint={directory ? "Optional; defaults to the directory username" : undefined}>
           <FieldInput data-tour="user-form-username" value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
         </Field>
-        <Field label="Password" required hint="Minimum 8 characters">
-          <PasswordField data-tour="user-form-password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
-        </Field>
-        <Field label="Confirm password" required>
-          <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
-        </Field>
+        {!directory && (
+          <>
+            <Field label="Password" required hint="Minimum 8 characters">
+              <PasswordField data-tour="user-form-password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
+            </Field>
+            <Field label="Confirm password" required>
+              <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
+            </Field>
+          </>
+        )}
         <Field label="Role" required hint="viewer = read-only · operator = owned and shared resources · admin = full instance access">
           <FieldSelect data-tour="user-form-role" value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -79,18 +109,21 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
 /* ─── Reset-password modal ────────────────────────────────────────────── */
 
+/** Directory users get a new local password by removing their directory link. */
 function ResetPasswordModal({ user, onClose, onSaved }: { user: ApiUser; onClose: () => void; onSaved: () => void }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const linkedSource = user.authSource ?? null;
 
   async function handleSave() {
     if (password !== confirm) { setError("Passwords do not match."); return; }
     setSaving(true);
     setError(null);
     try {
-      await api.put(`/api/admin/users/${user.id}/password`, { password });
+      if (linkedSource) await api.delete(`/api/admin/users/${user.id}/identity`, { password });
+      else await api.put(`/api/admin/users/${user.id}/password`, { password });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Reset failed");
@@ -100,7 +133,13 @@ function ResetPasswordModal({ user, onClose, onSaved }: { user: ApiUser; onClose
   }
 
   return (
-    <Modal title="Reset password" sub={`Account: ${user.username} — all sessions of this user are revoked`} onClose={onClose}>
+    <Modal
+      title={linkedSource ? "Convert to local password" : "Reset password"}
+      sub={linkedSource
+        ? `Account: ${user.username} — removes the ${linkedSource.name} link and revokes all sessions`
+        : `Account: ${user.username} — all sessions of this user are revoked`}
+      onClose={onClose}
+    >
       <FormRow>
         <Field label="New password" required hint="Minimum 8 characters">
           <PasswordField value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
@@ -114,7 +153,53 @@ function ResetPasswordModal({ user, onClose, onSaved }: { user: ApiUser; onClose
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={() => void handleSave()} disabled={saving || password.length < 8 || confirm.length === 0}>
-            {saving ? "Saving…" : "Reset password"}
+            {saving ? "Saving…" : linkedSource ? "Convert account" : "Reset password"}
+          </button>
+        </FormActions>
+      </FormRow>
+    </Modal>
+  );
+}
+
+/* ─── Link-to-directory modal ──────────────────────────────────────── */
+
+function LinkDirectoryModal({ user, sources, onClose, onSaved }: { user: ApiUser; sources: AuthSource[]; onClose: () => void; onSaved: () => void }) {
+  const [chosenSourceId, setChosenSourceId] = useState<string | null>(null);
+  // Opened from a URL, the dialog can mount before the sources arrive.
+  const authSourceId = chosenSourceId ?? sources.find((source) => source.enabled)?.id ?? sources[0]?.id ?? "";
+  const [externalUsername, setExternalUsername] = useState(user.username);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.put(`/api/admin/users/${user.id}/identity`, { authSourceId, externalUsername: externalUsername.trim() });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Link failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title="Link to directory" sub={`Account: ${user.username} — the local password stops working and all sessions are revoked`} onClose={onClose}>
+      <FormRow>
+        <Field label="Authentication source" required>
+          <FieldSelect value={authSourceId} onChange={(e) => setChosenSourceId(e.target.value)}>
+            {sources.map((source) => <option key={source.id} value={source.id}>{sourceLabel(source)}</option>)}
+          </FieldSelect>
+        </Field>
+        <Field label="Directory username" required>
+          <FieldInput value={externalUsername} autoComplete="off" onChange={(e) => setExternalUsername(e.target.value)} />
+        </Field>
+        <FormError msg={error} />
+        <FormActions>
+          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !authSourceId || externalUsername.trim() === ""}>
+            {saving ? "Linking…" : "Link account"}
           </button>
         </FormActions>
       </FormRow>
@@ -172,6 +257,7 @@ function UserEditModal({ user, onClose, onSaved }: { user: ApiUser; onClose: () 
 export function UsersSection({ route, navigate, markClean, listFilter, onListFilterChange }: ConfigSectionProps) {
   const { user: me } = useCurrentUser();
   const [users, setUsers] = useState<ApiUser[]>([]);
+  const [sources, setSources] = useState<AuthSource[]>([]);
   const [totalUsers, setTotalUsers] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -188,6 +274,15 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<{ authSources: AuthSource[] }>("/api/admin/auth-sources")
+      .then((result) => { if (!cancelled) setSources(result.authSources); })
+      // Directory sign-in is optional; without sources the page offers local accounts only.
+      .catch(() => { if (!cancelled) setSources([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   async function mutate(id: string, fn: () => Promise<unknown>): Promise<boolean> {
     setBusy(id);
@@ -209,7 +304,7 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
     return mutate(u.id, () => api.delete(`/api/admin/users/${u.id}`));
   }
 
-  const routeId = route.section === "users" && (route.mode === "detail" || route.mode === "edit" || route.mode === "password")
+  const routeId = route.section === "users" && (route.mode === "detail" || route.mode === "edit" || route.mode === "password" || route.mode === "link")
     ? route.id
     : null;
   const routeUser = routeId ? users.find((user) => user.id === routeId) : undefined;
@@ -225,6 +320,7 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
   if (route.mode === "create") {
     return (
       <UserFormModal
+        sources={sources}
         onClose={() => navigate({ section: "users", mode: "list" })}
         onSaved={() => saved("list")}
       />
@@ -245,7 +341,16 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
             <button className="btn danger" onClick={() => void deleteUser(routeUser).then((deleted) => { if (deleted) navigate({ section: "users", mode: "list" }); })}>
               <Icon name="trash" size={13} /> Delete
             </button>
-            <button className="btn" onClick={() => navigate({ section: "users", mode: "password", id: routeUser.id })}>Reset password</button>
+            {routeUser.authSource ? (
+              <button className="btn" onClick={() => navigate({ section: "users", mode: "password", id: routeUser.id })}>Convert to local password</button>
+            ) : (
+              <>
+                {sources.length > 0 && (
+                  <button className="btn" onClick={() => navigate({ section: "users", mode: "link", id: routeUser.id })}>Link to directory</button>
+                )}
+                <button className="btn" onClick={() => navigate({ section: "users", mode: "password", id: routeUser.id })}>Reset password</button>
+              </>
+            )}
             <button className="btn primary" onClick={() => navigate({ section: "users", mode: "edit", id: routeUser.id })}><Icon name="edit" size={13} /> Edit</button>
           </>
         }
@@ -259,10 +364,31 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
         <DetailSection label="Account">
           <DetailRow k="Username">{routeUser.username}</DetailRow>
           <DetailRow k="Role">{routeUser.role}</DetailRow>
+          <DetailRow k="Sign-in">{routeUser.authSource ? `${routeUser.authSource.name} (directory)` : "Local password"}</DetailRow>
+          {routeUser.authSource && (
+            <>
+              <DetailRow k="Directory account" mono>{routeUser.authSource.externalUsername}</DetailRow>
+              <DetailRow k="Last directory sign-in">
+                {routeUser.authSource.lastLoginAt ? new Date(routeUser.authSource.lastLoginAt).toLocaleString() : "Never"}
+              </DetailRow>
+            </>
+          )}
           <DetailRow k="User ID" mono>{routeUser.id}</DetailRow>
           <DetailRow k="Created">{new Date(routeUser.createdAt).toLocaleDateString()}</DetailRow>
         </DetailSection>
       </Drawer>
+    );
+  }
+
+  if (route.mode === "link") {
+    if (!routeUser) return <UserMissing onBack={() => navigate({ section: "users", mode: "list" })} />;
+    return (
+      <LinkDirectoryModal
+        user={routeUser}
+        sources={sources}
+        onClose={() => navigate({ section: "users", mode: "detail", id: routeUser.id })}
+        onSaved={() => saved("detail")}
+      />
     );
   }
 
@@ -352,6 +478,7 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
               <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
                 <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{u.username}</span>
                 <Tag tone={ROLE_TONE[u.role]} mono={false}>{u.role}</Tag>
+                {u.authSource && <Tag tone="info" mono={false}>{u.authSource.name}</Tag>}
                 {me?.id === u.id && <Tag tone="ok" mono={false}>you</Tag>}
               </div>
               <div style={{ fontSize: "12px", color: "var(--text-faint)", marginTop: "3px" }}>
@@ -359,14 +486,16 @@ export function UsersSection({ route, navigate, markClean, listFilter, onListFil
               </div>
             </div>
             <Tag tone={u.enabled ? "ok" : "muted"}>{u.enabled ? "enabled" : "disabled"}</Tag>
-            <button
-              className="iconbtn"
-              title="Reset password"
-              disabled={busy === u.id}
-              onClick={(event) => { event.stopPropagation(); navigate({ section: "users", mode: "password", id: u.id }); }}
-            >
-              <Icon name="refresh" size={14} />
-            </button>
+            {!u.authSource && (
+              <button
+                className="iconbtn"
+                title="Reset password"
+                disabled={busy === u.id}
+                onClick={(event) => { event.stopPropagation(); navigate({ section: "users", mode: "password", id: u.id }); }}
+              >
+                <Icon name="refresh" size={14} />
+              </button>
+            )}
             <button
               className="iconbtn"
               title="Delete"

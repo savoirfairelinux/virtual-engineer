@@ -483,6 +483,8 @@ export interface ApiMe {
   id: string | null;
   username: string;
   role: UserRole;
+  /** Set when the account signs in through a directory instead of a local password. */
+  authSource?: { id: string; name: string } | null;
   capabilities?: SerializedCapabilities;
 }
 
@@ -542,11 +544,19 @@ export interface SetupStatus {
   credentialEncryptionConfigured: boolean;
 }
 
+export interface ApiUserAuthSource {
+  id: string;
+  name: string;
+  externalUsername: string;
+  lastLoginAt: string | null;
+}
+
 export interface ApiUser {
   id: string;
   username: string;
   role: UserRole;
   enabled: boolean;
+  authSource?: ApiUserAuthSource | null;
   createdAt: string;
   updatedAt: string;
 }

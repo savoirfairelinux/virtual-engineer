@@ -686,7 +686,9 @@ describe("adminAuthRoutes", () => {
           calls.push([username, password]);
           if (username !== "carol") return local.authenticate(username, password);
           const carol = await store.getUserByUsername("carol");
-          return carol && password === "directory-Pass-1" ? { status: "authenticated", user: carol } : { status: "rejected" };
+          return carol && password === "directory-Pass-1"
+            ? { status: "authenticated", user: carol, authSourceId: null, identityId: null }
+            : { status: "rejected" };
         },
       };
       await closeServer(server);
