@@ -50,6 +50,8 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 
 ## Conventions
 
+- Dashboard shell tests mock the Vite manifest to verify the hashed brand-logo favicon URL and graceful omission when the logo is absent.
+
 - Worker result transport tests (`workerResult`) cover delayed writes, large success/failure envelopes through actual Node process pipes, credential-filtered error events, write failure, and the 15-minute review budget.
 
 - Protocol/runner/orchestrator tests cover masked and bounded diagnostic persistence with no review effects. `admin-ui/workerDiagnostics` covers escaped output, copy/download, and legacy cycles; `adminServerRbac` verifies cross-project diagnostic isolation through the existing cycles endpoint.

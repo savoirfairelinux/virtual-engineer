@@ -8,10 +8,46 @@
  *  - references to the Vite-built JS/CSS assets (or a fallback message)
  *  - correct XSS-escaped bootstrap JSON
  */
-import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderAdminDashboardHtml } from "../../src/admin/dashboard.js";
 
+vi.mock("node:fs", () => ({
+  existsSync: vi.fn(() => false),
+  readFileSync: vi.fn(),
+}));
+
 describe("renderAdminDashboardHtml", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    vi.resetModules();
+  });
+
+  it("uses the Vite-built Virtual Engineer logo as the favicon", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      "index.html": { file: "assets/index-test.js", css: ["assets/index-test.css"] },
+      "icons/virtual_engineer.png": { file: "assets/virtual_engineer-test.png" },
+    }));
+    const { renderAdminDashboardHtml: renderBuiltDashboard } = await import("../../src/admin/dashboard.js");
+
+    const html = renderBuiltDashboard();
+    expect(html.split("</head>")[0]).toContain('<link rel="icon" type="image/png" href="/admin-ui/assets/virtual_engineer-test.png" />');
+    expect(html).toContain('src="/admin-ui/assets/index-test.js"');
+    expect(html).toContain('href="/admin-ui/assets/index-test.css"');
+  });
+
+  it("omits the favicon when the logo is absent from the build manifest", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      "index.html": { file: "assets/index-test.js" },
+    }));
+    const { renderAdminDashboardHtml: renderBuiltDashboard } = await import("../../src/admin/dashboard.js");
+
+    expect(renderBuiltDashboard()).not.toContain('rel="icon"');
+  });
+
   it("renders the #root mount point", () => {
     const html = renderAdminDashboardHtml();
     expect(html).toContain('<div id="root">');
