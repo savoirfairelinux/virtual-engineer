@@ -22,7 +22,7 @@ import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
-import { AuditExportSection }   from "./AuditExportSection.tsx";
+import { ExportsSection }       from "./ExportsSection.tsx";
 import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
 import { DenialsSection }       from "./DenialsSection.tsx";
 import { AuthSourcesSection }   from "./AuthSourcesSection.tsx";
@@ -42,6 +42,7 @@ const CONFIG_NAV = [
   { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers" },
   { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config" },
   { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock" },
+  { id: "exports",       label: "Exports",          sub: "CSV downloads",     icon: "file" },
   { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
 
@@ -70,7 +71,7 @@ const CONFIG_GROUPS: ReadonlyArray<{
   {
     id: "operations",
     label: "Operations & audit",
-    sections: ["audit", "system"],
+    sections: ["audit", "exports", "system"],
   },
 ];
 
@@ -101,7 +102,7 @@ export type ConfigSectionProps = ConfigViewData & ConfigSectionRouting;
 
 export function ConfigView(props: ConfigViewData) {
   const { onNavigationGuardChange, onSectionChange } = props;
-  const { can, user } = useCurrentUser();
+  const { can, user, isAdmin } = useCurrentUser();
   const hasPermission = useMemo(() => makeHasPermission(user), [user]);
   const visibleNav = CONFIG_NAV.filter((item) => canAccessConfigSection(hasPermission, item.id));
   const visibleNavById = useMemo<ReadonlyMap<ConfigSectionId, ConfigNavItem>>(
@@ -228,9 +229,9 @@ export function ConfigView(props: ConfigViewData) {
   }, [isDirty]);
 
   const effectiveRoute = useMemo<ConfigRoute>(() => {
-    if (visibleNavById.has(route.section) && canAccessConfigRoute(can, hasPermission, route)) return route;
+    if (visibleNavById.has(route.section) && canAccessConfigRoute(can, hasPermission, route, isAdmin)) return route;
     return { section: visibleNav[0]?.id ?? "overview", mode: "list" };
-  }, [can, hasPermission, route, visibleNav, visibleNavById]);
+  }, [can, hasPermission, isAdmin, route, visibleNav, visibleNavById]);
 
   const effectiveSec = effectiveRoute.section;
   const isFormRoute = ["create", "edit", "copy", "password"].includes(effectiveRoute.mode);
@@ -332,11 +333,9 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}
       {effectiveSec === "policies"     && <PoliciesSection {...routedProps} />}
       {effectiveSec === "audit" && effectiveRoute.mode === "list" && (
-        <AuditSection onExport={() => navigate({ section: "audit", mode: "export" })} />
+        <AuditSection onExport={() => navigate({ section: "exports", mode: "audit" })} />
       )}
-      {effectiveSec === "audit" && effectiveRoute.mode === "export" && (
-        <AuditExportSection onBack={() => navigate({ section: "audit", mode: "list" })} />
-      )}
+      {effectiveSec === "exports" && <ExportsSection route={effectiveRoute} onNavigate={navigate} projects={props.projects} />}
       {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} onDirtyChange={routedProps.setDirty} />}
     </>
   );

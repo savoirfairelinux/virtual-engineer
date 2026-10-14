@@ -12,17 +12,18 @@ export const CONFIG_SECTIONS = [
   "groups",
   "policies",
   "audit",
+  "exports",
   "system",
 ] as const;
 
 export type ConfigSectionId = typeof CONFIG_SECTIONS[number];
 
-type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "system" | "denials" | "auth-sources">;
+type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "exports" | "system" | "denials" | "auth-sources">;
 type ConfigStandardEntitySection = Exclude<ConfigEntitySection, "oauth">;
 
 export type ConfigRoute =
   | { section: ConfigSectionId; mode: "list" }
-  | { section: "audit"; mode: "export" }
+  | { section: "exports"; mode: "analytics" | "audit" }
   | { section: ConfigEntitySection; mode: "create" }
   | { section: ConfigStandardEntitySection; mode: "detail" | "edit"; id: string }
   | { section: "projects"; mode: "statistics"; id: string }
@@ -63,7 +64,10 @@ export function parseConfigHash(hash: string): ConfigRoute {
   if (!isConfigSection(rawSection)) return DEFAULT_ROUTE;
   if (segments.length === 2) return { section: rawSection, mode: "list" };
   if (rawSection === "audit" && segments.length === 3 && segments[2] === "export") {
-    return { section: "audit", mode: "export" };
+    return { section: "exports", mode: "audit" };
+  }
+  if (rawSection === "exports" && segments.length === 3 && (segments[2] === "analytics" || segments[2] === "audit")) {
+    return { section: "exports", mode: segments[2] };
   }
   if (!ENTITY_SECTIONS.has(rawSection)) return DEFAULT_ROUTE;
 
@@ -104,7 +108,7 @@ export function parseConfigHash(hash: string): ConfigRoute {
 export function formatConfigHash(route: ConfigRoute): string {
   const root = `#config/${route.section}`;
   if (route.mode === "list") return root;
-  if (route.mode === "export") return `${root}/export`;
+  if (route.section === "exports") return `${root}/${route.mode}`;
   if (route.mode === "create") return `${root}/new`;
   if (route.section === "oauth") {
     return `${root}/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.baseUrl)}`;

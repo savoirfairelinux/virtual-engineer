@@ -139,8 +139,28 @@ describe("Configuration navigation guard", () => {
     expect(buttonTexts.findIndex((text) => text.includes("Integrations"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("Agents Library")));
     expect(buttonTexts.findIndex((text) => text.includes("Agents Library"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("Projects")));
     expect(buttonTexts.findIndex((text) => text.includes("Audit"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("System Settings")));
+    expect(buttonTexts.findIndex((text) => text.includes("Exports"))).toBeGreaterThan(buttonTexts.findIndex((text) => text.includes("Audit")));
+    expect(buttonTexts.findIndex((text) => text.includes("Exports"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("System Settings")));
     expect(buttonTexts.at(-1)).toContain("System Settings");
     expect(within(navigation).getByRole("button", { name: /Projects/, current: "page" })).toBeDefined();
+  });
+
+  it("opens the analytics export page from the Exports navigation entry", async () => {
+    window.history.replaceState({}, "", "#config/exports");
+    render(
+      <CurrentUserProvider value={{ user: admin, isAdmin: true, canOperate: true, can: makeCan(admin) }}>
+        <ConfigView integrations={[]} plugins={[]} agents={[]} projects={[]} prompts={[]}
+          oauthApps={[]} config={null} status={null} onRefresh={vi.fn()} />
+      </CurrentUserProvider>,
+    );
+    expect(screen.getByRole("heading", { name: "Exports", level: 1 })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Export audit trail" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Export analytics" }));
+    expect(window.location.hash).toBe("#config/exports/analytics");
+    expect(await screen.findByRole("combobox", { name: "Period" })).toBeDefined();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(window.location.hash).toBe("#config/exports");
   });
 
   it("does not expose the standalone OAuth apps page", async () => {

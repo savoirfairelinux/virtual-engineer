@@ -343,6 +343,7 @@ describe("GuidedTour", () => {
       groups: '[data-tour="groups-new"]',
       policies: '[data-tour="policies-new"]',
       audit: '[data-tour="audit-refresh"]',
+      exports: '[data-tour="exports-open"]',
       system: '[data-tour="system-settings"]',
     } as const;
     const deepTargets = {
@@ -358,6 +359,7 @@ describe("GuidedTour", () => {
       groups: '[data-tour="group-form-name"]',
       policies: '[data-tour="policy-form-name"]',
       audit: '[data-tour="audit-filters"]',
+      exports: '[data-tour="export-form"]',
       system: '[data-tour="system-settings-form"]',
     } as const;
 

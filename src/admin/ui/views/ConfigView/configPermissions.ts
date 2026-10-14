@@ -17,6 +17,7 @@ export const CONFIG_SECTION_PERMISSIONS: Record<ConfigSectionId, string> = {
   groups: "policy.manage",
   policies: "policy.manage",
   audit: "audit.read",
+  exports: "audit.read",
   system: "system.read",
 };
 
@@ -28,10 +29,10 @@ export function canAccessConfigSection(hasPermission: HasPermission, section: Co
   return hasPermission(CONFIG_SECTION_PERMISSIONS[section]);
 }
 
-export function canAccessConfigRoute(can: Can, hasPermission: HasPermission, route: ConfigRoute): boolean {
+export function canAccessConfigRoute(can: Can, hasPermission: HasPermission, route: ConfigRoute, isAdmin = false): boolean {
   if (!canAccessConfigSection(hasPermission, route.section)) return false;
   if (route.mode === "list" || route.mode === "detail") return true;
-  if (route.section === "audit" && route.mode === "export") return hasPermission("audit.read");
+  if (route.section === "exports") return route.mode === "analytics" ? isAdmin : hasPermission("audit.read");
   if (route.section === "projects" && route.mode === "statistics") return hasPermission("project.statistics.read");
   if (route.section === "oauth") return route.mode === "create" ? can("oauth.create") : true;
   if (route.section === "users") return can("user.manage");
