@@ -56,6 +56,22 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  it("bounds review votes by an inclusive calendar start and exclusive end", async () => {
+    const raw = (store as unknown as { raw: Database.Database }).raw;
+    const since = new Date("2026-10-01T00:00:00Z");
+    const before = new Date("2026-10-03T00:00:00Z");
+    const taskId = makeTaskId("bounded-review");
+    raw.prepare("INSERT INTO tasks (task_id, ticket_id, task_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(taskId, "bounded-review", "code-review", since.getTime() / 1000, before.getTime() / 1000);
+    const insert = raw.prepare("INSERT INTO agent_cycles (task_id, cycle_number, agent_result, created_at) VALUES (?, ?, ?, ?)");
+    const scores = [2, 1, -1, -2];
+    const times = [since.getTime() / 1000 - 1, since.getTime() / 1000, before.getTime() / 1000 - 1, before.getTime() / 1000];
+    times.forEach((timestamp, index) => insert.run(taskId, index + 1, JSON.stringify({ metadata: { score: scores[index] } }), timestamp));
+    expect(await store.getReviewVoteCounts([taskId], since, { before, inclusiveSince: true })).toEqual({
+      plus2: 0, plus1: 1, minus1: 1, minus2: 0,
+    });
+  });
+
   describe("managed OpenShell providers", () => {
     it("persists provider ownership across store restarts", async () => {
       const dbPath = tempDbPath();

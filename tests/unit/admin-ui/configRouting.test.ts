@@ -9,7 +9,10 @@ describe("Configuration routing", () => {
   it.each<[string, ConfigRoute]>([
     ["#config/prompts/system_review/copy", { section: "prompts", mode: "copy", id: "system_review" }],
     ["#config/integrations", { section: "integrations", mode: "list" }],
-    ["#config/audit/export", { section: "audit", mode: "export" }],
+    ["#config/exports", { section: "exports", mode: "list" }],
+    ["#config/exports/analytics", { section: "exports", mode: "analytics" }],
+    ["#config/exports/audit", { section: "exports", mode: "audit" }],
+    ["#config/audit/export", { section: "exports", mode: "audit" }],
     ["#config/integrations/new", { section: "integrations", mode: "create" }],
     ["#config/integrations/github%20primary", {
       section: "integrations",
@@ -44,7 +47,9 @@ describe("Configuration routing", () => {
   it.each<ConfigRoute>([
     { section: "prompts", mode: "copy", id: "prompt/with spaces" },
     { section: "projects", mode: "list" },
-    { section: "audit", mode: "export" },
+    { section: "exports", mode: "list" },
+    { section: "exports", mode: "analytics" },
+    { section: "exports", mode: "audit" },
     { section: "projects", mode: "create" },
     { section: "projects", mode: "detail", id: "project/with spaces" },
     { section: "projects", mode: "edit", id: "project/with spaces" },
@@ -63,6 +68,8 @@ describe("Configuration routing", () => {
   it.each([
     "#config/not-a-section",
     "#config/overview/new",
+    "#config/exports/new",
+    "#config/exports/analytics/extra",
     "#config/integrations/missing/edit/extra",
     "#config/oauth/gitlab",
     "#config/oauth/gitlab/not%ZZencoded",

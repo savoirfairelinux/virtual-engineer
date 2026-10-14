@@ -803,6 +803,18 @@ describe("OpenShell deployment contract", () => {
     expect(manifest).not.toContain("REPLACE_ME");
   });
 
+  it("copies shared test helpers before typechecking admin UI tests in the orchestrator builder", () => {
+    const dockerfile = readFileSync("Dockerfile.orchestrator", "utf8");
+    const compilePosition = dockerfile.indexOf("RUN npx tsc && npm run typecheck:ui && npm run build:ui");
+    expect(compilePosition).toBeGreaterThan(0);
+    for (const directory of ["admin-ui", "helpers"]) {
+      const copyInstruction = `COPY tests/unit/${directory}/ ./tests/unit/${directory}/`;
+      expect(dockerfile).toContain(copyInstruction);
+      expect(dockerfile.indexOf(copyInstruction)).toBeLessThan(compilePosition);
+    }
+    expect(dockerfile).not.toContain("COPY --from=builder /app/tests");
+  });
+
   it("pins OpenShell 0.0.83 and the verified Helm chart digest", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const dockerfile = readFileSync("Dockerfile.orchestrator", "utf8");
@@ -816,6 +828,14 @@ describe("OpenShell deployment contract", () => {
     expect(dockerfile).toContain("ARG OPENSHELL_VERSION=v0.0.83");
     expect(values).toContain("0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6");
     expect(values).toContain("0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f");
+  });
+
+  it("includes UI test sources, helpers, and test configuration in the orchestrator image cache", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const hashInputs = script.slice(script.indexOf("ORCH_HASH="), script.indexOf("ORCH_MARKER="));
+    for (const input of ["tests/unit/admin-ui", "tests/unit/helpers", "tsconfig.admin-ui-tests.json"]) {
+      expect(hashInputs).toContain(input);
+    }
   });
 
   it("invalidates the orchestrator image cache when only the commit changes", () => {

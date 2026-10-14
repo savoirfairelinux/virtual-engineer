@@ -36,8 +36,16 @@ describe("AuditExportSection", () => {
     const onBack = vi.fn();
     render(<AuditExportSection onBack={onBack} />);
 
-    expect(document.querySelector<HTMLElement>(".card")?.style.padding).toBe("22px 24px");
+    const panel = document.querySelector<HTMLElement>(".export-filter-panel");
+    expect(panel?.classList.contains("card")).toBe(true);
+    expect(panel?.style.maxWidth).toBe("");
+    expect(document.querySelector(".export-page-head")).not.toBeNull();
     const actor = await screen.findByRole("combobox", { name: "Filter by user" });
+    const dates = screen.getByRole("group", { name: "Audit date range" });
+    expect(dates.contains(screen.getByLabelText("Start date (UTC)"))).toBe(true);
+    expect(dates.contains(screen.getByLabelText("End date (UTC)"))).toBe(true);
+    expect(dates.contains(actor)).toBe(false);
+    expect(actor.compareDocumentPosition(dates) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect((screen.getByLabelText("Start date (UTC)") as HTMLInputElement).value).toBe("2026-01-12");
     expect((screen.getByLabelText("End date (UTC)") as HTMLInputElement).value).toBe("2026-09-23");
     await user.selectOptions(actor, "alice");
@@ -58,11 +66,14 @@ describe("AuditExportSection", () => {
     });
   });
 
-  it("returns to the audit list", async () => {
+  it("returns to the exports list", async () => {
     const onBack = vi.fn();
     render(<AuditExportSection onBack={onBack} />);
     await screen.findByRole("button", { name: "Download CSV" });
-    fireEvent.click(screen.getByRole("button", { name: "Back to audit" }));
+    const back = screen.getByRole("button", { name: "Back" });
+    expect(back.classList.contains("config-back")).toBe(true);
+    expect(back.compareDocumentPosition(screen.getByRole("heading", { name: "Export audit trail" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(back);
     expect(onBack).toHaveBeenCalledOnce();
   });
 });

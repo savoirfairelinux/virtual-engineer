@@ -1275,12 +1275,24 @@ export interface ReviewVoteCounts {
   minus2: number;
 }
 
+export interface ReviewVoteOptions {
+  before?: Date | undefined;
+  inclusiveSince?: boolean | undefined;
+}
+
 /** Aggregated token usage across a single agent cycle. */
 export interface CycleCostTokens {
   input: number;
   output: number;
   cached: number;
   cacheWrite: number;
+}
+
+export interface CycleSummaryOptions {
+  since?: Date | undefined;
+  before?: Date | undefined;
+  projectId?: ProjectId | undefined;
+  projectIds?: readonly ProjectId[] | undefined;
 }
 
 /**
@@ -1605,13 +1617,13 @@ export interface StateStore {
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
   /** Count numeric scores for the specified readable review task IDs. */
-  getReviewVoteCounts(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts>;
+  getReviewVoteCounts(taskIds: TaskId[], since?: Date, options?: ReviewVoteOptions): Promise<ReviewVoteCounts>;
 
   /** Aggregate agent-cycle execution cost per project and instance-wide. */
-  getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary>;
+  getCostSummary(options?: CycleSummaryOptions): Promise<CostSummary>;
 
   /** Aggregate AI-model usage distribution by run count and cost. */
-  getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary>;
+  getModelUsageSummary(options?: CycleSummaryOptions): Promise<ModelUsageSummary>;
 
   getProjectStatistics(
     projectId: ProjectId,

@@ -100,20 +100,15 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
 
   return (
     <>
-      <div style={{ marginBottom: "22px" }}>
-        <div className="eyebrow" style={{ marginBottom: "8px" }}>Configuration / Audit / Export</div>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px" }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Export audit trail</h1>
-            <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>
-              Choose the entries to include in the CSV download. Dates use UTC calendar days.
-            </p>
-          </div>
-          <button className="btn" type="button" onClick={onBack} aria-label="Back to audit">
-            <Icon name="chevron" size={14} style={{ transform: "rotate(180deg)" }} /> Back to audit
-          </button>
+      <header className="config-entity-head export-page-head">
+        <button className="btn config-back" type="button" onClick={onBack}>
+          <Icon name="chevron" size={14} style={{ transform: "rotate(180deg)" }} /> Back
+        </button>
+        <div className="titles">
+          <div className="eyebrow" style={{ marginBottom: "8px" }}>Configuration / Exports / Audit</div>
+          <h1 className="config-entity-title" style={{ margin: 0 }}>Export audit trail</h1>
         </div>
-      </div>
+      </header>
 
       {error && (
         <div
@@ -129,8 +124,8 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
         </div>
       )}
 
-      <div className="card" style={{ maxWidth: "900px", padding: "22px 24px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "16px" }}>
+      <div className="card export-filter-panel" data-tour="export-form">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "16px" }}>
           <Field label="User">
             <FieldSelect
               aria-label="Filter by user"
@@ -177,6 +172,8 @@ export function AuditExportSection({ onBack }: AuditExportSectionProps) {
               ))}
             </FieldSelect>
           </Field>
+        </div>
+        <div className="export-audit-dates" role="group" aria-label="Audit date range">
           <Field label="Start date (UTC)">
             <FieldInput
               type="date"

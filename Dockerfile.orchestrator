@@ -23,6 +23,7 @@ RUN npm ci
 COPY src/ ./src/
 COPY vite.admin.config.ts tsconfig.admin-ui.json tsconfig.admin-ui-tests.json ./
 COPY tests/unit/admin-ui/ ./tests/unit/admin-ui/
+COPY tests/unit/helpers/ ./tests/unit/helpers/
 COPY src/admin/ui/ ./src/admin/ui/
 RUN npx tsc && npm run typecheck:ui && npm run build:ui
 

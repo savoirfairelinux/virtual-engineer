@@ -304,6 +304,29 @@ body.ve-drawer-open .app {
   min-width: 0;
 }
 
+.export-page-head {
+  margin-bottom: 20px;
+}
+
+.export-filter-panel {
+  width: 100%;
+  min-width: 0;
+  padding: 22px 24px;
+}
+
+.export-audit-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  .export-audit-dates {
+    grid-template-columns: 1fr;
+  }
+}
+
 .config-entity-title {
   margin: 3px 0 0;
   font-size: 24px;

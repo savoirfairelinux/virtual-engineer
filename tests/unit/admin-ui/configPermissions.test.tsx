@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CurrentUserProvider, makeCan, makeHasPermission } from "../../../src/admin/ui/authContext.js";
 import { ConfigView, type ConfigViewData } from "../../../src/admin/ui/views/ConfigView/index.js";
@@ -102,6 +102,37 @@ function renderWithGrants(hash: string, grants: Record<string, "*" | string[]>, 
 describe("Configuration PBAC", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("requires the admin role for analytics export even with every policy grant", () => {
+    const allow = () => true;
+    expect(canAccessConfigRoute(allow, allow, { section: "exports", mode: "analytics" })).toBe(false);
+    expect(canAccessConfigRoute(allow, allow, { section: "exports", mode: "analytics" }, true)).toBe(true);
+  });
+
+  it("preserves audit export access without granting analytics export", () => {
+    const auditOnly = (permission: string) => permission === "audit.read";
+    expect(canAccessConfigSection(auditOnly, "exports")).toBe(true);
+    expect(canAccessConfigRoute(auditOnly, auditOnly, { section: "exports", mode: "audit" })).toBe(true);
+    expect(canAccessConfigRoute(auditOnly, auditOnly, { section: "exports", mode: "analytics" })).toBe(false);
+    expect(canAccessConfigSection(() => false, "exports")).toBe(false);
+  });
+
+  it("shows only audit export to audit readers and denies direct analytics navigation", async () => {
+    vi.spyOn(api, "get").mockResolvedValue({ entries: [], total: 0, actions: [], limit: 50, offset: 0 });
+    const onSectionChange = vi.fn();
+    renderWithGrants("#config/exports", { "audit.read": "*", "overview.read": "*" }, { onSectionChange });
+    expect(screen.getByRole("heading", { name: "Exports", level: 1 })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Export audit trail" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Export analytics" })).toBeNull();
+    await act(async () => {
+      window.location.hash = "#config/exports/analytics";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() => expect(onSectionChange).toHaveBeenLastCalledWith("overview"));
+    expect(screen.queryByRole("heading", { name: "Export analytics" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Period" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download CSV" })).toBeNull();
   });
 
   it("creates a private editable copy without mutating the built-in template", async () => {

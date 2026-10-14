@@ -480,14 +480,15 @@ if [[ "$AGENT_IMAGES_MANAGED" -eq 1 ]]; then
 fi
 
 # ─── Orchestrator image (always includes the OpenShell CLI) ───────────────────
-# Skip the build when its inputs (Dockerfile + src + agent-worker + prompts +
+# Skip the build when its inputs (Dockerfile + src + agent-worker + prompts + UI tests/helpers +
 # package/tsconfig/vite files + the pinned OpenShell version + Git revision)
 # are unchanged and the image already exists. The build's own layer cache is a fallback, but
 # skipping the invocation avoids buildkit's metadata/context overhead.
 ORCH_GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
 ORCH_HASH=$(printf '%s\n%s\n%s\n%s\n' "$OPENSHELL_VERSION" "$OPENSHELL_INSTALLER_SHA256" "$ORCH_GIT_SHA" \
   "$(build_inputs_hash Dockerfile.orchestrator src agent-worker prompts \
-      package.json package-lock.json tsconfig.json tsconfig.admin-ui.json vite.admin.config.ts)" \
+  tests/unit/admin-ui tests/unit/helpers package.json package-lock.json \
+  tsconfig.json tsconfig.admin-ui.json tsconfig.admin-ui-tests.json vite.admin.config.ts)" \
   | sha256sum | cut -d' ' -f1)
 ORCH_MARKER="${DATA_DIR}/.orchestrator-image-hash"
 if [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \

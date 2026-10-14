@@ -631,6 +631,23 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
       optional: true,
     },
   ],
+  exports: [
+    {
+      target: '[data-tour="exports-open"]',
+      title: "Choose an export",
+      body: "Open an available export to select its period or filters.",
+      placement: "bottom",
+      completion: "route-changes",
+      optional: true,
+    },
+    {
+      target: '[data-tour="export-form"]',
+      title: "Prepare the CSV",
+      body: "Choose the period or filters, then download the CSV. Export access follows your account permissions.",
+      placement: "right",
+      advance: "continue",
+    },
+  ],
   system: [
     {
       target: '[data-tour="system-settings"]',

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CurrentUserProvider } from "../../../src/admin/ui/authContext.js";
 import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview } from "../../../src/admin/ui/types.js";
 
 const apiGet = vi.hoisted(() => vi.fn());
@@ -112,6 +113,16 @@ describe("Overview outcome cost dimensions", () => {
       if (path.includes("model-usage")) return modelUsageSummary;
       throw new Error(`Unexpected API path: ${path}`);
     });
+  });
+
+  it("keeps the General View free of export actions even for admins", async () => {
+    render(<CurrentUserProvider value={{ user: null, isAdmin: true, canOperate: true, can: () => true }}>
+      <OverviewView overview={null} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined} />
+    </CurrentUserProvider>);
+    await screen.findByText("instance total");
+    expect(screen.queryByRole("button", { name: /Export/ })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   describe("Overview review vote periods", () => {

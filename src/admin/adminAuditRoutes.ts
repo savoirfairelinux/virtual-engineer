@@ -1,6 +1,6 @@
 import type { AuditEntry } from "../interfaces.js";
 import type { AuditEntryFilter } from "../state/stores/auditStore.js";
-import { writeJson, toIsoTimestamp, parseNonNegativeInt, requireStore } from "./adminRouteUtils.js";
+import { csvCell, parseCalendarDate, writeJson, toIsoTimestamp, parseNonNegativeInt, requireStore } from "./adminRouteUtils.js";
 import { maskAuditDetails } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
@@ -8,7 +8,6 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const EXPORT_PAGE_SIZE = 200;
 const MAX_EXPORT_ENTRIES = 50_000;
-const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /** Store surface needed to read the audit trail (satisfied by SqliteStateStore). */
 export interface AuditReadStore {
@@ -49,14 +48,6 @@ function toCalendarDate(value: Date | null): string | null {
   return value?.toISOString().slice(0, 10) ?? null;
 }
 
-/** Parse an HTML date input as a UTC calendar boundary. `endExclusive` includes the selected end day. */
-function parseCalendarDate(value: string, endExclusive: boolean): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
-  return endExclusive ? new Date(date.getTime() + DAY_MS) : date;
-}
-
 interface ParsedAuditFilters {
   filter: Omit<AuditEntryFilter, "limit" | "offset">;
   error: string | null;
@@ -94,11 +85,6 @@ function parseAuditFilters(requestUrl: URL): ParsedAuditFilters {
     },
     error: null,
   };
-}
-
-function csvCell(value: string): string {
-  const safeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
-  return `"${safeValue.replaceAll("\"", "\"\"")}"`;
 }
 
 function auditCsv(entries: AuditEntry[]): string {
