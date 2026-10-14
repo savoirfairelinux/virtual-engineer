@@ -1,11 +1,10 @@
-import { useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { classifyWorkflowBucket, isActiveState } from "../../states.ts";
 import { relativeTime } from "../../api.ts";
-import type { ApiTask, TaskWorkflowBucket } from "../../types.ts";
+import type { ApiTask, TaskType, TaskWorkflowBucket } from "../../types.ts";
 
 const FILTERS: { id: "all" | TaskWorkflowBucket; label: string }[] = [
   { id: "all",      label: "All" },
@@ -14,6 +13,26 @@ const FILTERS: { id: "all" | TaskWorkflowBucket; label: string }[] = [
   { id: "done",     label: "Done" },
   { id: "failed",   label: "Failed" },
 ];
+
+const TASK_TYPES: { id: "all" | TaskType; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "code-gen", label: "Coding" },
+  { id: "code-review", label: "Review" },
+];
+
+export interface TaskListFilters {
+  statuses: readonly TaskWorkflowBucket[];
+  taskType: "all" | TaskType;
+  queuedOnly: boolean;
+  query: string;
+}
+
+export const DEFAULT_TASK_FILTERS: TaskListFilters = {
+  statuses: [],
+  taskType: "all",
+  queuedOnly: false,
+  query: "",
+};
 
 interface TaskRowProps {
   task: ApiTask;
@@ -89,82 +108,123 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
 
 interface TaskListProps {
   tasks: ApiTask[];
+  filters: TaskListFilters;
+  onFiltersChange: (filters: TaskListFilters) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   compact?: boolean | undefined;
 }
 
-export function TaskList({ tasks, selectedId, onSelect, compact = false }: TaskListProps) {
-  const [filter, setFilter] = useState<"all" | TaskWorkflowBucket>("all");
-  const [query, setQuery] = useState("");
-
-  const filtered = tasks.filter((t) => {
-    if (filter !== "all" && classifyWorkflowBucket(t.state) !== filter) return false;
+export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect, compact = false }: TaskListProps) {
+  const query = filters.query.toLowerCase();
+  const matchingTasks = tasks.filter((t) => {
+    if (filters.taskType !== "all" && t.taskType !== filters.taskType) return false;
+    if (filters.queuedOnly && t.waitingForAgentSlot !== true) return false;
     if (query) {
-      const q = query.toLowerCase();
       return (
-        (t.ticketTitle ?? "").toLowerCase().includes(q) ||
-        (t.ticketId ?? "").toLowerCase().includes(q) ||
-        (t.displayId ?? "").toLowerCase().includes(q)
+        (t.ticketTitle ?? "").toLowerCase().includes(query) ||
+        (t.ticketId ?? "").toLowerCase().includes(query) ||
+        (t.displayId ?? "").toLowerCase().includes(query)
       );
     }
     return true;
   });
+  const filtered = matchingTasks.filter((task) =>
+    filters.statuses.length === 0 || filters.statuses.includes(classifyWorkflowBucket(task.state)));
+  const hasFilters = filters.statuses.length > 0 || filters.taskType !== "all" || filters.queuedOnly || filters.query.length > 0;
+
+  function toggleStatus(status: "all" | TaskWorkflowBucket): void {
+    const statuses = status === "all" ? [] : filters.statuses.includes(status)
+      ? filters.statuses.filter((selected) => selected !== status)
+      : [...filters.statuses, status];
+    onFiltersChange({ ...filters, statuses: statuses.length === FILTERS.length - 1 ? [] : statuses });
+  }
 
   return (
     <div
       style={{
         width: compact ? "100%" : "340px", flex: compact ? 1 : "none",
         borderRight: "1px solid var(--border-soft)", background: "var(--rail)",
-        display: "flex", flexDirection: "column", minHeight: 0,
+        display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0,
       }}
     >
       {/* header */}
-      <div style={{ padding: "13px 14px 10px", borderBottom: "1px solid var(--border-soft)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "11px" }}>
+      <div style={{ padding: "10px 14px 8px", borderBottom: "1px solid var(--border-soft)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
           <span className="eyebrow">Task queue</span>
-          <span className="mono" style={{ fontSize: "11px", color: "var(--text-faint)" }}>
-            {filtered.length}/{tasks.length}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <output aria-label="Task results" className="mono" style={{ fontSize: "11px", color: "var(--text-faint)" }}>
+              {filtered.length}/{tasks.length}
+            </output>
+            <div style={{ width: "30px", height: "30px" }}>
+              {hasFilters && (
+                <button type="button" className="iconbtn" aria-label="Reset filters" title="Reset filters"
+                  onClick={() => onFiltersChange(DEFAULT_TASK_FILTERS)}>
+                  <Icon name="refresh" size={14} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* search */}
-        <div style={{ position: "relative", marginBottom: "10px" }}>
+        <div style={{ position: "relative", marginBottom: "8px" }}>
           <Icon
             name="search" size={14}
             style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "var(--text-ghost)" }}
           />
           <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search tasks"
+            value={filters.query}
+            onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
             placeholder="Filter by title or #id"
             style={{
               width: "100%",
               background: "var(--panel)", border: "1px solid var(--border-soft)",
               borderRadius: "var(--radius-sm)", color: "var(--text)",
-              fontFamily: "var(--font-sans)", fontSize: "12.5px",
-              padding: "7px 10px 7px 30px", outline: "none",
+              fontFamily: "var(--font-sans)", fontSize: "12px",
+              padding: "5px 10px 5px 30px",
             }}
           />
         </div>
 
-        {/* filter chips */}
-        <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
+        <div role="group" aria-label="Task type" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "2px", minWidth: 0, marginBottom: "6px" }}>
+          {TASK_TYPES.map((type) => (
+            <button key={type.id} type="button" className="btn sm" aria-pressed={filters.taskType === type.id}
+              onClick={() => onFiltersChange({ ...filters, taskType: type.id })}
               style={{
-                border: `1px solid ${filter === f.id ? "var(--accent-line)" : "var(--border-soft)"}`,
-                background: filter === f.id ? "var(--accent-soft)" : "transparent",
-                color: filter === f.id ? "var(--accent-strong)" : "var(--text-faint)",
-                fontSize: "11.5px", fontWeight: 500, padding: "4px 10px",
-                borderRadius: "99px", cursor: "pointer", transition: "all 0.13s var(--ease)",
-              }}
-            >
-              {f.label}
+                justifyContent: "center", minWidth: 0, height: "24px", fontSize: "11px", lineHeight: 1, padding: "2px 6px",
+                borderColor: filters.taskType === type.id ? "var(--accent-line)" : "var(--border-soft)",
+                background: filters.taskType === type.id ? "var(--accent-soft)" : "transparent",
+                color: filters.taskType === type.id ? "var(--accent-strong)" : "var(--text-faint)",
+              }}>
+              {type.label}
             </button>
           ))}
+        </div>
+
+        <div role="group" aria-label="Workflow status" style={{ display: "grid", gridTemplateColumns: "0.65fr 1fr 1.4fr 0.9fr 0.95fr 1fr", gap: "3px" }}>
+          {[...FILTERS, { id: "queued", label: "Queued" } as const].map((filter) => {
+            const selected = filter.id === "queued" ? filters.queuedOnly
+              : filter.id === "all" ? filters.statuses.length === 0 : filters.statuses.includes(filter.id);
+            return (
+              <button key={filter.id} type="button" aria-label={filter.id === "queued" ? "Queued only" : filter.label} aria-pressed={selected}
+                title={filter.id === "queued" ? "Queued only" : undefined}
+                onClick={() => filter.id === "queued"
+                  ? onFiltersChange({ ...filters, queuedOnly: !filters.queuedOnly })
+                  : toggleStatus(filter.id)}
+                style={{
+                  border: `1px solid ${selected ? "var(--accent-line)" : "var(--border-soft)"}`,
+                  background: selected ? "var(--accent-soft)" : "transparent",
+                  color: selected ? "var(--accent-strong)" : "var(--text-faint)",
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: "24px", whiteSpace: "nowrap",
+                  fontSize: "10.5px", fontWeight: 500, lineHeight: 1, padding: "2px 2px",
+                  borderRadius: "var(--radius-sm)", cursor: "pointer", transition: "all 0.13s var(--ease)",
+                }}>
+                {filter.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -173,6 +233,12 @@ export function TaskList({ tasks, selectedId, onSelect, compact = false }: TaskL
         {filtered.length === 0 ? (
           <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-faint)", fontSize: "13px" }}>
             No tasks match the current filters.
+            {hasFilters && (
+              <button type="button" className="btn sm" style={{ display: "flex", margin: "12px auto 0" }}
+                onClick={() => onFiltersChange(DEFAULT_TASK_FILTERS)}>
+                <Icon name="refresh" size={14} /> Clear all filters
+              </button>
+            )}
           </div>
         ) : (
           filtered.map((t) => (

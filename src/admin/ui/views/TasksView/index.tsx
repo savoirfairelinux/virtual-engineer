@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { TaskList } from "./TaskList.tsx";
+import { DEFAULT_TASK_FILTERS, TaskList } from "./TaskList.tsx";
+import type { TaskListFilters } from "./TaskList.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
 import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
 import type { ApiTask } from "../../types.ts";
@@ -10,6 +11,7 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, onRefresh }: TasksViewProps) {
+  const [filters, setFilters] = useState<TaskListFilters>(DEFAULT_TASK_FILTERS);
   const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 700px)").matches ?? false);
   const [showCompactDetail, setShowCompactDetail] = useState(() => window.location.hash.startsWith("#tasks/"));
   const [selectedId, setSelectedId] = useState<string>(() => {
@@ -75,7 +77,7 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: compact ? "column" : "row", minHeight: 0, minWidth: 0 }}>
       {(!compact || !showCompactDetail || !task) && (
-        <TaskList tasks={tasks} selectedId={selectedId} onSelect={handleSelect} compact={compact} />
+        <TaskList tasks={tasks} filters={filters} onFiltersChange={setFilters} selectedId={selectedId} onSelect={handleSelect} compact={compact} />
       )}
       {task && (!compact || showCompactDetail) ? (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
