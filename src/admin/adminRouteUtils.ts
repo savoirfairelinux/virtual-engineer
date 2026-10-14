@@ -3,6 +3,18 @@ import type { z } from "zod";
 
 export const SECRET_MASK = "********";
 
+export function csvCell(value: string): string {
+  const safeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  return `"${safeValue.replaceAll("\"", "\"\"")}"`;
+}
+
+export function parseCalendarDate(value: string, endExclusive: boolean): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return endExclusive ? new Date(date.getTime() + 86_400_000) : date;
+}
+
 /**
  * Convert a dotted/array path from a Zod issue into a human-readable label.
  * Examples:

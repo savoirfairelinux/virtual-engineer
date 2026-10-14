@@ -125,6 +125,32 @@ describe("SqliteStateStore — getCostSummary", () => {
     store.close();
   });
 
+  it.each(["getCostSummary", "getModelUsageSummary"] as const)("%s applies inclusive start, exclusive end, and selected projects", async (method) => {
+    const agent = await store.createAgent({
+      name: "Export filters", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code", enabled: true,
+    });
+    const projects = await Promise.all(["Backend", "Mobile", "Platform"].map((name) =>
+      store.createProject({ name, type: "coding", agentId: agent.id })));
+    const since = new Date("2026-10-01T00:00:00.000Z");
+    const before = new Date("2026-10-03T00:00:00.000Z");
+    for (const project of projects) {
+      const taskId = await makeTaskForProject(store, project.id);
+      const times = [since.getTime() / 1000 - 1, since.getTime() / 1000, before.getTime() / 1000 - 1, before.getTime() / 1000];
+      for (const [index, timestamp] of times.entries()) {
+        insertRawCycle(dbPath, { taskId, createdAtEpochSeconds: timestamp, cycleNumber: index + 1,
+          costUsd: 1, costAiCredits: 100, agentEvents: null, costModelId: project.name });
+      }
+    }
+    const selected = projects.filter((project) => project.name !== "Mobile").map((project) => project.id);
+    const summary = await store[method]({ since, before, projectIds: selected });
+    expect(summary.totalRuns).toBe(4);
+    expect(summary.totalUsd).toBe(4);
+    expect(summary.perProject.map((entry) => entry.projectId).sort()).toEqual([...selected].sort());
+    expect((await store[method]({ since, before, projectIds: [] })).totalRuns).toBe(0);
+    expect((await store[method]()).totalRuns).toBe(12);
+  });
+
   it("aggregates cost per project and instance-wide, including backfilled legacy runs", async () => {
     const agent = await store.createAgent({
       name: "A",

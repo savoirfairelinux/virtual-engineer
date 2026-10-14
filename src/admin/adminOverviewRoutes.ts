@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { getLogger } from "../logger.js";
-import { writeJson } from "./adminRouteUtils.js";
+import { csvCell, parseCalendarDate, writeJson } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import type {
   Task,
@@ -8,27 +8,29 @@ import type {
   CostSummary,
   CostSummaryProject,
   CycleCostTokens,
+  CycleSummaryOptions,
   ModelUsageEntry,
   ModelUsageProject,
   ModelUsageSummary,
   ProjectId,
   ProjectRecord,
   ReviewVoteCounts,
+  ReviewVoteOptions,
   TaskId,
 } from "../interfaces.js";
-import { makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
+import { makeProjectId, makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
 import { filterTasksByReadAccess } from "./adminTaskRoutes.js";
-import { getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
+import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
 
 const log = getLogger("admin-overview");
 
 export interface OverviewRouteStore {
   getAllTasks(): Promise<Task[]>;
   getAgentCycles(taskId: ReturnType<typeof makeTaskId>): Promise<AgentCycle[]>;
-  getReviewVoteCounts?(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts>;
-  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
-  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
+  getReviewVoteCounts?(taskIds: TaskId[], since?: Date, options?: ReviewVoteOptions): Promise<ReviewVoteCounts>;
+  getCostSummary(options?: CycleSummaryOptions): Promise<CostSummary>;
+  getModelUsageSummary(options?: CycleSummaryOptions): Promise<ModelUsageSummary>;
 }
 
 export interface OverviewRouteDeps {
@@ -158,17 +160,19 @@ function parseSinceDays(reqUrl: string | undefined): Date | undefined {
 async function computeReviewVotes(
   tasks: Task[],
   store: OverviewRouteStore,
-  since?: Date
+  since?: Date,
+  options?: ReviewVoteOptions,
 ): Promise<ReviewVoteCounts> {
   const sinceMs = since?.getTime() ?? Number.NEGATIVE_INFINITY;
   const votes = { plus2: 0, plus1: 0, minus1: 0, minus2: 0 };
 
   const reviewTasks = tasks.filter(
-    (t) => t.taskType === "code-review" && t.updatedAt.getTime() > sinceMs
+    (t) => t.taskType === "code-review" && (options?.inclusiveSince ? t.updatedAt.getTime() >= sinceMs : t.updatedAt.getTime() > sinceMs)
   );
 
   if (store.getReviewVoteCounts) {
-    return store.getReviewVoteCounts(reviewTasks.map((task) => task.taskId), since);
+    const ids = reviewTasks.map((task) => task.taskId);
+    return options === undefined ? store.getReviewVoteCounts(ids, since) : store.getReviewVoteCounts(ids, since, options);
   }
 
   // Compatibility for stores without aggregate support (e.g. admin test doubles).
@@ -176,7 +180,9 @@ async function computeReviewVotes(
     try {
       const cycles = await store.getAgentCycles(task.taskId);
       for (const cycle of cycles) {
-        if (cycle.createdAt.getTime() <= sinceMs) continue;
+        const createdAt = cycle.createdAt.getTime();
+        if (options?.inclusiveSince ? createdAt < sinceMs : createdAt <= sinceMs) continue;
+        if (options?.before !== undefined && createdAt >= options.before.getTime()) continue;
         const score = cycle.result.metadata?.["score"];
         if (typeof score === "number") {
           if (score >= 2) votes.plus2++;
@@ -193,7 +199,206 @@ async function computeReviewVotes(
   return votes;
 }
 
+type AnalyticsDimensions = Partial<Record<
+  "period" | "windowStart" | "windowEnd" | "projectId" | "projectName" |
+  "modelId" | "workflowBucket" | "taskState" | "coverage", string
+>>;
+
+function analyticsCsv(
+  tasks: Task[], cost: CostSummary, models: ModelUsageSummary, votes: ReviewVoteCounts,
+  now: number, since: Date | undefined, period: string,
+  options: ReviewVoteOptions & { selectedProjects?: boolean } = {},
+): string {
+  const generatedAt = new Date(now).toISOString();
+  const end = options.before?.getTime() ?? now;
+  const windowEnd = new Date(end).toISOString();
+  const totalScope = options.selectedProjects ? "selected_projects" : "instance";
+  const rows: string[][] = [[
+    "section", "scope", "period", "generated_at_utc", "window_start_utc", "window_end_utc",
+    "project_id", "project_name", "model_id", "workflow_bucket", "task_state", "metric", "value", "unit", "coverage",
+  ]];
+  function add(
+    section: string, scope: string, metric: string, value: number | null,
+    unit = "count", dimensions: AnalyticsDimensions = {},
+  ): void {
+    const current = dimensions.period === "current";
+    rows.push([
+      section, scope, dimensions.period ?? period, generatedAt,
+      current ? "" : dimensions.windowStart ?? since?.toISOString() ?? "",
+      current ? "" : dimensions.windowEnd ?? windowEnd,
+      dimensions.projectId ?? "", dimensions.projectName ?? "", dimensions.modelId ?? "",
+      dimensions.workflowBucket ?? "", dimensions.taskState ?? "", metric,
+      value === null ? "" : String(value), unit, dimensions.coverage ?? "",
+    ]);
+  }
+  function usage(
+    section: string, scope: string, runs: number, measured: number,
+    tokens: CycleCostTokens, usd: number, dimensions: AnalyticsDimensions = {},
+  ): void {
+    add(section, scope, "runs", runs, "count", dimensions);
+    add(section, scope, "runs_with_tokens", measured, "count", dimensions);
+    add(section, scope, "usd", usd, "USD", dimensions);
+    const coverage = measured === 0 ? "unreported" : measured < runs ? "partial" : "reported";
+    const metrics = {
+      input_tokens: tokens.input, output_tokens: tokens.output,
+      cache_read_tokens: tokens.cached, cache_write_tokens: tokens.cacheWrite,
+      processed_tokens: tokens.input + tokens.cached + tokens.cacheWrite + tokens.output,
+    };
+    for (const [metric, value] of Object.entries(metrics)) {
+      add(section, scope, metric, measured === 0 ? null : value, "tokens", { ...dimensions, coverage });
+    }
+  }
+
+  for (const bucket of ["active", "watching", "done", "failed"] as const) {
+    const current = bucket === "active" || bucket === "watching";
+    const count = tasks.filter((task) => {
+      const updatedAt = task.updatedAt.getTime();
+      const afterStart = options.inclusiveSince ? updatedAt >= (since?.getTime() ?? -Infinity) : updatedAt > (since?.getTime() ?? -Infinity);
+      const beforeEnd = options.before === undefined ? updatedAt <= end : updatedAt < end;
+      return TASK_WORKFLOW_BUCKETS.get(task.state) === bucket && (current || (afterStart && beforeEnd));
+    }).length;
+    add("task_summary", totalScope, bucket === "done" ? "completed" : bucket, count, "tasks",
+      current ? { period: "current" } : {});
+  }
+  const distribution: Record<string, readonly Task["state"][]> = {
+    running: ["AGENT_RUNNING", "FEEDBACK_PROCESSING", "CLOSING", "REVIEW_RUNNING", "REVIEW_COMMENTING"],
+    watching: ["IN_REVIEW", "REVIEW_WATCHING"], completed: ["MERGED", "DONE", "REVIEW_DONE"],
+    queued: ["DETECTED", "CONTEXT_BUILDING", "RETRY_CYCLE", "REVIEW_PENDING"],
+    failed: ["FAILED", "REVIEW_FAILED"], abandoned: ["ABANDONED"],
+  };
+  add("task_distribution", totalScope, "total", tasks.length, "tasks", { period: "current" });
+  for (const [category, states] of Object.entries(distribution)) {
+    add("task_distribution", "category", category,
+      tasks.filter((task) => states.includes(task.state)).length, "tasks", { period: "current" });
+    for (const state of states) {
+      add("task_distribution", "state", "tasks", tasks.filter((task) => task.state === state).length,
+        "tasks", { period: "current", taskState: state });
+    }
+  }
+
+  const updates = tasks.map((task) => task.updatedAt.getTime())
+    .filter((updatedAt) => (options.before === undefined ? updatedAt <= end : updatedAt < end) && updatedAt >= (since?.getTime() ?? -Infinity));
+  add("throughput", totalScope, "updated_tasks", updates.length, "tasks");
+  if (since !== undefined || updates.length > 0) {
+    const start = since?.getTime() ?? updates.reduce((earliest, updatedAt) => Math.min(earliest, updatedAt), end - 1000);
+    for (let index = 0; index < NUM_TICKS; index++) {
+      const windowStart = start + Math.floor(index * (end - start) / NUM_TICKS);
+      const windowEnd = start + Math.floor((index + 1) * (end - start) / NUM_TICKS);
+      const count = updates.filter((updatedAt) => updatedAt >= windowStart &&
+        (updatedAt < windowEnd || (index === NUM_TICKS - 1 && updatedAt === windowEnd))).length;
+      add("throughput", "bin", "updated_tasks", count, "tasks", {
+        windowStart: new Date(windowStart).toISOString(),
+        windowEnd: new Date(windowEnd).toISOString(),
+      });
+    }
+  }
+  for (const score of ["plus2", "plus1", "minus1", "minus2"] as const) {
+    add("review_votes", totalScope, score, votes[score], "votes");
+  }
+
+  usage("ai_cost", totalScope, cost.totalRuns, cost.totalRunsWithTokens, cost.totalTokens, cost.totalUsd);
+  add("ai_cost", totalScope, "ai_credits", cost.totalAiCredits, "credits");
+  add("ai_cost", totalScope, "premium_requests", cost.totalPremiumRequests, "requests");
+  for (const project of cost.perProject) {
+    const dimensions = { projectId: project.projectId ?? "", projectName: project.projectName ?? "", workflowBucket: project.workflowBucket };
+    usage("ai_cost", "project", project.runCount, project.runCountWithTokens, project.tokens, project.usd, dimensions);
+    add("ai_cost", "project", "ai_credits", project.aiCredits, "credits", dimensions);
+    add("ai_cost", "project", "premium_requests", project.premiumRequests, "requests", dimensions);
+  }
+
+  const visibleModels = models.byModel.filter((model) => model.workflowBucket !== "failed");
+  const modelRuns = visibleModels.reduce((total, model) => total + model.runCount, 0);
+  usage("model_usage", totalScope, modelRuns,
+    visibleModels.reduce((total, model) => total + model.runCountWithTokens, 0), sumTokens(visibleModels),
+    visibleModels.reduce((total, model) => total + model.usd, 0));
+  function modelRows(entries: ModelUsageEntry[], scope: string, dimensions: AnalyticsDimensions): void {
+    const visible = entries.filter((model) => model.workflowBucket !== "failed");
+    const runs = visible.reduce((total, model) => total + model.runCount, 0);
+    for (const model of visible) {
+      const modelDimensions = { ...dimensions, modelId: model.modelId ?? "", workflowBucket: model.workflowBucket };
+      usage("model_usage", scope, model.runCount, model.runCountWithTokens, model.tokens, model.usd, modelDimensions);
+      add("model_usage", scope, "run_percentage", runs === 0 ? 0 : model.runCount / runs * 100, "percent", modelDimensions);
+    }
+  }
+  modelRows(visibleModels, "model", {});
+  for (const project of models.perProject.filter((project) => project.workflowBucket !== "failed")) {
+    modelRows(project.models, "project_model", { projectId: project.projectId ?? "", projectName: project.projectName ?? "" });
+  }
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
 export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps): void {
+  router.add("GET", "/api/admin/overview/export.csv", async (req, res) => {
+    if (getAuthContext(req)?.role !== "admin") {
+      writeJson(res, 403, { error: "forbidden" });
+      return;
+    }
+    const query = new URL(req.url ?? "/", "http://127.0.0.1").searchParams;
+    const values = query.getAll("days");
+    const days = values[0];
+    if (values.length > 1 || (days !== undefined && days !== "1" && days !== "7" && days !== "30")) {
+      writeJson(res, 400, { error: "days must be 1, 7, or 30; omit it for all time" });
+      return;
+    }
+    const from = query.get("from");
+    const to = query.get("to");
+    const custom = from !== null || to !== null;
+    const startDate = from === null ? null : parseCalendarDate(from, false);
+    const endDate = to === null ? null : parseCalendarDate(to, true);
+    if (query.getAll("from").length > 1 || query.getAll("to").length > 1 ||
+        (custom && (days !== undefined || startDate === null || endDate === null || startDate >= endDate))) {
+      writeJson(res, 400, { error: "Use valid from/to calendar dates in order, without days" });
+      return;
+    }
+    const rawIds = query.getAll("projectId");
+    if (rawIds.length > 100 || rawIds.some((id) => id.trim().length === 0)) {
+      writeJson(res, 400, { error: "Select between 1 and 100 valid projects, or omit projectId for all projects" });
+      return;
+    }
+    const projectIds = rawIds.length === 0 ? undefined : [...new Set(rawIds)].map(makeProjectId);
+    try {
+      if (projectIds !== undefined) {
+        if (!deps.projectStore) {
+          writeJson(res, 501, { error: "Project store not available" });
+          return;
+        }
+        const known = new Set((await deps.projectStore.listProjects()).map((project) => project.id));
+        if (projectIds.some((id) => !known.has(id))) {
+          writeJson(res, 400, { error: "Unknown project selected" });
+          return;
+        }
+      }
+      const now = Date.now();
+      const since = startDate ?? (days === undefined ? undefined : new Date(now - Number(days) * 86_400_000));
+      const before = endDate ?? undefined;
+      const period = custom ? "custom" : days === undefined ? "all" : days === "1" ? "24h" : `${days}d`;
+      const aggregateOptions: CycleSummaryOptions = {
+        ...(since === undefined ? {} : { since }), ...(before === undefined ? {} : { before }),
+        ...(projectIds === undefined ? {} : { projectIds }),
+      };
+      const options = Object.keys(aggregateOptions).length === 0 ? undefined : aggregateOptions;
+      const [allTasks, cost, models] = await Promise.all([
+        deps.stateStore.getAllTasks(),
+        deps.stateStore.getCostSummary(options),
+        deps.stateStore.getModelUsageSummary(options),
+      ]);
+      const selected = projectIds === undefined ? undefined : new Set(projectIds);
+      const tasks = selected === undefined ? allTasks : allTasks.filter((task) => task.projectId != null && selected.has(task.projectId));
+      const voteOptions = custom ? { before, inclusiveSince: true } : undefined;
+      const votes = await computeReviewVotes(tasks, deps.stateStore, since, voteOptions);
+      const csv = analyticsCsv(tasks, cost, models, votes, now, since, period, { ...voteOptions, selectedProjects: selected !== undefined });
+      const suffix = custom ? `${from}_${to}` : period;
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/csv; charset=utf-8");
+      res.setHeader("content-disposition", `attachment; filename="general-view-analytics-${suffix}.csv"`);
+      res.setHeader("cache-control", "no-store");
+      res.end(csv);
+    } catch (err: unknown) {
+      log.error({ err }, "analytics export failed");
+      writeJson(res, 500, { error: "Failed to export analytics" });
+    }
+  }, { permission: "overview.read" });
+
   router.add("GET", "/api/admin/overview", async (req, res, _params) => {
     try {
       const allTasks = await deps.stateStore.getAllTasks();

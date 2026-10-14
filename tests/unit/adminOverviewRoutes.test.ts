@@ -3,6 +3,8 @@ import type { Server } from "node:http";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, Task, TaskState } from "../../src/interfaces.js";
+import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 async function rest(server: Server | null, path: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
   if (!server) throw new Error("Server not started");
@@ -201,5 +203,296 @@ describe("Admin API — Review votes period filter", () => {
     expect(r.body).toEqual({ plus2: 2, plus1: 0, minus1: 0, minus2: 0 });
     expect(aggregate).toHaveBeenCalledWith([makeTaskId("review")], expect.any(Date));
     expect(deps.stateStore.getAgentCycles).not.toHaveBeenCalled();
+  });
+});
+
+describe("Admin API - General View CSV export", () => {
+  let server: Server | null = null;
+  let store: SqliteStateStore | null = null;
+
+  function metricRow(csv: string, section: string, scope: string, metric: string): string | undefined {
+    return csv.split("\r\n").find((row) => row.startsWith(`"${section}","${scope}",`) && row.includes(`,"${metric}",`));
+  }
+
+  async function start(deps: AdminServerDependencies): Promise<string> {
+    server = createAdminServer(deps);
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Server not bound");
+    return `http://127.0.0.1:${address.port}/api/admin/overview/export.csv`;
+  }
+
+  afterEach(async () => {
+    if (server) {
+      await new Promise<void>((resolve, reject) => server?.close((error) => error ? reject(error) : resolve()));
+      server = null;
+    }
+    store?.close();
+    store = null;
+    vi.restoreAllMocks();
+  });
+
+  it("downloads an empty report with snapshot and period rows, but no runtime or provider data", async () => {
+    const url = await start(makeDeps([]));
+    const response = await fetch(`${url}?days=7`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/csv; charset=utf-8");
+    expect(response.headers.get("content-disposition")).toBe('attachment; filename="general-view-analytics-7d.csv"');
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const csv = await response.text();
+    expect(csv.startsWith('"section","scope","period","generated_at_utc","window_start_utc","window_end_utc"')).toBe(true);
+    expect(csv).toContain('"task_summary","instance","current"');
+    expect(csv).toContain('"review_votes","instance","7d"');
+    expect(csv).toContain('"ai_cost","instance","7d"');
+    expect(csv).toContain('"model_usage","instance","7d"');
+    expect(csv.split("\r\n").filter((row) => row.startsWith('"throughput","bin"'))).toHaveLength(14);
+    expect(csv).not.toContain('"runtime"');
+    expect(csv).not.toContain('"providers"');
+    expect(csv.endsWith("\r\n")).toBe(true);
+  });
+
+  it.each([1, 7, 30, null])("uses one reference timestamp for period %s", async (days) => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const deps = makeDeps([makeTask("review", "REVIEW_DONE", new Date(NOW))]);
+    const votes = vi.fn(async () => ({ plus2: 1, plus1: 0, minus1: 0, minus2: 0 }));
+    deps.stateStore.getReviewVoteCounts = votes;
+    const url = await start(deps);
+    const response = await fetch(days === null ? url : `${url}?days=${days}`);
+    expect(response.status).toBe(200);
+    const since = days === null ? undefined : new Date(NOW - days * 86_400_000);
+    expect(deps.stateStore.getCostSummary).toHaveBeenCalledWith(since ? { since } : undefined);
+    expect(deps.stateStore.getModelUsageSummary).toHaveBeenCalledWith(since ? { since } : undefined);
+    expect(votes).toHaveBeenCalledWith([makeTaskId("review")], since);
+    expect(await response.text()).toContain(new Date(NOW).toISOString());
+  });
+
+  it.each(["", "0", "-1", "2", "1.5", "NaN", "Infinity", "all", "7&days=30"])("rejects invalid days=%s before reading analytics", async (days) => {
+    const deps = makeDeps([]);
+    const url = await start(deps);
+    const response = await fetch(`${url}?days=${days}`);
+    expect(response.status).toBe(400);
+    expect(deps.stateStore.getAllTasks).not.toHaveBeenCalled();
+    expect(deps.stateStore.getCostSummary).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "from=2026-10-01", "to=2026-10-02", "from=2026-02-30&to=2026-03-01",
+    "from=2026-10-03&to=2026-10-01", "days=7&from=2026-10-01&to=2026-10-02",
+    "from=2026-10-01&from=2026-10-02&to=2026-10-03", "projectId=",
+  ])("rejects invalid export filters %s before analytics reads", async (query) => {
+    const deps = makeDeps([]);
+    const url = await start(deps);
+    expect((await fetch(`${url}?${query}`)).status).toBe(400);
+    expect(deps.stateStore.getCostSummary).not.toHaveBeenCalled();
+  });
+
+  it("applies custom dates and selected projects to all export sections", async () => {
+    store = await SqliteStateStore.create(tempDatabasePath("ve-export-filters"));
+    const agent = await store.createAgent({ name: "Filters", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code", enabled: true });
+    const projects = await Promise.all(["Selected", "Also selected", "Excluded"].map((name) =>
+      store!.createProject({ name, type: "coding", agentId: agent.id })));
+    const [selected, alsoSelected, excluded] = projects;
+    if (!selected || !alsoSelected || !excluded) throw new Error("Missing fixture projects");
+    const since = new Date("2026-10-01T00:00:00Z");
+    const before = new Date("2026-10-03T00:00:00Z");
+    const deps = makeDeps([
+      { ...makeTask("active", "AGENT_RUNNING", new Date("2026-01-01Z")), projectId: selected.id },
+      { ...makeTask("at-start", "DONE", since), projectId: selected.id },
+      { ...makeTask("at-end", "DONE", before), projectId: selected.id },
+      { ...makeTask("review", "REVIEW_DONE", new Date("2026-10-05Z")), projectId: alsoSelected.id },
+      { ...makeTask("hidden", "DONE", since), projectId: excluded.id },
+    ]);
+    deps.projectStore = store;
+    const aggregate = vi.fn(async () => ({ plus2: 1, plus1: 0, minus1: 0, minus2: 0 }));
+    deps.stateStore.getReviewVoteCounts = aggregate;
+    const url = await start(deps);
+    const response = await fetch(`${url}?from=2026-10-01&to=2026-10-02&projectId=${selected.id}&projectId=${alsoSelected.id}`);
+    expect(response.status).toBe(200);
+    expect(deps.stateStore.getCostSummary).toHaveBeenCalledWith({ since, before, projectIds: [selected.id, alsoSelected.id] });
+    expect(deps.stateStore.getModelUsageSummary).toHaveBeenCalledWith({ since, before, projectIds: [selected.id, alsoSelected.id] });
+    expect(aggregate).toHaveBeenCalledWith([makeTaskId("review")], since, { before, inclusiveSince: true });
+    const csv = await response.text();
+    expect(metricRow(csv, "task_summary", "selected_projects", "completed")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_summary", "selected_projects", "active")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_distribution", "selected_projects", "total")).toContain(',"4","tasks",""');
+    expect(metricRow(csv, "throughput", "selected_projects", "updated_tasks")).toContain(',"1","tasks",""');
+    expect(csv).toContain('"custom"');
+    expect(csv).toContain('"2026-10-01T00:00:00.000Z","2026-10-03T00:00:00.000Z"');
+    expect(response.headers.get("content-disposition")).toContain("2026-10-01_2026-10-02.csv");
+    expect((await fetch(`${url}?projectId=unknown`)).status).toBe(400);
+  });
+
+  it("returns JSON rather than a partial attachment if an aggregate fails", async () => {
+    const deps = makeDeps([]);
+    vi.mocked(deps.stateStore.getCostSummary).mockRejectedValue(new Error("database unavailable"));
+    const url = await start(deps);
+    const response = await fetch(url);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.has("content-disposition")).toBe(false);
+    expect(await response.json()).toEqual({ error: "Failed to export analytics" });
+  });
+
+  it.each([1, 7, 30, null])("counts updated tasks over period %s and keeps workload current", async (days) => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const cutoff = NOW - (days ?? 100) * 86_400_000;
+    const deps = makeDeps([
+      makeTask("old-active", "AGENT_RUNNING", new Date(cutoff - 1)),
+      makeTask("old-watching", "REVIEW_WATCHING", new Date(cutoff - 1)),
+      makeTask("before", "DONE", new Date(cutoff - 1)),
+      makeTask("boundary", "MERGED", new Date(cutoff)),
+      makeTask("after", "REVIEW_DONE", new Date(cutoff + 1)),
+      makeTask("now", "ABANDONED", new Date(NOW)),
+      makeTask("future", "FAILED", new Date(NOW + 1)),
+    ]);
+    const url = await start(deps);
+    const response = await fetch(days === null ? url : `${url}?days=${days}`);
+    expect(response.status).toBe(200);
+    const csv = await response.text();
+    expect(metricRow(csv, "task_summary", "instance", "active")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_summary", "instance", "watching")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_summary", "instance", "completed")).toContain(`,"${days === null ? 3 : 1}","tasks",""`);
+    expect(metricRow(csv, "task_summary", "instance", "failed")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_distribution", "category", "abandoned")).toContain(',"1","tasks",""');
+    const bins = csv.split("\r\n").filter((row) => row.startsWith('"throughput","bin",'));
+    expect(bins).toHaveLength(14);
+    const total = bins.reduce((count, row) => count + Number(row.split('","').at(-3)), 0);
+    expect(total).toBe(days === null ? 6 : 3);
+    expect(metricRow(csv, "throughput", "instance", "updated_tasks")).toContain(`,"${total}","tasks",""`);
+    if (days !== null) {
+      expect(bins[0]).toContain(new Date(cutoff).toISOString());
+      expect(bins.at(-1)).toContain(new Date(NOW).toISOString());
+    }
+  });
+
+  it("assigns exact exported millisecond boundaries to the following throughput bin", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const startTime = NOW - 86_400_000;
+    const tasks = Array.from({ length: 15 }, (_value, index) =>
+      makeTask(`edge-${index}`, "DONE", new Date(startTime + Math.floor(index * 86_400_000 / 14))));
+    const url = await start(makeDeps(tasks));
+    const csv = await (await fetch(`${url}?days=1`)).text();
+    const bins = csv.split("\r\n").filter((row) => row.startsWith('"throughput","bin",'));
+    expect(bins.map((row) => Number(row.split('\",\"').at(-3)))).toEqual([
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2,
+    ]);
+  });
+
+  it("handles empty all-time throughput and all tasks updated at the same instant", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const deps = makeDeps([]);
+    const url = await start(deps);
+    const empty = await (await fetch(url)).text();
+    expect(empty).not.toContain('"throughput","bin"');
+    vi.mocked(deps.stateStore.getAllTasks).mockResolvedValue([makeTask("instant", "DONE", new Date(NOW))]);
+    const instant = await (await fetch(url)).text();
+    expect(instant.split("\r\n").filter((row) => row.startsWith('"throughput","bin"'))).toHaveLength(14);
+    expect(metricRow(instant, "throughput", "instance", "updated_tasks")).toContain(',"1","tasks",""');
+  });
+
+  it("exports raw costs and token coverage while excluding failed models from model totals", async () => {
+    const deps = makeDeps([]);
+    const tokens = { input: 10, output: 20, cached: 30, cacheWrite: 40 };
+    const zeroTokens = { input: 0, output: 0, cached: 0, cacheWrite: 0 };
+    const failed = { modelId: "discarded", workflowBucket: "failed" as const, runCount: 9, usd: 2, tokens, runCountWithTokens: 9 };
+    const measured = { modelId: "model-a", workflowBucket: "done" as const, runCount: 2, usd: 0.123456789, tokens, runCountWithTokens: 1 };
+    const unreported = { modelId: null, workflowBucket: "active" as const, runCount: 1, usd: 0, tokens: zeroTokens, runCountWithTokens: 0 };
+    vi.mocked(deps.stateStore.getCostSummary).mockResolvedValue({
+      totalUsd: 2.123456789, totalAiCredits: 10, totalPremiumRequests: 4, totalRuns: 12,
+      totalTokens: tokens, totalRunsWithTokens: 10, sinceEpochSeconds: null,
+      perProject: [{ projectId: null, projectName: null, workflowBucket: "failed", usd: 2,
+        aiCredits: 10, premiumRequests: 4, runCount: 9, tokens, runCountWithTokens: 9 }],
+    });
+    vi.mocked(deps.stateStore.getModelUsageSummary).mockResolvedValue({
+      byModel: [failed, measured, unreported],
+      perProject: [
+        { projectId: "gone", projectName: "Discarded project", workflowBucket: "failed", models: [failed] },
+        { projectId: null, projectName: null, workflowBucket: "done", models: [measured] },
+      ],
+      totalRuns: 12, totalUsd: 2.123456789, totalTokens: tokens, sinceEpochSeconds: null,
+    });
+    const url = await start(deps);
+    const csv = await (await fetch(url)).text();
+    expect(metricRow(csv, "ai_cost", "instance", "usd")).toContain(',"2.123456789","USD",""');
+    expect(metricRow(csv, "ai_cost", "project", "usd")).toContain(',"failed","","usd","2"');
+    expect(metricRow(csv, "model_usage", "instance", "runs")).toContain(',"3","count",""');
+    expect(metricRow(csv, "model_usage", "instance", "usd")).toContain(',"0.123456789","USD",""');
+    expect(metricRow(csv, "model_usage", "model", "processed_tokens")).toContain(',"100","tokens","partial"');
+    expect(csv).toContain(',"active","","input_tokens","","tokens","unreported"');
+    expect(csv).not.toContain("discarded");
+    expect(csv).not.toContain("Discarded project");
+    expect(csv).toContain('"project_model"');
+    expect(csv).toContain('"run_percentage","66.66666666666666","percent"');
+  });
+
+  it.each(["=SUM(A1)", " +cmd", "\t-cmd", "@cmd", 'Café, "quoted"\nteam'])("quotes and neutralizes project names: %s", async (projectName) => {
+    const deps = makeDeps([]);
+    const summary = await deps.stateStore.getCostSummary();
+    vi.mocked(deps.stateStore.getCostSummary).mockResolvedValue({ ...summary, perProject: [{
+      projectId: "project", projectName, workflowBucket: "done", usd: 0, aiCredits: 0,
+      premiumRequests: 0, runCount: 1, tokens: summary.totalTokens, runCountWithTokens: 1,
+    }] });
+    const url = await start(deps);
+    const csv = await (await fetch(url)).text();
+    const safeName = /^[\s]*[=+\-@]/.test(projectName) ? `'${projectName}` : projectName;
+    expect(csv).toContain(`"project","${safeName.replaceAll('"', '""')}"`);
+    expect(metricRow(csv, "ai_cost", "project", "input_tokens")).toContain(',"0","tokens","reported"');
+  });
+
+  it.each(["operator", "viewer"])("denies %s with explicit and group grants before reading analytics", async (role) => {
+    store = await SqliteStateStore.create(tempDatabasePath("ve-overview-export-auth"));
+    const deps = makeDeps([]);
+    deps.stateStore = store;
+    deps.allowUnauthenticatedAdmin = false;
+    const url = await start(deps);
+    const origin = new URL(url).origin;
+    const setup = await fetch(`${origin}/api/admin/auth/setup`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+    });
+    expect(setup.status).toBe(201);
+    const admin = await setup.json() as { token: string };
+    const created = await fetch(`${origin}/api/admin/users`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${admin.token}` },
+      body: JSON.stringify({ username: "export-user", password: "Str0ng-Pass-1x", role }),
+    });
+    expect(created.status).toBe(201);
+    const login = await fetch(`${origin}/api/admin/auth/login`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "export-user", password: "Str0ng-Pass-1x" }),
+    });
+    expect(login.status).toBe(200);
+    const user = await login.json() as { token: string; user: { id: string } };
+    const policy = await store.createPolicy({ name: "Export readers" });
+    await store.setPolicyRules(policy.id, [{ permission: "overview.read", resourceId: null }]);
+    await store.createBinding({ policyId: policy.id, principalType: "user", principalId: user.user.id });
+    const group = await store.createGroup({ name: "Export group" });
+    await store.addUserToGroup(group.id, user.user.id);
+    await store.createBinding({ policyId: policy.id, principalType: "group", principalId: group.id });
+    const taskRead = vi.spyOn(store, "getAllTasks");
+    const costRead = vi.spyOn(store, "getCostSummary");
+    const modelRead = vi.spyOn(store, "getModelUsageSummary");
+    expect((await fetch(url)).status).toBe(401);
+    const denied = await fetch(url, { headers: { authorization: `Bearer ${user.token}` } });
+    expect(denied.status).toBe(403);
+    expect(taskRead).not.toHaveBeenCalled();
+    expect(costRead).not.toHaveBeenCalled();
+    expect(modelRead).not.toHaveBeenCalled();
+    const allowed = await fetch(url, { headers: { authorization: `Bearer ${admin.token}` } });
+    expect(allowed.status).toBe(200);
+    expect(await allowed.text()).toContain('"ai_cost"');
+  });
+
+  it("denies export before first-user setup", async () => {
+    store = await SqliteStateStore.create(tempDatabasePath("ve-overview-export-bootstrap"));
+    const deps = makeDeps([]);
+    deps.stateStore = store;
+    deps.allowUnauthenticatedAdmin = false;
+    deps.config.nodeEnv = "production";
+    const url = await start(deps);
+    const reads = vi.spyOn(store, "getAllTasks");
+    expect((await fetch(url)).status).toBe(401);
+    expect(reads).not.toHaveBeenCalled();
   });
 });

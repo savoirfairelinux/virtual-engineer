@@ -4,15 +4,15 @@ import type {
   CostSummary,
   CostSummaryProject,
   CycleCostTokens,
+  CycleSummaryOptions,
   ModelUsageEntry,
   ModelUsageProject,
   ModelUsageSummary,
-  ProjectId,
 } from "../../interfaces.js";
 
 export interface CostStoreApi {
-  getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary>;
-  getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary>;
+  getCostSummary(options?: CycleSummaryOptions): Promise<CostSummary>;
+  getModelUsageSummary(options?: CycleSummaryOptions): Promise<ModelUsageSummary>;
 }
 
 interface CostStoreContext {
@@ -45,7 +45,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * columns, which the startup migration (backfillLegacyCycleCosts) backfills
    * for every pre-existing row, so no per-read recompute is needed here.
    */
-  function getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary> {
+  function getCostSummary(options?: CycleSummaryOptions): Promise<CostSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -100,6 +100,14 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     if (sinceEpochSeconds !== null) {
       clauses.push("c.created_at >= ?");
       queryArgs.push(sinceEpochSeconds);
+    }
+    if (options?.before !== undefined) {
+      clauses.push("c.created_at < ?");
+      queryArgs.push(Math.ceil(options.before.getTime() / 1000));
+    }
+    if (options?.projectIds !== undefined) {
+      clauses.push(options.projectIds.length === 0 ? "0" : `t.project_id IN (${options.projectIds.map(() => "?").join(", ")})`);
+      queryArgs.push(...options.projectIds);
     }
     if (options?.projectId !== undefined) {
       clauses.push("t.project_id = ?");
@@ -194,7 +202,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * globally and per project. Relies solely on cost_model_id/cost_usd, which
    * the startup migration backfills for every pre-existing row.
    */
-  function getModelUsageSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<ModelUsageSummary> {
+  function getModelUsageSummary(options?: CycleSummaryOptions): Promise<ModelUsageSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -270,6 +278,14 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     if (sinceEpochSeconds !== null) {
       clauses.push("c.created_at >= ?");
       queryArgs.push(sinceEpochSeconds);
+    }
+    if (options?.before !== undefined) {
+      clauses.push("c.created_at < ?");
+      queryArgs.push(Math.ceil(options.before.getTime() / 1000));
+    }
+    if (options?.projectIds !== undefined) {
+      clauses.push(options.projectIds.length === 0 ? "0" : `t.project_id IN (${options.projectIds.map(() => "?").join(", ")})`);
+      queryArgs.push(...options.projectIds);
     }
     if (options?.projectId !== undefined) {
       clauses.push("t.project_id = ?");
