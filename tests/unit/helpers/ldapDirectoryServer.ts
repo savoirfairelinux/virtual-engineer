@@ -92,16 +92,19 @@ if (!slapdInstall && process.env["VE_REQUIRE_LDAP_TESTS"] === "1") {
 /** Whether a slapd binary is available; directory suites use `describe.skipIf(!ldapAvailable)`. */
 export const ldapAvailable = slapdInstall !== null;
 
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
+/** Distinct free loopback ports, held open together so the kernel cannot hand out the same one twice. */
+async function freePorts(count: number): Promise<number[]> {
+  const servers = await Promise.all(Array.from({ length: count }, () => new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close(() => resolve(port));
-    });
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  })));
+  const ports = servers.map((server) => {
+    const address = server.address();
+    return typeof address === "object" && address ? address.port : 0;
   });
+  await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+  return ports;
 }
 
 export interface LdapDirectoryServer {
@@ -220,17 +223,27 @@ export async function startLdapDirectoryServer(): Promise<LdapDirectoryServer> {
   const configPath = join(instanceDir, "slapd.conf");
   const seedPath = join(instanceDir, "base-seed.ldif");
   const pidFile = join(instanceDir, "slapd.pid");
-  const [ldapPort, ldapsPort] = [await freePort(), await freePort()];
+  let ldapPort = 0;
+  let ldapsPort = 0;
   try {
     await mkdir(join(instanceDir, "data"));
     await generateTls(join(instanceDir, "tls"));
     await writeFile(configPath, slapdConfig(install, instanceDir));
     await writeFile(seedPath, BASE_SEED);
     await execFileAsync(install.slapadd, ["-q", "-f", configPath, "-l", seedPath], { env: install.env });
-    // slapd daemonizes once its listeners are bound; the pid file is used to stop it.
-    await execFileAsync(install.slapd, [
-      "-f", configPath, "-h", `ldap://127.0.0.1:${ldapPort}/ ldaps://127.0.0.1:${ldapsPort}/`,
-    ], { env: install.env });
+    // A parallel suite can take a released port before slapd binds it; retry with fresh ports.
+    for (let attempt = 1; ; attempt++) {
+      [ldapPort = 0, ldapsPort = 0] = await freePorts(2);
+      try {
+        // slapd daemonizes once its listeners are bound; the pid file is used to stop it.
+        await execFileAsync(install.slapd, [
+          "-f", configPath, "-h", `ldap://127.0.0.1:${ldapPort}/ ldaps://127.0.0.1:${ldapsPort}/`,
+        ], { env: install.env });
+        break;
+      } catch (err) {
+        if (attempt >= 3) throw err;
+      }
+    }
     await waitForPort(ldapPort);
     await waitForPort(ldapsPort);
   } catch (err) {
