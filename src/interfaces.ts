@@ -206,6 +206,8 @@ export interface ProjectReviewConfig {
   repos: string[];
   /** Missing legacy values are normalized to `manual` by the state store. */
   assignmentMode?: ReviewAssignmentMode | undefined;
+  /** Exact target branch names to review; an empty or absent list selects every branch. */
+  branches?: string[] | undefined;
 }
 
 // ─── Admin RBAC / audit types ─────────────────────────────────────────────────

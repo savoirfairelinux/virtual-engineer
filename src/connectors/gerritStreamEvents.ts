@@ -473,8 +473,12 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         .map((l) => JSON.parse(l) as unknown)
         .filter((o) => (o as Record<string, unknown>)["type"] !== "stats");
       changeIds = rows
-        .map((row) => (row as Record<string, unknown>)["id"])
-        .filter((id): id is string => typeof id === "string" && id.length > 0);
+        .map((row) => {
+          const record = row as Record<string, unknown>;
+          const id = record["id"];
+          return parseChangeNumber(record["number"]) ?? (typeof id === "string" && id.length > 0 ? id : null);
+        })
+        .filter((id): id is string => id !== null);
     } catch (err) {
       log.warn(
         { integrationId: handle.integration.id, err },
@@ -593,6 +597,25 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     }
   }
 
+  /** Route a lifecycle event once per change identifier; one failing route must not skip the others. */
+  private async routeLifecycleEvent(
+    handle: GerritStreamHandle,
+    eventType: GerritEventType,
+    changeIds: readonly string[],
+    route: (changeId: string) => Promise<void>,
+  ): Promise<void> {
+    for (const changeId of changeIds) {
+      try {
+        await route(changeId);
+      } catch (err) {
+        log.error(
+          { integrationId: handle.integration.id, eventType, changeId, err },
+          "Gerrit stream-events: lifecycle routing failed for one change identifier"
+        );
+      }
+    }
+  }
+
   /** Parse and dispatch a single JSON line received from `gerrit stream-events`. */
   private async processStreamLine(handle: GerritStreamHandle, line: string): Promise<void> {
     if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
@@ -620,6 +643,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     if (!changeId) {
       return;
     }
+    // Cherry-picks keep the Change-Id across branches; review tasks use the unique change number.
+    const reviewChangeId = extractChangeNumber(payload) ?? changeId;
+    const lifecycleChangeIds = reviewChangeId === changeId ? [changeId] : [changeId, reviewChangeId];
 
     const status = this.statuses.get(handle.integration.id);
     if (status) {
@@ -631,15 +657,17 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     switch (eventType) {
       case "change-merged": {
         const project = extractChangeProject(payload);
-        if (project !== null) {
-          await this.options.orchestrator.markChangeMerged(handle.integration.id, changeId, project);
-        } else {
-          await this.options.orchestrator.markChangeMerged(handle.integration.id, changeId);
-        }
+        await this.routeLifecycleEvent(handle, eventType, lifecycleChangeIds, (lifecycleChangeId) =>
+          project !== null
+            ? this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId, project)
+            : this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId)
+        );
         return;
       }
       case "change-abandoned":
-        await this.options.orchestrator.markChangeAbandoned(handle.integration.id, changeId);
+        await this.routeLifecycleEvent(handle, eventType, lifecycleChangeIds, (lifecycleChangeId) =>
+          this.options.orchestrator.markChangeAbandoned(handle.integration.id, lifecycleChangeId)
+        );
         return;
       case "reviewer-added": {
         await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId);
@@ -650,7 +678,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
             // Manual trigger: a human (re)added VE as a reviewer. Force a fresh
             // review even if VE already reviewed the current patchset — this is
             // how a reviewer intentionally relaunches VE's review.
-            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, changeId, {
+            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, reviewChangeId, {
               force: true,
               triggerCause: "reviewer-assigned",
             });
@@ -674,7 +702,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
               "Gerrit stream-events: patchset-created skipped — trivial patchset kind"
             );
           } else {
-            await reviewTriggerOnPatchset.triggerReviewForChange(handle.integration.id, changeId, {
+            await reviewTriggerOnPatchset.triggerReviewForChange(handle.integration.id, reviewChangeId, {
               triggerCause: "revision",
             });
           }
@@ -894,6 +922,19 @@ function extractChangeId(payload: unknown): string | null {
     }
   }
   return null;
+}
+
+/** Extract Gerrit's change number, the only change identifier unique across branches. */
+function extractChangeNumber(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const change = (payload as Record<string, unknown>)["change"];
+  if (typeof change !== "object" || change === null) return null;
+  return parseChangeNumber((change as Record<string, unknown>)["number"]);
+}
+
+function parseChangeNumber(value: unknown): string | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+  return typeof value === "string" && /^[1-9]\d*$/.test(value) ? value : null;
 }
 
 function extractChangeProject(payload: unknown): string | null {

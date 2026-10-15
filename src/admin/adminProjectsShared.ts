@@ -36,6 +36,7 @@ import {
 } from "../plugins/registry.js";
 import { ReviewStrategyConfigError, resolveReviewStrategy } from "../agents/reviewStrategy.js";
 import { PROJECT_RECONFIGURATION_FAILURE_PREFIX } from "../domain/projectConfiguration.js";
+import { normalizeReviewBranchName } from "../domain/reviewRepository.js";
 
 const log = getLogger("admin-projects");
 export const MAX_TCP_PORT = 65_535;
@@ -126,6 +127,7 @@ export interface ProjectsRouteStore {
         integrationId: string;
         repoKeys: string[];
         assignmentMode?: ReviewAssignmentMode | undefined;
+        branches?: string[] | undefined;
       } | undefined;
       confirmedActiveTaskIds?: string[] | undefined;
     }
@@ -162,6 +164,7 @@ export interface ProjectsRouteStore {
     integrationId: string,
     repoKeys: string[],
     assignmentMode?: ReviewAssignmentMode,
+    branches?: readonly string[],
   ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
@@ -262,6 +265,15 @@ export const reviewConfigSchema = z.object({
   integrationId: z.string().min(1, "Review integration is required"),
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
   assignmentMode: z.enum(["manual", "automatic"]).default("manual"),
+  branches: z.array(
+    z.string()
+      .trim()
+      .min(1, "Branch name must not be empty")
+      .max(255, "Branch name must be at most 255 characters")
+      .regex(/^[^\s,]+$/, "Branch names must not contain spaces or commas")
+      // A name that normalizes to nothing would shrink the list to "every branch".
+      .refine((name) => normalizeReviewBranchName(name).length > 0, "Branch name must include a name after refs/heads/"),
+  ).max(100, "At most 100 branches can be selected").optional(),
 });
 
 export function optionalNonEmptyString(message: string): z.ZodOptional<z.ZodString> {
@@ -609,6 +621,8 @@ export interface ProjectSummary {
     integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
     repos: string[];
     assignmentMode: ReviewAssignmentMode;
+    /** Empty means every target branch is reviewed. */
+    branches: string[];
   } | null;
   pushTargetCount: number;
 }
@@ -665,6 +679,7 @@ export async function buildProjectSummary(
         integration: describeIntegration(integrations.byId.get(rc.integrationId)),
         repos: rc.repos,
         assignmentMode: rc.assignmentMode ?? "manual",
+        branches: rc.branches ?? [],
       };
     }
   }
@@ -728,6 +743,7 @@ export async function buildProjectDetail(
         integration: describeIntegration(integrations.byId.get(rc.integrationId)),
         repos: rc.repos,
         assignmentMode: rc.assignmentMode ?? "manual",
+        branches: rc.branches ?? [],
       };
     }
   }

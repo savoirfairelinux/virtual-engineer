@@ -42,6 +42,7 @@ import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGat
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
 import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
 import { ProjectReconfigurationIncompatibleError } from "../domain/projectConfiguration.js";
+import { isReviewBranchSelected } from "../domain/reviewRepository.js";
 
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
@@ -186,7 +187,10 @@ export class ReviewOrchestrator {
   async startReviewTask(input: StartReviewInput): Promise<Task[]> {
     const details = await this.deps.reviewProvider.getChangeDetails(input.changeId);
     if (details.status !== "OPEN") {
-      log.info({ changeId: input.changeId, status: details.status }, "skipping review: change is not OPEN");
+      log.info(
+        { changeId: input.changeId, status: details.status, branch: details.targetBranch },
+        "skipping review: change is not OPEN"
+      );
       return [];
     }
 
@@ -209,7 +213,7 @@ export class ReviewOrchestrator {
       }
       if (reviewedOnServer) {
         log.info(
-          { changeId: input.changeId, patchset: details.currentPatchset },
+          { changeId: input.changeId, patchset: details.currentPatchset, branch: details.targetBranch },
           "VE already reviewed the current patchset on the review server — skipping automatic re-trigger"
         );
         return [];
@@ -226,7 +230,12 @@ export class ReviewOrchestrator {
       : targetProjects;
     if (projects.length === 0) {
       log.info(
-        { changeId: input.changeId, integrationId: this.deps.integrationId, gerritProject: details.project },
+        {
+          changeId: input.changeId,
+          integrationId: this.deps.integrationId,
+          gerritProject: details.project,
+          branch: details.targetBranch,
+        },
         "skipping review: no VE project configured for this review target"
       );
       return [];
@@ -245,6 +254,18 @@ export class ReviewOrchestrator {
       const reviewConfig = await projectReviewConfigStore.getProjectReviewConfig(project.id);
       if (reviewConfig === null) {
         log.warn({ projectId: project.id, changeId: input.changeId }, "skipping review project without review configuration");
+        continue;
+      }
+      if (!isReviewBranchSelected(reviewConfig.branches, details.targetBranch)) {
+        log.info(
+          {
+            projectId: project.id,
+            changeId: input.changeId,
+            branch: details.targetBranch,
+            selectedBranches: reviewConfig.branches,
+          },
+          "skipping review: target branch is not selected for this review project"
+        );
         continue;
       }
       configuredProjects.push({ project, reviewConfig });
@@ -298,7 +319,7 @@ export class ReviewOrchestrator {
             automaticAssignment = await this.deps.reviewProvider.ensureReviewerAssignment(input.changeId);
           } catch (err) {
             log.warn(
-              { projectId: project.id, changeId: input.changeId, triggerCause, err },
+              { projectId: project.id, changeId: input.changeId, branch: details.targetBranch, triggerCause, err },
               "automatic reviewer assignment failed — skipping review",
             );
             automaticAssignment = false;
@@ -314,7 +335,7 @@ export class ReviewOrchestrator {
       } else if (triggerCause !== "reviewer-assigned" && assignmentProbeAvailable) {
         if (manualAssignmentByProject.get(project.id) !== true) {
           log.warn(
-            { projectId: project.id, changeId: input.changeId, assignmentMode },
+            { projectId: project.id, changeId: input.changeId, branch: details.targetBranch, assignmentMode },
             "manual review project was not assigned to VE before this trigger — skipping",
           );
           continue;

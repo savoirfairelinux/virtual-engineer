@@ -6,6 +6,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 
 ## Review execution — `src/review/reviewOrchestrator.ts`
 
+- `startReviewTask()` reviews changes on every target branch by default. When a project's review binding lists `branches`, a project whose list does not contain `details.targetBranch` (exact match, `refs/heads/` ignored) is skipped before the manual reviewer probe and before automatic `ensureReviewerAssignment()`, for every trigger cause including an explicit reviewer assignment. Skip logs carry the change's `branch`. Branch-list edits gate only new triggers; queued, running, and watching tasks are not re-evaluated.
 - `buildReviewPrompt()` includes every file's complete diff (and the complete inter-patchset delta on re-review); it never silently truncates the prompt at a character limit. `MAX_REVIEW_DIFF_CHARS` has been removed. Providers that reject an oversized prompt fail the cycle instead of posting a partial review; provider-side context handling remains model-dependent.
 - A review result is bound to the patchset used for checkout, diff construction, prompt construction, and agent execution. Immediately before provider effects, `runReview()` fetches fresh change details and posts only when both the patchset still matches and the change remains `OPEN`.
 - On re-review, providers that implement `getInterPatchsetDiff()` contribute a focused delta between the last reviewed revision and the current one; patchset identifiers are identity tokens, so the orchestrator checks inequality rather than assuming numeric ordering.
@@ -121,7 +122,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 - for enabled polling-capable review integrations, manual projects check the exact PR/MR assignment when the connector exposes `hasReviewAssignment(changeId)`, except an explicit `reviewer-assigned` event is already assignment evidence and is trusted per project. Automatic projects trigger without that membership check; `ReviewOrchestrator.startReviewTask()` performs additive assignment without an eventual-consistency confirmation read, then compares the provider's current revision identity (GitHub `head.sha` → SHA-derived patchset) before re-running the agent. Trigger cooldowns are qualified by integration and change and shared with initial assignment polling, while status cooldowns remain separate.
 - Trigger cooldowns are pruned after one polling interval, removed immediately when a watched change is unassigned, and cleared together with the repo-bound connector cache when polling stops or integrations hot-reload. The cache is keyed by integration and repository so several watched PRs do not recreate a connector or repeat `/user` resolution.
 
-Status polling uses the separate per-change `reviewPollCooldowns` map for `IN_REVIEW` and `REVIEW_WATCHING` checks; the `IN_REVIEW` reconciliation evicts entries no longer active, and polling stop/hot-reload clears the map. Trigger cooldowns use `reviewTriggerCooldowns` and are never used to suppress status checks.
+Status polling uses the separate per-task `reviewPollCooldowns` map for `IN_REVIEW` and `REVIEW_WATCHING` checks. It is keyed by task ID because change ids (Gerrit change numbers, GitLab IIDs, GitHub PR numbers, or one change reviewed by several projects) repeat across tasks and would otherwise suppress each other's polls. The `IN_REVIEW` reconciliation evicts entries no longer active, and polling stop/hot-reload clears the map. Trigger cooldowns use `reviewTriggerCooldowns` and are never used to suppress status checks.
 
 ## `concurrencyTracker.ts`
 
@@ -174,6 +175,7 @@ All provider-specific credentials (SSH keys, GitLab tokens, Redmine URLs, status
 - `tests/unit/agentRuntimeResolver.test.ts`
 - `tests/unit/projectPushService.test.ts`
 - `tests/unit/reviewOrchestrator.test.ts`
+- `tests/unit/reviewRepository.test.ts`
 - `tests/unit/reviewRecovery.test.ts`
 - `tests/unit/pollingLoop.projects.test.ts`
 - `tests/unit/pollingLoop.concurrency.test.ts`

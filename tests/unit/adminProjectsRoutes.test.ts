@@ -1123,6 +1123,65 @@ FetchContent_Declare(googletest
     expect(rc["assignmentMode"]).toBe("automatic");
   });
 
+  it("POST / and PUT /:id persist an optional normalized review branch list", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BranchReview",
+        agentId: agent.id,
+        reviewConfig: {
+          integrationId: "gerrit-1",
+          repoKeys: ["platform/api"],
+          branches: [" python ", "refs/heads/main", "python"],
+        },
+      },
+    });
+    expect(created.status).toBe(201);
+    const project = created.body?.["project"] as { id: string; reviewConfig: { branches: string[] } };
+    expect(project.reviewConfig.branches).toEqual(["python", "main"]);
+
+    const listed = await rest(server, "/api/admin/projects");
+    const summary = (listed.body?.["projects"] as Array<{ id: string; reviewConfig: { branches: string[] } }>)
+      .find((entry) => entry.id === project.id);
+    expect(summary?.reviewConfig.branches).toEqual(["python", "main"]);
+
+    const updated = await rest(server, `/api/admin/projects/${project.id}`, {
+      method: "PUT",
+      body: { reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] } },
+    });
+    expect(updated.status).toBe(200);
+    expect((updated.body?.["project"] as { reviewConfig: { branches: string[] } }).reviewConfig.branches).toEqual([]);
+  });
+
+  it("POST / rejects review branch names that cannot select a branch", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const cases: Array<{ branches: string[]; expected: RegExp }> = [
+      { branches: ["main, python"], expected: /Branches #1: Branch names must not contain spaces or commas/ },
+      // Stripping the prefix would leave an empty list, which silently means "every branch".
+      { branches: ["main", "refs/heads/"], expected: /Branches #2: Branch name must include a name after refs\/heads\// },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const r = await rest(server, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "review",
+          name: `BadBranches${index}`,
+          agentId: agent.id,
+          reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"], branches: testCase.branches },
+        },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(testCase.expected);
+    }
+    expect(await store.listProjects()).toHaveLength(0);
+  });
+
   it("POST / rejects a review integration without code review capability", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "redmine-review", "redmine");

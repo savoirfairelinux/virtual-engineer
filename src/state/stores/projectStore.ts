@@ -23,6 +23,7 @@ import {
   isReviewAssignmentMode,
   TERMINAL_STATES,
 } from "../../interfaces.js";
+import { normalizeReviewBranches } from "../../domain/reviewRepository.js";
 import {
   agents,
   projectIntegrationBindings,
@@ -74,6 +75,7 @@ export interface ProjectStoreApi {
         integrationId: string;
         repoKeys: string[];
         assignmentMode?: ProjectReviewConfig["assignmentMode"];
+        branches?: string[] | undefined;
       } | undefined;
       confirmedActiveTaskIds?: string[] | undefined;
     }
@@ -128,7 +130,8 @@ export interface ProjectStoreApi {
     projectId: ProjectId,
     integrationId: string,
     repoKeys: string[],
-    assignmentMode?: ProjectReviewConfig["assignmentMode"]
+    assignmentMode?: ProjectReviewConfig["assignmentMode"],
+    branches?: readonly string[]
   ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   initializeAutomaticReviewPollingSince(projectId: ProjectId): Promise<Date>;
@@ -277,6 +280,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   function readStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  }
+
+  /** Omit the key when empty so an absent list keeps meaning "every branch". */
+  function reviewBranchesConfig(branches: readonly string[] | undefined): { branches?: string[] } {
+    const normalized = normalizeReviewBranches(branches ?? []);
+    return normalized.length > 0 ? { branches: normalized } : {};
   }
 
   function automaticPollingSince(
@@ -521,6 +530,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
             JSON.stringify({
               repos: input.reviewConfig.repoKeys,
               assignmentMode,
+              ...reviewBranchesConfig(input.reviewConfig.branches),
               ...(since !== undefined ? { automaticPollingSince: since } : {}),
             }),
             nowSeconds,
@@ -933,6 +943,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     integrationId: string,
     repoKeys: string[],
     assignmentMode: ProjectReviewConfig["assignmentMode"] = DEFAULT_REVIEW_ASSIGNMENT_MODE,
+    branches?: readonly string[],
   ): Promise<void> {
     const nowSeconds = Math.floor(Date.now() / 1000);
     raw.transaction((): void => {
@@ -950,6 +961,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       const configJson = JSON.stringify({
         repos: repoKeys,
         assignmentMode: normalizedMode,
+        ...reviewBranchesConfig(branches),
         ...(since !== undefined ? { automaticPollingSince: since } : {}),
       });
       raw
@@ -975,6 +987,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       integrationId: binding.integrationId,
       repos,
       assignmentMode,
+      branches: normalizeReviewBranches(readStringArray(binding.config["branches"])),
     };
   }
 

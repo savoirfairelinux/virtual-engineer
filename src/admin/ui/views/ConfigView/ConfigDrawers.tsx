@@ -412,6 +412,7 @@ export function ProjectDrawer({ item, detail, agents, onClose, onEdit, onToggle,
           <DetailRow k="Review source">{linkedIntegrationLabel(detail.reviewConfig.integration) ?? "—"}</DetailRow>
           <DetailRow k="Repositories" mono>{detail.reviewConfig.repos.join(", ") || "—"}</DetailRow>
           <DetailRow k="Assignment">{detail.reviewConfig.assignmentMode}</DetailRow>
+          <DetailRow k="Branches">{detail.reviewConfig.branches?.join(", ") || "All branches"}</DetailRow>
         </DetailSection>
       )}
 

@@ -255,6 +255,48 @@ describe("PollingLoop — pollInReviewTasks", () => {
   });
 });
 
+// ─── Status poll cooldowns ────────────────────────────────────────────────────────────
+
+// Gerrit change numbers, GitLab IIDs, and GitHub PR numbers repeat across
+// integrations, so a change id cannot identify a task.
+describe("PollingLoop — status poll cooldowns", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("polls every watching review task when two integrations share a change number", async () => {
+    const tasks = [
+      { ...makeTask({ taskId: "watched-gerrit-a", externalChangeId: "42", state: "REVIEW_WATCHING", taskType: "code-review" }), ticketSourceLabel: "gerrit:int-a" },
+      { ...makeTask({ taskId: "watched-gerrit-b", externalChangeId: "42", state: "REVIEW_WATCHING", taskType: "code-review" }), ticketSourceLabel: "gerrit:int-b" },
+    ];
+    const orchestrator = makeOrchestrator();
+    const loop = new PollingLoop({ ticketIntervalMs: 30_000, maxRetryAttempts: 5 }, orchestrator, makeStore(tasks));
+
+    await loop.pollReviewWatchingTasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(orchestrator.checkReviewWatchingTask).toHaveBeenCalledTimes(2);
+    expect(orchestrator.checkReviewWatchingTask).toHaveBeenCalledWith(tasks[0]!.taskId);
+    expect(orchestrator.checkReviewWatchingTask).toHaveBeenCalledWith(tasks[1]!.taskId);
+  });
+
+  it("does not let an IN_REVIEW coding task suppress a watching review task with the same change id", async () => {
+    const codingTask = makeTask({ taskId: "coding-42", externalChangeId: "42" });
+    const reviewTask = makeTask({ taskId: "review-42", externalChangeId: "42", state: "REVIEW_WATCHING", taskType: "code-review" });
+    const orchestrator = makeOrchestrator();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      makeStore([codingTask, reviewTask]),
+    );
+
+    await Promise.all([loop.pollInReviewTasks(), loop.pollReviewWatchingTasks()]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(orchestrator.handleReviewEvent).toHaveBeenCalledWith(codingTask.externalChangeId, codingTask.taskId);
+    expect(orchestrator.checkReviewWatchingTask).toHaveBeenCalledWith(reviewTask.taskId);
+  });
+});
+
 // ─── pollReviewProjects ───────────────────────────────────────────────────────
 
 describe("PollingLoop — pollReviewProjects", () => {

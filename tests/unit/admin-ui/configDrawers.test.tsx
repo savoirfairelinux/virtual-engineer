@@ -172,6 +172,31 @@ describe("Config drawers", () => {
     expect(rowValue("Review source")).toBe("GitHub · github");
     expect(rowValue("Repositories")).toBe("org/a, org/b");
     expect(rowValue("Assignment")).toBe("automatic");
+    expect(rowValue("Branches")).toBe("All branches");
+  });
+
+  it("lists the selected review branches", () => {
+    const project: ApiProject = {
+      id: "proj-3",
+      name: "Branch reviews",
+      type: "review",
+      enabled: true,
+      agentId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-02T00:00:00Z",
+    };
+    const detail: ApiProjectDetail = {
+      ...project,
+      reviewConfig: {
+        integration: { id: "int-gerrit", name: "Gerrit", provider: "gerrit" },
+        repos: ["platform/api"],
+        assignmentMode: "manual",
+        branches: ["main", "python"],
+      },
+    };
+    render(<ProjectDrawer item={project} detail={detail} agents={[]} onClose={() => undefined} />);
+
+    expect(rowValue("Branches")).toBe("main, python");
   });
 
   it("labels install-all skill sources without claiming zero skills", () => {

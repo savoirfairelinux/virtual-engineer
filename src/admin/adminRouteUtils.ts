@@ -41,6 +41,7 @@ function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
     ticketSource: "Ticket source",
     reviewConfig: "Review config",
     repoKeys: "Repositories",
+    branches: "Branches",
     modelConfig: "Model config",
     maxConcurrent: "Max concurrent",
     systemPromptId: "System Prompt",

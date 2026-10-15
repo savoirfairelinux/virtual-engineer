@@ -261,6 +261,8 @@ export interface ApiProjectDetail extends ApiProject {
     integration: { id: string; name: string; provider: string } | null;
     repos: string[];
     assignmentMode?: "manual" | "automatic";
+    /** Empty means every target branch is reviewed. */
+    branches?: string[];
   } | null;
   pushTargets?: Array<{
     integrationId: string | null;
