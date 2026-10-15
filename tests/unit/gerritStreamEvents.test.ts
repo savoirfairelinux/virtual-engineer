@@ -886,6 +886,30 @@ describe("GerritStreamEventsManager", () => {
       expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "4343");
     });
 
+    it("still routes the change number when the Change-Id lifecycle route fails", async () => {
+      const child = new FakeChildProcess();
+      const { manager, orchestrator } = createManager([child]);
+      (orchestrator.markChangeMerged as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("ticket close failed"));
+      (orchestrator.markChangeAbandoned as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("transition failed"));
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: sharedChange }) + "\n");
+      child.stdout.write(JSON.stringify({ type: "change-abandoned", change: { ...sharedChange, number: 4343 } }) + "\n");
+      await flushAsyncWork();
+
+      expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "4242", "team/repo");
+      expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "4343");
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: "gerrit-a", eventType: "change-merged", changeId: "Ishared" }),
+        "Gerrit stream-events: lifecycle routing failed for one change identifier"
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: "gerrit-a", eventType: "change-abandoned", changeId: "Ishared" }),
+        "Gerrit stream-events: lifecycle routing failed for one change identifier"
+      );
+    });
+
     it("ignores a non-numeric change number and falls back to the Change-Id", async () => {
       const child = new FakeChildProcess();
       const { manager, reviewTrigger } = createManager([child]);

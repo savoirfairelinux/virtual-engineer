@@ -597,6 +597,25 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     }
   }
 
+  /** Route a lifecycle event once per change identifier; one failing route must not skip the others. */
+  private async routeLifecycleEvent(
+    handle: GerritStreamHandle,
+    eventType: GerritEventType,
+    changeIds: readonly string[],
+    route: (changeId: string) => Promise<void>,
+  ): Promise<void> {
+    for (const changeId of changeIds) {
+      try {
+        await route(changeId);
+      } catch (err) {
+        log.error(
+          { integrationId: handle.integration.id, eventType, changeId, err },
+          "Gerrit stream-events: lifecycle routing failed for one change identifier"
+        );
+      }
+    }
+  }
+
   /** Parse and dispatch a single JSON line received from `gerrit stream-events`. */
   private async processStreamLine(handle: GerritStreamHandle, line: string): Promise<void> {
     if (this.handles.get(handle.integration.id) !== handle || !this.desiredIntegrations.has(handle.integration.id)) {
@@ -638,19 +657,17 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     switch (eventType) {
       case "change-merged": {
         const project = extractChangeProject(payload);
-        for (const lifecycleChangeId of lifecycleChangeIds) {
-          if (project !== null) {
-            await this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId, project);
-          } else {
-            await this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId);
-          }
-        }
+        await this.routeLifecycleEvent(handle, eventType, lifecycleChangeIds, (lifecycleChangeId) =>
+          project !== null
+            ? this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId, project)
+            : this.options.orchestrator.markChangeMerged(handle.integration.id, lifecycleChangeId)
+        );
         return;
       }
       case "change-abandoned":
-        for (const lifecycleChangeId of lifecycleChangeIds) {
-          await this.options.orchestrator.markChangeAbandoned(handle.integration.id, lifecycleChangeId);
-        }
+        await this.routeLifecycleEvent(handle, eventType, lifecycleChangeIds, (lifecycleChangeId) =>
+          this.options.orchestrator.markChangeAbandoned(handle.integration.id, lifecycleChangeId)
+        );
         return;
       case "reviewer-added": {
         await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId);
