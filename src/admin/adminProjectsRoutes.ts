@@ -370,6 +370,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           data.reviewConfig.integrationId,
           data.reviewConfig.repoKeys,
           data.reviewConfig.assignmentMode,
+          data.reviewConfig.branches,
         );
       }
     } catch (err: unknown) {
@@ -394,6 +395,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           : {
               repoKeys: data.reviewConfig.repoKeys,
               assignmentMode: data.reviewConfig.assignmentMode,
+              reviewBranches: data.reviewConfig.branches ?? [],
             }),
       },
     });
@@ -687,7 +689,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       details: {
         name: refreshed.name,
         ...(data.reviewConfig !== undefined
-          ? { reviewAssignmentMode: data.reviewConfig.assignmentMode }
+          ? {
+              reviewAssignmentMode: data.reviewConfig.assignmentMode,
+              reviewBranches: data.reviewConfig.branches ?? [],
+            }
           : {}),
       },
     });

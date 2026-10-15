@@ -60,6 +60,7 @@ interface ProjectFormProject {
     integration: { id: string; name: string; provider: string } | null;
     repos: string[];
     assignmentMode?: ReviewAssignmentMode;
+    branches?: string[];
   } | null;
   pushTargets?: Array<{
     integrationId: string | null;
@@ -148,6 +149,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [reviewIntegrationId, setReviewIntegrationId] = useState("");
   const [reviewRepoKeys, setReviewRepoKeys] = useState<string[]>([]);
   const [reviewAssignmentMode, setReviewAssignmentMode] = useState<ReviewAssignmentMode>("manual");
+  // Kept as typed text so separators survive while editing; parsed on save.
+  const [reviewBranchesText, setReviewBranchesText] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -221,6 +224,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
       setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
       setReviewRepoKeys(project.reviewConfig?.repos ?? []);
       setReviewAssignmentMode(project.reviewConfig?.assignmentMode ?? "manual");
+      setReviewBranchesText((project.reviewConfig?.branches ?? []).join(", "));
     }
   }, [project]);
 
@@ -532,6 +536,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             integrationId: reviewIntegrationId,
             repoKeys: reviewRepoKeys,
             assignmentMode: reviewAssignmentMode,
+            branches: reviewBranchesText.split(",").map((branch) => branch.trim()).filter(Boolean),
           },
         };
         if (isEditMode && project) {
@@ -948,6 +953,13 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   onChange={setReviewRepoKeys}
                   hint="Select repository keys after discovery"
                 />
+                <Field label="Branches to review" hint="Leave empty to review every branch. Otherwise list exact branch names, comma-separated (e.g. main, python).">
+                  <FieldInput
+                    value={reviewBranchesText}
+                    placeholder="All branches"
+                    onChange={(event) => setReviewBranchesText(event.target.value)}
+                  />
+                </Field>
               </>
             )}
           </div>

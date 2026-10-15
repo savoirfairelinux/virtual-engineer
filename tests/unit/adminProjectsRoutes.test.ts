@@ -1123,6 +1123,57 @@ FetchContent_Declare(googletest
     expect(rc["assignmentMode"]).toBe("automatic");
   });
 
+  it("POST / and PUT /:id persist an optional normalized review branch list", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BranchReview",
+        agentId: agent.id,
+        reviewConfig: {
+          integrationId: "gerrit-1",
+          repoKeys: ["platform/api"],
+          branches: [" python ", "refs/heads/main", "python"],
+        },
+      },
+    });
+    expect(created.status).toBe(201);
+    const project = created.body?.["project"] as { id: string; reviewConfig: { branches: string[] } };
+    expect(project.reviewConfig.branches).toEqual(["python", "main"]);
+
+    const listed = await rest(server, "/api/admin/projects");
+    const summary = (listed.body?.["projects"] as Array<{ id: string; reviewConfig: { branches: string[] } }>)
+      .find((entry) => entry.id === project.id);
+    expect(summary?.reviewConfig.branches).toEqual(["python", "main"]);
+
+    const updated = await rest(server, `/api/admin/projects/${project.id}`, {
+      method: "PUT",
+      body: { reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] } },
+    });
+    expect(updated.status).toBe(200);
+    expect((updated.body?.["project"] as { reviewConfig: { branches: string[] } }).reviewConfig.branches).toEqual([]);
+  });
+
+  it("POST / rejects review branch names that contain whitespace or commas", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadBranches",
+        agentId: agent.id,
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"], branches: ["main, python"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/Branches #1: Branch names must not contain spaces or commas/);
+    expect(await store.listProjects()).toHaveLength(0);
+  });
+
   it("POST / rejects a review integration without code review capability", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "redmine-review", "redmine");

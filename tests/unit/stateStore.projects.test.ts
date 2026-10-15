@@ -921,6 +921,32 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     expect(automatic?.assignmentMode).toBe("automatic");
   });
 
+  it("persists an optional normalized review branch list, where an empty list selects every branch", async () => {
+    const a = await makeAgent(store, { type: "review" });
+    const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });
+    await makeIntegration(store, "g1", "gerrit");
+
+    await store.setProjectReviewConfig(p.id, "g1", ["repo/a"]);
+    expect((await store.getProjectReviewConfig(p.id))?.branches).toEqual([]);
+
+    await store.setProjectReviewConfig(p.id, "g1", ["repo/a"], "manual", [" python ", "refs/heads/main", "python"]);
+    expect((await store.getProjectReviewConfig(p.id))?.branches).toEqual(["python", "main"]);
+
+    // Branch selection only gates future triggers, so it does not count as an execution change.
+    await expect(store.updateProjectConfiguration(p.id, {
+      project: {},
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "manual", branches: ["release"] },
+    })).resolves.toMatchObject({ executionChanged: false });
+    expect((await store.getProjectReviewConfig(p.id))?.branches).toEqual(["release"]);
+
+    await store.updateProjectConfiguration(p.id, {
+      project: {},
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "manual" },
+    });
+    expect((await store.getProjectReviewConfig(p.id))?.branches).toEqual([]);
+    expect((await store.findProjectsByReviewTarget("g1", "repo/a")).map((project) => project.id)).toEqual([p.id]);
+  });
+
   it("persists automatic review polling activation across configuration saves and restarts", async () => {
     const agent = await makeAgent(store, { type: "review" });
     const project = await store.createProject({ name: "R", type: "review", agentId: agent.id });

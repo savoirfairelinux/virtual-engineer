@@ -6,6 +6,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 
 ## Review execution — `src/review/reviewOrchestrator.ts`
 
+- `startReviewTask()` reviews changes on every target branch by default. When a project's review binding lists `branches`, a project whose list does not contain `details.targetBranch` (exact match, `refs/heads/` ignored) is skipped before the manual reviewer probe and before automatic `ensureReviewerAssignment()`, for every trigger cause including an explicit reviewer assignment. Skip logs carry the change's `branch`. Branch-list edits gate only new triggers; queued, running, and watching tasks are not re-evaluated.
 - `buildReviewPrompt()` includes every file's complete diff (and the complete inter-patchset delta on re-review); it never silently truncates the prompt at a character limit. `MAX_REVIEW_DIFF_CHARS` has been removed. Providers that reject an oversized prompt fail the cycle instead of posting a partial review; provider-side context handling remains model-dependent.
 - A review result is bound to the patchset used for checkout, diff construction, prompt construction, and agent execution. Immediately before provider effects, `runReview()` fetches fresh change details and posts only when both the patchset still matches and the change remains `OPEN`.
 - On re-review, providers that implement `getInterPatchsetDiff()` contribute a focused delta between the last reviewed revision and the current one; patchset identifiers are identity tokens, so the orchestrator checks inequality rather than assuming numeric ordering.
@@ -174,6 +175,7 @@ All provider-specific credentials (SSH keys, GitLab tokens, Redmine URLs, status
 - `tests/unit/agentRuntimeResolver.test.ts`
 - `tests/unit/projectPushService.test.ts`
 - `tests/unit/reviewOrchestrator.test.ts`
+- `tests/unit/reviewRepository.test.ts`
 - `tests/unit/reviewRecovery.test.ts`
 - `tests/unit/pollingLoop.projects.test.ts`
 - `tests/unit/pollingLoop.concurrency.test.ts`

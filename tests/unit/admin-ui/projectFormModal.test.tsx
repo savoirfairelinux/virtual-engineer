@@ -1196,6 +1196,59 @@ describe("ProjectFormModal repository integration resolution", () => {
     expect(screen.getByLabelText("Reviewer assignment")).toHaveProperty("value", "automatic");
   });
 
+  it("hydrates, edits, and submits the review branch list for review projects", async () => {
+    const reviewAgent: ApiAgent = { ...codingAgent, id: "review-agent-1", name: "Review agent", type: "review" };
+    const reviewIntegration: ApiIntegration = {
+      id: "gerrit-review",
+      provider: "gerrit",
+      name: "Gerrit",
+      enabled: true,
+      capabilities: [],
+      domainCapabilities: ["code_review"],
+      reviewAssignmentModes: ["manual", "automatic"],
+      discoveredResources: { repositories: [{ key: "platform/api", name: "API" }] },
+    };
+    let savedReviewConfig: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/admin/projects/review-project-1" && init?.method === "PUT") {
+        savedReviewConfig = (JSON.parse(String(init.body)) as { reviewConfig: Record<string, unknown> }).reviewConfig;
+        return new Response(JSON.stringify({ project: { id: "review-project-1" } }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[reviewAgent]}
+        integrations={[reviewIntegration]}
+        project={{
+          id: "review-project-1",
+          name: "Review project",
+          type: "review",
+          agentId: reviewAgent.id,
+          reviewConfig: {
+            integration: { id: reviewIntegration.id, name: reviewIntegration.name, provider: reviewIntegration.provider },
+            repos: ["platform/api"],
+            assignmentMode: "manual",
+            branches: ["main"],
+          },
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const branches = screen.getByLabelText("Branches to review");
+    expect(branches).toHaveProperty("value", "main");
+    fireEvent.change(branches, { target: { value: "main, python, " } });
+    expect(branches).toHaveProperty("value", "main, python, ");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(savedReviewConfig).toBeDefined());
+    expect(savedReviewConfig?.["branches"]).toEqual(["main", "python"]);
+  });
+
   describe("dependent fields", () => {
     function ticketingIntegration(id: string): ApiIntegration {
       return { id, provider: "redmine", name: id, enabled: true, capabilities: [], domainCapabilities: ["issue_tracking"] };

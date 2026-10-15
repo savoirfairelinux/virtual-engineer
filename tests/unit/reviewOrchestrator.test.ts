@@ -462,6 +462,86 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.provider.isReviewer).toHaveBeenCalledTimes(1);
   });
 
+  it("reviews a change on a non-default branch when the project selects no branches", async () => {
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ targetBranch: "python" })
+    );
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "manual" as const,
+      branches: [],
+    }));
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+
+    expect(tasks).toHaveLength(1);
+  });
+
+  it("skips an automatic project whose branch list excludes the target branch without assigning VE", async () => {
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ targetBranch: "python" })
+    );
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "automatic" as const,
+      branches: ["main"],
+    }));
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, triggerCause: "revision" });
+
+    expect(tasks).toHaveLength(0);
+    expect(mocks.provider.ensureReviewerAssignment).not.toHaveBeenCalled();
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("applies the branch list to an explicit reviewer assignment", async () => {
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ targetBranch: "python" })
+    );
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "manual" as const,
+      branches: ["main"],
+    }));
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true, triggerCause: "reviewer-assigned" });
+
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("starts reviews only for projects whose branch list selects the target branch", async () => {
+    const pythonProject = makeProject({ id: makeProjectId("python-project") });
+    const mainProject = makeProject({ id: makeProjectId("main-project") });
+    mocks.store.findProjectsByReviewTarget.mockResolvedValue([mainProject, pythonProject]);
+    mocks.store.getTaskByTicketId = vi.fn(async () => null);
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ targetBranch: "python" })
+    );
+    mocks.store.getProjectReviewConfig = vi.fn(async (projectId: string) => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "manual" as const,
+      branches: projectId === pythonProject.id ? ["python"] : ["main"],
+    }));
+    mocks.provider.isReviewer = vi.fn(async () => true);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+
+    expect(tasks).toHaveLength(1);
+    expect(mocks.provider.isReviewer).toHaveBeenCalledTimes(1);
+    const arg = mocks.store.createReviewTask.mock.calls[0]?.[0] as { projectId?: string };
+    expect(arg.projectId).toBe(pythonProject.id);
+  });
+
   it("returns empty array and creates nothing when the change is not OPEN", async () => {
     (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       makeDetails({ status: "MERGED" })

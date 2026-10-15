@@ -73,9 +73,16 @@ to reflect edits. This read-time API adds no schema, index, or migration.
 ## Project Integration Bindings
 
 `project_integration_bindings.config_json` stores capability-specific JSON. The
-`code_review` shape is `{ repos: string[], assignmentMode?: "manual" | "automatic", automaticPollingSince?: number }`.
+`code_review` shape is `{ repos: string[], assignmentMode?: "manual" | "automatic", branches?: string[], automaticPollingSince?: number }`.
 The project store normalizes an absent or invalid `assignmentMode` to `manual`;
-no SQL column or migration is required. `automaticPollingSince` is the
+no SQL column or migration is required. `branches` lists exact target-branch
+names, normalized on write and read (trimmed, `refs/heads/` stripped,
+de-duplicated) and omitted when empty; an absent or empty list reviews every
+branch. `setProjectReviewConfig(projectId, integrationId, repoKeys,
+assignmentMode?, branches?)` and `updateProjectConfiguration({ reviewConfig })`
+write it, `getProjectReviewConfig()` always returns `branches` (empty = every
+branch), and a branch-only change is not execution-affecting.
+`automaticPollingSince` is the
 automatic discovery watermark in Unix seconds: it starts at the activation time
 and `advanceAutomaticReviewPollingSince(projectId, expected, next)` moves it
 forward with a compare-and-set after complete polls. For older automatic
