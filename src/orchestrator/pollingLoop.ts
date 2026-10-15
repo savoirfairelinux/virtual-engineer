@@ -9,6 +9,7 @@ import type {
   ProjectReviewConfig,
   ProjectId,
   Task,
+  TaskId,
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
   ReviewTriggerCause,
@@ -92,8 +93,8 @@ export class PollingLoop {
   private projectStore: ProjectAwareStore | null = null;
   private pluginManager: ProjectAwarePluginManager | null = null;
   private reviewTrigger: ReviewAssignmentTrigger | null = null;
-  /** Per-changeId timestamp of last review poll — prevents redundant API calls within the same interval. */
-  private readonly reviewPollCooldowns = new Map<string, number>();
+  /** Per-task timestamp of the last status poll; change ids repeat across integrations and projects. */
+  private readonly reviewPollCooldowns = new Map<TaskId, number>();
   /** Per-project/change timestamp of the last manual review trigger. */
   private readonly reviewTriggerCooldowns = new Map<string, number>();
   /** Per-project/change head revision last dispatched by automatic review polling. */
@@ -539,9 +540,9 @@ export class PollingLoop {
     const cooldownMs = this.config.ticketIntervalMs;
 
     // Evict stale cooldown entries for tasks that are no longer IN_REVIEW.
-    const activeChangeIds = new Set(inReviewTasks.map((t) => t.externalChangeId!));
+    const activeTaskIds = new Set(inReviewTasks.map((t) => t.taskId));
     for (const key of this.reviewPollCooldowns.keys()) {
-      if (!activeChangeIds.has(key as import("../interfaces.js").ExternalChangeId)) {
+      if (!activeTaskIds.has(key)) {
         this.reviewPollCooldowns.delete(key);
       }
     }
@@ -552,12 +553,12 @@ export class PollingLoop {
 
       // Skip tasks already polled within the current interval to avoid
       // flooding the review API when many tasks are IN_REVIEW simultaneously.
-      const lastPolled = this.reviewPollCooldowns.get(changeId);
+      const lastPolled = this.reviewPollCooldowns.get(task.taskId);
       if (lastPolled !== undefined && now - lastPolled < cooldownMs) {
         log.debug({ taskId: task.taskId, changeId }, "skipping recently polled in-review task");
         continue;
       }
-      this.reviewPollCooldowns.set(changeId, now);
+      this.reviewPollCooldowns.set(task.taskId, now);
 
       Promise.resolve()
         .then(() => this.orchestrator.handleReviewEvent(changeId, task.taskId))
@@ -588,12 +589,12 @@ export class PollingLoop {
     for (const task of watchingTasks) {
       const changeId = task.externalChangeId!;
 
-      const lastPolled = this.reviewPollCooldowns.get(changeId);
+      const lastPolled = this.reviewPollCooldowns.get(task.taskId);
       if (lastPolled !== undefined && now - lastPolled < cooldownMs) {
         log.debug({ taskId: task.taskId, changeId }, "skipping recently polled review-watching task");
         continue;
       }
-      this.reviewPollCooldowns.set(changeId, now);
+      this.reviewPollCooldowns.set(task.taskId, now);
 
       Promise.resolve()
         .then(() => this.orchestrator.checkReviewWatchingTask(task.taskId))
