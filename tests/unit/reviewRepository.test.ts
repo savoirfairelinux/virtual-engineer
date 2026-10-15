@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isReviewBranchSelected, normalizeReviewBranches } from "../../src/domain/reviewRepository.js";
+import { isReviewBranchSelected, normalizeReviewBranchName, normalizeReviewBranches } from "../../src/domain/reviewRepository.js";
+
+describe("normalizeReviewBranchName", () => {
+  it("returns the short name, which is empty for a bare refs/heads/ prefix", () => {
+    expect(normalizeReviewBranchName(" refs/heads/python ")).toBe("python");
+    expect(normalizeReviewBranchName("refs/heads/")).toBe("");
+  });
+});
 
 describe("normalizeReviewBranches", () => {
   it("trims names, strips refs/heads/, drops blanks, and removes duplicates in order", () => {

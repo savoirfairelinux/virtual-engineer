@@ -1156,21 +1156,29 @@ FetchContent_Declare(googletest
     expect((updated.body?.["project"] as { reviewConfig: { branches: string[] } }).reviewConfig.branches).toEqual([]);
   });
 
-  it("POST / rejects review branch names that contain whitespace or commas", async () => {
+  it("POST / rejects review branch names that cannot select a branch", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
-    const r = await rest(server, "/api/admin/projects", {
-      method: "POST",
-      body: {
-        type: "review",
-        name: "BadBranches",
-        agentId: agent.id,
-        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"], branches: ["main, python"] },
-      },
-    });
+    const cases: Array<{ branches: string[]; expected: RegExp }> = [
+      { branches: ["main, python"], expected: /Branches #1: Branch names must not contain spaces or commas/ },
+      // Stripping the prefix would leave an empty list, which silently means "every branch".
+      { branches: ["main", "refs/heads/"], expected: /Branches #2: Branch name must include a name after refs\/heads\// },
+    ];
 
-    expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/Branches #1: Branch names must not contain spaces or commas/);
+    for (const [index, testCase] of cases.entries()) {
+      const r = await rest(server, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "review",
+          name: `BadBranches${index}`,
+          agentId: agent.id,
+          reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"], branches: testCase.branches },
+        },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(testCase.expected);
+    }
     expect(await store.listProjects()).toHaveLength(0);
   });
 

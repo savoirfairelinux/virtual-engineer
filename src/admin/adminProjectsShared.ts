@@ -36,6 +36,7 @@ import {
 } from "../plugins/registry.js";
 import { ReviewStrategyConfigError, resolveReviewStrategy } from "../agents/reviewStrategy.js";
 import { PROJECT_RECONFIGURATION_FAILURE_PREFIX } from "../domain/projectConfiguration.js";
+import { normalizeReviewBranchName } from "../domain/reviewRepository.js";
 
 const log = getLogger("admin-projects");
 export const MAX_TCP_PORT = 65_535;
@@ -269,7 +270,9 @@ export const reviewConfigSchema = z.object({
       .trim()
       .min(1, "Branch name must not be empty")
       .max(255, "Branch name must be at most 255 characters")
-      .regex(/^[^\s,]+$/, "Branch names must not contain spaces or commas"),
+      .regex(/^[^\s,]+$/, "Branch names must not contain spaces or commas")
+      // A name that normalizes to nothing would shrink the list to "every branch".
+      .refine((name) => normalizeReviewBranchName(name).length > 0, "Branch name must include a name after refs/heads/"),
   ).max(100, "At most 100 branches can be selected").optional(),
 });
 

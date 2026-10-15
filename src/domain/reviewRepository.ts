@@ -34,7 +34,7 @@ const BRANCH_REF_PREFIX = "refs/heads/";
 export function normalizeReviewBranches(branches: readonly string[]): string[] {
   const normalized: string[] = [];
   for (const branch of branches) {
-    const name = shortBranchName(branch);
+    const name = normalizeReviewBranchName(branch);
     if (name.length > 0 && !normalized.includes(name)) normalized.push(name);
   }
   return normalized;
@@ -43,11 +43,12 @@ export function normalizeReviewBranches(branches: readonly string[]): string[] {
 /** An empty or absent branch list selects every branch; otherwise names must match exactly. */
 export function isReviewBranchSelected(branches: readonly string[] | undefined, targetBranch: string): boolean {
   if (branches === undefined || branches.length === 0) return true;
-  const target = shortBranchName(targetBranch);
-  return branches.some((branch) => shortBranchName(branch) === target);
+  const target = normalizeReviewBranchName(targetBranch);
+  return branches.some((branch) => normalizeReviewBranchName(branch) === target);
 }
 
-function shortBranchName(branch: string): string {
+/** Short branch name: trimmed, without a leading `refs/heads/`. */
+export function normalizeReviewBranchName(branch: string): string {
   const trimmed = branch.trim();
   return trimmed.startsWith(BRANCH_REF_PREFIX) ? trimmed.slice(BRANCH_REF_PREFIX.length) : trimmed;
 }
