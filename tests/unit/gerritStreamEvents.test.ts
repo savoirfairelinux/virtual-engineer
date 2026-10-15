@@ -72,7 +72,7 @@ function makeSshReviewerQueryFn(reviewerUsernames: string[], backfillChangeIds: 
     JSON.stringify({ type: "stats", rowCount: 1, runTimeMilliseconds: 1 }),
   ].join("\n");
   const backfillNdjson = [
-    ...backfillChangeIds.map((id) => JSON.stringify({ id, number: 1 })),
+    ...backfillChangeIds.map((id) => JSON.stringify({ id })),
     JSON.stringify({ type: "stats", rowCount: backfillChangeIds.length, runTimeMilliseconds: 1 }),
   ].join("\n");
   return vi.fn(async (args: string[], _config: Record<string, unknown>) => {
@@ -826,6 +826,83 @@ describe("GerritStreamEventsManager", () => {
     expect(callOrder).toEqual(["review", "review"]);
   });
 
+  // A cherry-pick keeps the Change-Id, so `change:<Change-Id>` can match the
+  // same commit on several branches; only the change number is unique.
+  describe("change identity across branches", () => {
+    const sharedChange = { id: "Ishared", number: 4242, project: "team/repo", branch: "python" };
+
+    it("patchset-created: triggers the review by change number and keeps the Change-Id for coding feedback", async () => {
+      const child = new FakeChildProcess();
+      const { manager, orchestrator, reviewTrigger } = createManager([child]);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({
+        type: "patchset-created",
+        change: sharedChange,
+        patchSet: { kind: "REWORK", number: 1 },
+      }) + "\n");
+      await flushAsyncWork();
+
+      expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ishared");
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "4242", { triggerCause: "revision" });
+    });
+
+    it("reviewer-added: forces the review by change number", async () => {
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child]);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({
+        type: "reviewer-added",
+        change: { ...sharedChange, number: "4242" },
+        reviewer: { username: VE_SSH_USER, name: "Virtual Engineer" },
+      }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "4242", {
+        force: true,
+        triggerCause: "reviewer-assigned",
+      });
+    });
+
+    it("change-merged and change-abandoned: route both the Change-Id and the change number", async () => {
+      const child = new FakeChildProcess();
+      const { manager, orchestrator } = createManager([child]);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: sharedChange }) + "\n");
+      child.stdout.write(JSON.stringify({ type: "change-abandoned", change: { ...sharedChange, number: 4343 } }) + "\n");
+      await flushAsyncWork();
+
+      expect(orchestrator.markChangeMerged).toHaveBeenCalledTimes(2);
+      expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "Ishared", "team/repo");
+      expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "4242", "team/repo");
+      expect(orchestrator.markChangeAbandoned).toHaveBeenCalledTimes(2);
+      expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "Ishared");
+      expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "4343");
+    });
+
+    it("ignores a non-numeric change number and falls back to the Change-Id", async () => {
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child]);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({
+        type: "patchset-created",
+        change: { ...sharedChange, number: "not-a-number" },
+        patchSet: { kind: "REWORK", number: 1 },
+      }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ishared", { triggerCause: "revision" });
+    });
+  });
+
   describe("backfill on first stream-events connect", () => {
     it("queries open reviews assigned to VE and triggers review for each on first connect", async () => {
       const sshQuery = makeSshReviewerQueryFn([], ["Iassigned1", "Iassigned2", "Iassigned3"]);
@@ -843,6 +920,25 @@ describe("GerritStreamEventsManager", () => {
       expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned1", { triggerCause: "backfill" });
       expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned2", { triggerCause: "backfill" });
       expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned3", { triggerCause: "backfill" });
+    });
+
+    it("triggers each assigned change by its number when cherry-picks share a Change-Id", async () => {
+      const sshQuery = vi.fn(async (_args: string[]) => [
+        JSON.stringify({ id: "Ishared", number: 101, branch: "main" }),
+        JSON.stringify({ id: "Ishared", number: 102, branch: "python" }),
+        JSON.stringify({ type: "stats", rowCount: 2, runTimeMilliseconds: 1 }),
+      ].join("\n"));
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write("x");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(2);
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "101", { triggerCause: "backfill" });
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "102", { triggerCause: "backfill" });
     });
 
     it("runs at most once per integration (not on subsequent stdout chunks)", async () => {
