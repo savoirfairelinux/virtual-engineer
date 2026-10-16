@@ -2207,6 +2207,29 @@ describe("ReviewOrchestrator.runReview - merge commits", () => {
     expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
   });
 
+  it.each([{ commentableFiles: [] }, { commentableFiles: ["src/a.ts"] }])("publishes summary-only merge findings despite an unchanged vote ($commentableFiles)", async ({ commentableFiles }) => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      merge: { ...MERGE, commentableFiles },
+    }));
+    vi.mocked(mocks.store.getAgentCycles).mockResolvedValue([
+      { result: { summary: "Earlier finding", metadata: { vote: -1 } } },
+    ]);
+    const { runner } = makeWorkspaceRunner(reviewOutput([]));
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID, 2, [], "merge review", undefined, expect.any(AbortSignal),
+    );
+    expect(mocks.provider.vote).toHaveBeenCalledWith(
+      CHANGE_ID, 2, -1, "merge review", expect.any(AbortSignal),
+    );
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
   it("skips the agent for a clean merge and posts a neutral message", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);

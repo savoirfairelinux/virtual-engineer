@@ -1149,7 +1149,7 @@ export class ReviewOrchestrator {
       // verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0 && fixedFindings.length === 0;
       const previousDecision = await this.getLastReviewDecision(taskId);
-      const skipPosting = !hostedReview && shouldSkipReviewPosting({
+      const skipPosting = !hostedReview && (diff.merge === undefined || cleanMerge) && shouldSkipReviewPosting({
         force: options?.force === true,
         cycleNumber,
         hasNothingNew,

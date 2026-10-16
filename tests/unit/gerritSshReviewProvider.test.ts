@@ -453,6 +453,51 @@ describe("GerritSshReviewProvider", () => {
         expect(result.merge?.commentableFiles).toEqual([]);
       });
 
+      it.each([
+        ['"a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"', "src/caf\u00e9.ts"],
+        ['"a/src/line\\nname.ts" "b/src/line\\nname.ts"', "src/line\nname.ts"],
+        ['"a/src/tab\\tname.ts" "b/src/tab\\tname.ts"', "src/tab\tname.ts"],
+        ['"a/src/quote\\\"name.ts" "b/src/quote\\\"name.ts"', 'src/quote"name.ts'],
+        ['"a/src/back\\\\slash.ts" "b/src/back\\\\slash.ts"', "src/back\\slash.ts"],
+        ['a/old name.ts "b/new\\tname.ts"', "new\tname.ts"],
+        ['"a/old\\tname.ts" b/new name.ts', "new name.ts"],
+      ])("retains merge changes with Git-quoted paths: %s", async (header, path) => {
+        const quotedDiff = `diff --git ${header}\nindex 123..456\n@@ -1 +1 @@\n-old\n+resolved\n`;
+        mockQuery
+          .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+          .mockResolvedValueOnce(sshNdjson(PATCH_SETS_WITH_FILES));
+        setGitResults(["", "", "", "", MERGE_PARENTS, "base\n", `${REMERGE_OUTPUT}\n${quotedDiff}`, ""]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(result.files.map((file) => file.path)).toEqual(["kotlin/Server.kt", path]);
+        expect(result.files[1]!.patch).toBe(quotedDiff);
+      });
+
+      it("does not classify changes exclusively on quoted paths as a clean merge", async () => {
+        const diff = 'diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"\n@@ -1 +1 @@\n-old\n+resolved\n';
+        mockQuery
+          .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+          .mockResolvedValueOnce(sshNdjson(PATCH_SETS_WITH_FILES));
+        setGitResults(["", "", "", "", MERGE_PARENTS, "base\n", diff, ""]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(result.files).toEqual([{ path: "caf\u00e9.ts", status: "modified", patch: diff }]);
+      });
+
+      it.each([
+        "unrecognized header",
+        '"a/broken\\q.ts" "b/broken\\q.ts"',
+        '"a/broken\\377.ts" "b/broken\\377.ts"',
+      ])("fails closed instead of dropping an unreadable merge section: %s", async (header) => {
+        mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+        setGitResults(["", "", "", "", MERGE_PARENTS, "base\n", `${REMERGE_OUTPUT}\ndiff --git ${header}\n`, ""]);
+
+        await expect(makeProvider().getChangeDiff(CHANGE_ID, 3)).rejects.toThrow(/Cannot parse Git diff/);
+        expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
+      });
+
       it("deepens progressively then falls back to the first-parent diff without a merge base", async () => {
         mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
         const noBase = new Error("no merge base");

@@ -645,10 +645,17 @@ function parseDiffOutput(diffText: string): ReviewDiffFile[] {
   for (const chunk of chunks) {
     const lines = chunk.split("\n");
     // First line: "a/path b/path"
-    const headerMatch = lines[0]?.match(/^a\/(.+?) b\/(.+?)$/);
-    if (!headerMatch) continue;
+    const headerMatch = lines[0]?.match(/^("(?:[^"\\]|\\.)*"|a\/.+?) ("(?:[^"\\]|\\.)*"|b\/.+)$/);
+    if (headerMatch?.[1] === undefined || headerMatch[2] === undefined) {
+      throw new Error("Cannot parse Git diff header");
+    }
+    const oldPath = decodeGitDiffPath(headerMatch[1]);
+    const destinationPath = decodeGitDiffPath(headerMatch[2]);
+    if (!oldPath.startsWith("a/") || !destinationPath.startsWith("b/")) {
+      throw new Error("Cannot parse Git diff path prefixes");
+    }
 
-    const newPath = headerMatch[2] ?? headerMatch[1] ?? "";
+    const newPath = destinationPath.slice(2);
     let status: ReviewFileStatus = "modified";
 
     // Detect status from the diff header lines
@@ -664,6 +671,31 @@ function parseDiffOutput(diffText: string): ReviewDiffFile[] {
   }
 
   return files;
+}
+
+function decodeGitDiffPath(path: string): string {
+  if (!path.startsWith('"')) return path;
+
+  const body = path.slice(1, -1);
+  const tokens = body.match(/\\(?:[0-3][0-7]{2}|[abfnrtv"\\])|[^\\"]+/g) ?? [];
+  if (tokens.join("") !== body) throw new Error("Cannot parse Git diff path escape");
+
+  const escapes: Readonly<Record<string, string>> = {
+    a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", '"': '"', "\\": "\\",
+  };
+  const bytes = tokens.map((token) => {
+    if (!token.startsWith("\\")) return Buffer.from(token);
+    const escaped = token.slice(1);
+    if (/^[0-3][0-7]{2}$/.test(escaped)) return Buffer.from([Number.parseInt(escaped, 8)]);
+    const decoded = escapes[escaped];
+    if (decoded === undefined) throw new Error("Cannot parse Git diff path escape");
+    return Buffer.from(decoded);
+  });
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(bytes));
+  } catch (cause) {
+    throw new Error("Cannot parse Git diff path encoding", { cause });
+  }
 }
 
 /**
