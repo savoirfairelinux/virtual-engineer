@@ -39,7 +39,7 @@ import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import { toRejectionError } from "../utils/rejection.js";
-import { isInfrastructureError } from "../utils/errorClassifier.js";
+import { describeContextOverflow, isInfrastructureError } from "../utils/errorClassifier.js";
 import {
   buildAgentTaskContext,
   type ProjectAgentRuntime,
@@ -857,6 +857,11 @@ export class Orchestrator {
 
       if (normalizedResult.status === "failed") {
         await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
+        const overflowReason = describeContextOverflow(normalizedResult.summary);
+        if (overflowReason !== null) {
+          await this.handleAbandoned(task, overflowReason, { notifyTicket: false });
+          return;
+        }
         if (cycleNumber >= this.config.maxAgentCycles) {
           await this.handleAbandoned(task, `Agent failed after ${cycleNumber} cycles`);
           return;
@@ -1128,11 +1133,17 @@ export class Orchestrator {
   }
 
   /** Persist a failure reason and abandon the task through the dedicated mutator, then notify the ticket. */
-  private async handleAbandoned(task: Task, reason: string): Promise<void> {
+  private async handleAbandoned(
+    task: Task,
+    reason: string,
+    options: { notifyTicket?: boolean } = {},
+  ): Promise<void> {
     log.warn({ taskId: task.taskId, reason }, "task abandoned");
     await this.stateStore.setFailureReason(task.taskId, reason);
     await this.stateStore.abandonTask(task.taskId);
-    await this.notifyTicketFailure(task, reason);
+    if (options.notifyTicket !== false) {
+      await this.notifyTicketFailure(task, reason);
+    }
   }
 
   /** Handle unexpected errors by persisting them and transitioning the task to FAILED. */
@@ -1177,7 +1188,8 @@ export class Orchestrator {
     }
 
     const reason = err instanceof Error ? err.message : String(err);
-    const safeReason = redactUrls(reason);
+    const overflowReason = describeContextOverflow(err);
+    const safeReason = overflowReason ?? redactUrls(reason);
     log.error({ taskId: task.taskId, err: safeReason }, "fatal task error");
     try {
       await this.stateStore.setFailureReason(task.taskId, safeReason);
@@ -1186,7 +1198,12 @@ export class Orchestrator {
       // connection cannot be established) are already surfaced in the admin UI.
       // Posting them as a ticket note duplicates that view and adds noise to the
       // ticket-following process, so skip the notification for those.
-      if (err instanceof ProjectReconfigurationIncompatibleError || isInfrastructureError(err)) {
+      if (overflowReason !== null) {
+        log.warn(
+          { taskId: task.taskId, ticketId: task.ticketId },
+          "prompt exceeded the model context window — skipping ticket failure note"
+        );
+      } else if (err instanceof ProjectReconfigurationIncompatibleError || isInfrastructureError(err)) {
         log.warn(
           { taskId: task.taskId, ticketId: task.ticketId },
           err instanceof ProjectReconfigurationIncompatibleError
