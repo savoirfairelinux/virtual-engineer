@@ -24,6 +24,8 @@ describe.skipIf(!ldapAvailable)("createDirectoryAuthenticator (live slapd)", () 
     directory = await startLdapDirectoryServer();
     await directory.addUser("alice", "alice-Pass-1");
     await directory.addUser("bob", "bob-Pass-1");
+    await directory.addUser("carol", "carol-Pass-1");
+    await directory.addGroup("devs", ["carol"]);
   });
 
   afterAll(async () => {
@@ -170,6 +172,74 @@ describe.skipIf(!ldapAvailable)("createDirectoryAuthenticator (live slapd)", () 
     const wrongSecret = createDirectoryAuthenticator({ store, adminAuthSecret: "another-admin-secret-with-32-chars!!" });
 
     await expect(wrongSecret.authenticate("alice", "alice-Pass-1")).resolves.toEqual({ status: "unavailable" });
+  });
+
+  it("provisions an unlinked account on first sign-in when the source allows it", async () => {
+    await store.updateAuthSource(sourceId, { autoProvision: true, defaultRole: "operator" });
+    const provisioned: string[] = [];
+    const provisioning = createDirectoryAuthenticator({
+      store,
+      adminAuthSecret: TEST_ADMIN_SECRET,
+      onUserProvisioned: (user) => { provisioned.push(user.username); return Promise.resolve(); },
+    });
+
+    const first = await provisioning.authenticate("carol", "carol-Pass-1");
+    expect(first).toMatchObject({ status: "authenticated", provisioned: true, authSourceId: sourceId, user: { username: "carol", role: "operator" } });
+    expect(provisioned).toEqual(["carol"]);
+    const userId = first.status === "authenticated" ? first.user.id : "";
+    const identity = await store.getUserIdentityByUserId(userId);
+    await expect(store.listIdentityGroups(identity?.id ?? "")).resolves.toEqual(["cn=devs,ou=groups,dc=ve,dc=test"]);
+
+    await expect(provisioning.authenticate("carol", "carol-Pass-1"))
+      .resolves.toMatchObject({ status: "authenticated", provisioned: false, user: { id: userId } });
+    await expect(provisioning.authenticate("carol", "wrong-Pass-1")).resolves.toEqual({ status: "rejected" });
+    expect(provisioned).toEqual(["carol"]);
+  });
+
+  it("never provisions over an existing local username", async () => {
+    await store.updateAuthSource(sourceId, {
+      autoProvision: true,
+      configJson: serializeLdapConfig(ldapConfigSchema.parse(directory.config({ usernameAttribute: "cn" })), TEST_ADMIN_SECRET),
+    });
+    await store.createUser({ id: randomUUID(), username: "carol.local", passwordHash: await hashPassword("local-Pass-1"), role: "viewer" });
+    await directory.replaceAttribute("uid=carol,ou=people,dc=ve,dc=test", "cn", ["carol.local"]);
+
+    try {
+      await expect(authenticator.authenticate("carol", "carol-Pass-1")).resolves.toEqual({ status: "rejected" });
+      await expect(store.listUserIdentities()).resolves.toEqual([]);
+    } finally {
+      await directory.replaceAttribute("uid=carol,ou=people,dc=ve,dc=test", "cn", ["carol"]);
+    }
+  });
+
+  it("refreshes the identity's directory groups on every sign-in", async () => {
+    const userId = await linkedUser("carol", "carol");
+    const identityId = (await store.getUserIdentityByUserId(userId))?.id ?? "";
+
+    await authenticator.authenticate("carol", "carol-Pass-1");
+    await expect(store.listIdentityGroups(identityId)).resolves.toEqual(["cn=devs,ou=groups,dc=ve,dc=test"]);
+
+    await directory.replaceAttribute("cn=devs,ou=groups,dc=ve,dc=test", "member", ["uid=alice,ou=people,dc=ve,dc=test"]);
+    try {
+      await authenticator.authenticate("carol", "carol-Pass-1");
+      await expect(store.listIdentityGroups(identityId)).resolves.toEqual([]);
+    } finally {
+      await directory.replaceAttribute("cn=devs,ou=groups,dc=ve,dc=test", "member", ["uid=carol,ou=people,dc=ve,dc=test"]);
+    }
+  });
+
+  it("rejects instead of failing when the account is unlinked before its groups are refreshed", async () => {
+    const userId = await linkedUser("carol", "carol");
+    const unlinkingStore = Object.assign(Object.create(store) as SqliteStateStore, {
+      async recordIdentityLogin(identityId: string, update: { externalUsername: string; at: Date }): Promise<void> {
+        await store.unlinkUserIdentity(userId, await hashPassword("local-Pass-1"));
+        await store.recordIdentityLogin(identityId, update);
+      },
+    });
+    const racing = createDirectoryAuthenticator({ store: unlinkingStore, adminAuthSecret: TEST_ADMIN_SECRET });
+
+    await expect(racing.authenticate("carol", "carol-Pass-1")).resolves.toEqual({ status: "rejected" });
+    await expect(store.getUserIdentityByUserId(userId)).resolves.toBeNull();
   });
 
   it("resolves directory accounts for admin linking", async () => {

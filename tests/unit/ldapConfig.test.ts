@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_LDAP_GROUP_FILTER,
   DEFAULT_LDAP_USER_FILTER,
   ldapConfigSchema,
   parseLdapConfigInput,
@@ -33,8 +34,25 @@ describe("ldapConfigSchema", () => {
       usernameAttribute: "uid",
       uniqueIdAttribute: "entryUUID",
       displayNameAttribute: "cn",
+      groupMembershipAttribute: "memberOf",
+      groupSearchFilter: DEFAULT_LDAP_GROUP_FILTER,
       timeoutMs: 5000,
     });
+  });
+
+  it("validates group lookup settings and keeps an explicitly disabled memberOf attribute", () => {
+    const disabled = ldapConfigSchema.parse({ ...base, groupMembershipAttribute: "", groupSearchBaseDn: " " });
+    expect(disabled.groupMembershipAttribute).toBe("");
+    expect(disabled.groupSearchBaseDn).toBeUndefined();
+    expect(readStoredLdapConfig(serializeLdapConfig(disabled, SECRET), SECRET).groupMembershipAttribute).toBe("");
+
+    expect(issueMessages({ ...base, groupMembershipAttribute: "member of" })).toEqual([
+      "groupMembershipAttribute: must be an LDAP attribute name",
+    ]);
+    expect(issueMessages({ ...base, groupSearchFilter: "(objectClass=group)" })).toEqual([
+      "groupSearchFilter: must contain the {dn} or {username} placeholder",
+    ]);
+    expect(issueMessages({ ...base, groupSearchBaseDn: "ou=groups,dc=example,dc=test", groupSearchFilter: "(memberUid={username})" })).toEqual([]);
   });
 
   it("requires TLS: plaintext ldap:// is rejected unless StartTLS is enabled", () => {

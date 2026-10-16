@@ -127,6 +127,20 @@ function MembersModal({ groupId, readOnly, onClose, onEdit, onPersisted }: {
             </RowCard>
           ))}
         </div>
+        {(detail?.directoryMembers ?? []).length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+            <div className="eyebrow">From directory group mappings</div>
+            {(detail?.directoryMembers ?? []).map((m) => (
+              <RowCard key={`directory-${m.id}`}>
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: "13px", fontWeight: 600 }}>{m.username}</span>{" "}
+                  <Tag tone="muted" mono={false}>{m.role}</Tag>{" "}
+                  <Tag tone="info" mono={false}>directory</Tag>
+                </div>
+              </RowCard>
+            ))}
+          </div>
+        )}
         {!readOnly && (
           <Field label="Add member">
             <div style={{ display: "flex", gap: "8px" }}>

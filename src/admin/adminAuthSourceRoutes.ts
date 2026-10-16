@@ -3,10 +3,15 @@ import { z } from "zod";
 import type { Router } from "./router.js";
 import { readBody, requireStore, toIsoTimestamp, writeJson, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
+import type { AdminUser, Group } from "../interfaces.js";
 import type { AuthSourceRecord, AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
 import type { UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
+import type { AuthSourceGroupMapping, DirectoryGroupStoreApi } from "../state/stores/directoryGroupStore.js";
 import { parseLdapConfigInput, publicLdapConfig, serializeLdapConfig, type LdapConfig } from "./authentication/ldapConfig.js";
-import { testLdapConnection } from "./authentication/ldapDirectory.js";
+import { normalizeLdapDn, testLdapConnection } from "./authentication/ldapDirectory.js";
+import { normalizeUsername } from "./authentication/username.js";
+import type { DirectoryAccountResolver } from "./authentication/directoryAuthenticator.js";
+import { PERMISSIONS } from "./authorization/permissions.js";
 import { StoredCredentialDecryptionError } from "../utils/encryption.js";
 
 const MISSING_SECRET_ERROR = "ADMIN_AUTH_SECRET is required to encrypt credentials.";
@@ -16,14 +21,28 @@ const sourceFieldsSchema = z.object({
   kind: z.literal("ldap"),
   enabled: z.boolean().optional(),
   priority: z.number().int().min(0).max(10_000).optional(),
+  autoProvision: z.boolean().optional(),
+  defaultRole: z.enum(["viewer", "operator"]).optional(),
   config: z.record(z.unknown()),
 });
 const updateSchema = sourceFieldsSchema.omit({ kind: true }).partial();
 const testSchema = z.object({ id: z.string().min(1).optional(), kind: z.literal("ldap"), config: z.record(z.unknown()) });
+const mappingSchema = z.object({
+  externalGroup: z.string().trim().min(1, "is required").max(1024).refine((value) => value.includes("="), "must be a group DN"),
+  groupId: z.string().min(1, "is required"),
+});
+const lookupSchema = z.object({ username: z.string().trim().min(1, "is required").max(256) });
 
 export interface AuthSourceRouteDeps {
   authSourceStore?: AuthSourceStoreApi | undefined;
-  identityStore?: Pick<UserIdentityStoreApi, "countUserIdentitiesForSource"> | undefined;
+  identityStore?: (Pick<UserIdentityStoreApi, "countUserIdentitiesForSource" | "getUserIdentityBySubject"> & {
+    getUserById(id: string): Promise<AdminUser | null>;
+    getUserByUsername(username: string): Promise<AdminUser | null>;
+  }) | undefined;
+  directoryGroupStore?: (Pick<DirectoryGroupStoreApi, "listGroupMappings" | "createGroupMapping" | "deleteGroupMapping" | "listMappedGroupIds"> & {
+    getGroupById(id: string): Promise<Group | null>;
+  }) | undefined;
+  directoryAccounts?: DirectoryAccountResolver | undefined;
   auditStore?: AuditCapableStore | undefined;
   adminAuthSecret?: string | undefined;
 }
@@ -35,6 +54,8 @@ export function serializeAuthSource(record: AuthSourceRecord): Record<string, un
     kind: record.kind,
     enabled: record.enabled,
     priority: record.priority,
+    autoProvision: record.autoProvision,
+    defaultRole: record.defaultRole,
     config: publicLdapConfig(record.configJson),
     createdAt: toIsoTimestamp(record.createdAt),
     updatedAt: toIsoTimestamp(record.updatedAt),
@@ -108,13 +129,22 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
         kind: body.kind,
         ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
         ...(body.priority !== undefined ? { priority: body.priority } : {}),
+        ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
+        ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
         configJson: serializeLdapConfig(config, deps.adminAuthSecret),
       });
       recordAudit(deps.auditStore, req, {
         action: "auth_source.create",
         targetType: "auth_source",
         targetId: created.id,
-        details: { name: created.name, kind: created.kind, enabled: created.enabled, priority: created.priority },
+        details: {
+          name: created.name,
+          kind: created.kind,
+          enabled: created.enabled,
+          priority: created.priority,
+          autoProvision: created.autoProvision,
+          defaultRole: created.defaultRole,
+        },
       });
       writeJson(res, 201, { authSource: serializeAuthSource(created) });
     } catch (err) {
@@ -178,6 +208,8 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
         ...(body.priority !== undefined ? { priority: body.priority } : {}),
+        ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
+        ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
         ...(configJson !== undefined ? { configJson } : {}),
       });
       if (!updated) {
@@ -192,6 +224,8 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
           name: updated.name,
           ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
           ...(body.priority !== undefined ? { priority: body.priority } : {}),
+          ...(body.autoProvision !== undefined ? { autoProvision: body.autoProvision } : {}),
+          ...(body.defaultRole !== undefined ? { defaultRole: body.defaultRole } : {}),
           configChanged: configJson !== undefined,
         },
       });
@@ -246,5 +280,130 @@ export function registerAuthSourceRoutes(router: Router, deps: AuthSourceRouteDe
     const config = resolveConfig(res, publicLdapConfig(source.configJson), source.configJson, deps.adminAuthSecret);
     if (!config) return;
     writeJson(res, 200, await testLdapConnection(config));
+  }, { permission: "user.manage" });
+
+  async function serializeMapping(mapping: AuthSourceGroupMapping): Promise<Record<string, unknown>> {
+    const group = await deps.directoryGroupStore?.getGroupById(mapping.groupId);
+    return {
+      id: mapping.id,
+      externalGroup: mapping.externalGroup,
+      groupId: mapping.groupId,
+      groupName: group?.name ?? mapping.groupId,
+      createdAt: toIsoTimestamp(mapping.createdAt),
+    };
+  }
+
+  // Mappings grant group membership (and thus policies), so they need policy.manage.
+  router.add("GET", "/api/admin/auth-sources/:id/group-mappings", async (_req, res, params) => {
+    const store = deps.authSourceStore;
+    const groups = deps.directoryGroupStore;
+    if (!requireStore(store, res, unavailable) || !requireStore(groups, res, "Group mapping store not available")) return;
+    const id = params["id"] ?? "";
+    if (!(await store.getAuthSourceById(id))) {
+      writeJson(res, 404, { error: "Authentication source not found" });
+      return;
+    }
+    const mappings = await Promise.all((await groups.listGroupMappings(id)).map(serializeMapping));
+    writeJson(res, 200, { mappings });
+  }, { permission: PERMISSIONS.POLICY_MANAGE });
+
+  router.add("POST", "/api/admin/auth-sources/:id/group-mappings", async (req, res, params) => {
+    const store = deps.authSourceStore;
+    const groups = deps.directoryGroupStore;
+    if (!requireStore(store, res, unavailable) || !requireStore(groups, res, "Group mapping store not available")) return;
+    const id = params["id"] ?? "";
+    const source = await store.getAuthSourceById(id);
+    if (!source) {
+      writeJson(res, 404, { error: "Authentication source not found" });
+      return;
+    }
+    const body = await readParsed(req, res, mappingSchema);
+    if (!body) return;
+    const group = await groups.getGroupById(body.groupId);
+    if (!group) {
+      writeJson(res, 404, { error: "Group not found" });
+      return;
+    }
+    try {
+      const mapping = await groups.createGroupMapping({
+        authSourceId: id,
+        externalGroup: normalizeLdapDn(body.externalGroup),
+        groupId: group.id,
+      });
+      recordAudit(deps.auditStore, req, {
+        action: "auth_source.group_mapping_create",
+        targetType: "auth_source",
+        targetId: id,
+        details: { name: source.name, externalGroup: mapping.externalGroup, groupId: group.id, groupName: group.name },
+      });
+      writeJson(res, 201, { mapping: await serializeMapping(mapping) });
+    } catch (err) {
+      if (err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE") {
+        writeJson(res, 409, { error: "This directory group is already mapped to that group" });
+        return;
+      }
+      throw err;
+    }
+  }, { permission: PERMISSIONS.POLICY_MANAGE });
+
+  router.add("DELETE", "/api/admin/auth-sources/:id/group-mappings/:mappingId", async (req, res, params) => {
+    const groups = deps.directoryGroupStore;
+    if (!requireStore(groups, res, "Group mapping store not available")) return;
+    const id = params["id"] ?? "";
+    const mappingId = params["mappingId"] ?? "";
+    const existing = (await groups.listGroupMappings(id)).find((mapping) => mapping.id === mappingId);
+    if (!existing || !(await groups.deleteGroupMapping(id, mappingId))) {
+      writeJson(res, 404, { error: "Group mapping not found" });
+      return;
+    }
+    recordAudit(deps.auditStore, req, {
+      action: "auth_source.group_mapping_delete",
+      targetType: "auth_source",
+      targetId: id,
+      details: { externalGroup: existing.externalGroup, groupId: existing.groupId },
+    });
+    res.statusCode = 204;
+    res.end();
+  }, { permission: PERMISSIONS.POLICY_MANAGE });
+
+  // Preview what a sign-in would resolve to, without a user password.
+  router.add("POST", "/api/admin/auth-sources/:id/lookup", async (req, res, params) => {
+    const resolver = deps.directoryAccounts;
+    if (!requireStore(resolver, res, "Directory accounts are not available")) return;
+    const body = await readParsed(req, res, lookupSchema);
+    if (!body) return;
+    const lookup = await resolver.resolve(params["id"] ?? "", body.username);
+    if (lookup.status === "source_not_found") {
+      writeJson(res, 404, { error: "Authentication source not found" });
+      return;
+    }
+    if (lookup.status !== "found") {
+      writeJson(res, 200, lookup.status === "unavailable" ? { status: "unavailable", error: lookup.error } : { status: lookup.status });
+      return;
+    }
+    const groupStore = deps.directoryGroupStore;
+    const mappedIds = groupStore ? await groupStore.listMappedGroupIds(lookup.source.id, lookup.account.groups) : [];
+    const mappedGroups = groupStore
+      ? (await Promise.all(mappedIds.map((groupId) => groupStore.getGroupById(groupId))))
+          .filter((group): group is Group => group !== null)
+          .map((group) => ({ id: group.id, name: group.name }))
+      : [];
+    const identity = await deps.identityStore?.getUserIdentityBySubject(lookup.source.id, lookup.account.subject);
+    const linkedUser = identity ? await deps.identityStore?.getUserById(identity.userId) : null;
+    // Mirrors sign-in: disabled sources are skipped and provisioning never takes an existing username.
+    let blockedReason: "source_disabled" | "not_linked" | "username_taken" | null = null;
+    if (!lookup.source.enabled) blockedReason = "source_disabled";
+    else if (!linkedUser && !lookup.source.autoProvision) blockedReason = "not_linked";
+    else if (!linkedUser && await deps.identityStore?.getUserByUsername(normalizeUsername(lookup.account.username))) {
+      blockedReason = "username_taken";
+    }
+    writeJson(res, 200, {
+      status: "found",
+      account: lookup.account,
+      mappedGroups,
+      linkedUser: linkedUser ? { id: linkedUser.id, username: linkedUser.username } : null,
+      wouldProvision: !linkedUser && blockedReason === null,
+      blockedReason,
+    });
   }, { permission: "user.manage" });
 }

@@ -24,6 +24,8 @@ export interface PolicyRoutesStore {
   addUserToGroup(groupId: string, userId: string): Promise<void>;
   removeUserFromGroup(groupId: string, userId: string): Promise<boolean>;
   listGroupMemberIds(groupId: string): Promise<string[]>;
+  /** Users who belong through a directory group mapping (read-only). */
+  listDirectoryMemberIds?: ((groupId: string) => Promise<string[]>) | undefined;
   // Policies
   createPolicy(input: { id?: string; name: string; description?: string; builtin?: boolean }): Promise<Policy>;
   getPolicyById(id: string): Promise<Policy | null>;
@@ -154,10 +156,13 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
     const group = await policyStore.getGroupById(id);
     if (!group) { writeJson(res, 404, { error: "Group not found" }); return; }
     const memberIds = await policyStore.listGroupMemberIds(id);
-    const members = (await Promise.all(memberIds.map((uid) => policyStore.getUserById(uid))))
-      .filter((u): u is PolicyRouteUser => u !== null)
-      .map((u) => ({ id: u.id, username: u.username, role: u.role }));
-    writeJson(res, 200, { group: { ...serializeGroup(group), members } });
+    const toMember = async (ids: string[]): Promise<Array<{ id: string; username: string; role: UserRole }>> =>
+      (await Promise.all(ids.map((uid) => policyStore.getUserById(uid))))
+        .filter((u): u is PolicyRouteUser => u !== null)
+        .map((u) => ({ id: u.id, username: u.username, role: u.role }));
+    const members = await toMember(memberIds);
+    const directoryMembers = await toMember((await policyStore.listDirectoryMemberIds?.(id)) ?? []);
+    writeJson(res, 200, { group: { ...serializeGroup(group), members, directoryMembers } });
   }, MANAGE);
 
   router.add("PUT", "/api/admin/groups/:id", async (req, res, params) => {

@@ -14,7 +14,16 @@ import type {
   PolicyRule,
   PrincipalType,
 } from "../../interfaces.js";
-import { groupMembers, policyBindings, policyRules, policies } from "../schema.js";
+import {
+  authSourceGroupMappings,
+  authSources,
+  groupMembers,
+  policyBindings,
+  policyRules,
+  policies,
+  userIdentities,
+  userIdentityGroups,
+} from "../schema.js";
 import * as schema from "../schema.js";
 
 function isUniqueConstraintViolation(err: unknown): boolean {
@@ -56,7 +65,8 @@ export interface PolicyStoreApi {
   /**
    * The union of every policy rule that applies to a user: rules of policies
    * bound directly to the user plus rules of policies bound to any group the
-   * user belongs to. Drives {@link buildEffectivePermissions}.
+   * user belongs to, directly or through an enabled directory group mapping.
+   * Drives {@link buildEffectivePermissions}.
    */
   getEffectivePolicyRulesForUser(userId: string): Promise<EffectivePolicyRule[]>;
 }
@@ -239,7 +249,16 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
 
     async getEffectivePolicyRulesForUser(userId): Promise<EffectivePolicyRule[]> {
       const memberships = await db.query.groupMembers.findMany({ where: eq(groupMembers.userId, userId) });
-      const groupIds = memberships.map((m) => m.groupId);
+      const mapped = await db.selectDistinct({ groupId: authSourceGroupMappings.groupId })
+        .from(userIdentities)
+        .innerJoin(authSources, and(eq(authSources.id, userIdentities.authSourceId), eq(authSources.enabled, 1)))
+        .innerJoin(userIdentityGroups, eq(userIdentityGroups.identityId, userIdentities.id))
+        .innerJoin(authSourceGroupMappings, and(
+          eq(authSourceGroupMappings.authSourceId, userIdentities.authSourceId),
+          eq(authSourceGroupMappings.externalGroup, userIdentityGroups.externalGroup),
+        ))
+        .where(eq(userIdentities.userId, userId));
+      const groupIds = [...new Set([...memberships.map((m) => m.groupId), ...mapped.map((m) => m.groupId)])];
       const systemPrincipalIds = Object.values(SYSTEM_PRINCIPALS);
       const userMatch = and(
         eq(policyBindings.principalType, "user"),

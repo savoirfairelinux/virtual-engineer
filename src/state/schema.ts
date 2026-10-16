@@ -728,6 +728,10 @@ export const authSources = sqliteTable(
     /** Lower values are tried first when a username matches no local account. */
     priority: integer("priority").notNull().default(100),
     configJson: text("config_json").notNull().default("{}"),
+    /** 1 = an unlinked directory account that authenticates gets a user created on first sign-in. */
+    autoProvision: integer("auto_provision").notNull().default(0),
+    /** Role given to auto-provisioned users; validated to `viewer` or `operator` (never `admin`). */
+    defaultRole: text("default_role").$type<UserRole>().notNull().default("viewer"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
@@ -755,5 +759,38 @@ export const userIdentities = sqliteTable(
   },
   (table) => ({
     uqSourceSubject: unique("uq_user_identities_source_subject").on(table.authSourceId, table.externalSubject),
+  })
+);
+
+/**
+ * Grants membership in a VE group to every identity of `auth_source_id` whose
+ * directory groups include `external_group` (normalized by the source kind).
+ */
+export const authSourceGroupMappings = sqliteTable(
+  "auth_source_group_mappings",
+  {
+    id: text("id").primaryKey(),
+    authSourceId: text("auth_source_id").notNull().references(() => authSources.id, { onDelete: "cascade" }),
+    externalGroup: text("external_group").notNull(),
+    groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    uqMapping: unique("uq_auth_source_group_mappings").on(table.authSourceId, table.externalGroup, table.groupId),
+    idxGroupId: index("idx_auth_source_group_mappings_group_id").on(table.groupId),
+  })
+);
+
+/** Directory groups reported for an identity at its latest sign-in or admin lookup. */
+export const userIdentityGroups = sqliteTable(
+  "user_identity_groups",
+  {
+    identityId: text("identity_id").notNull().references(() => userIdentities.id, { onDelete: "cascade" }),
+    externalGroup: text("external_group").notNull(),
+    syncedAt: integer("synced_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.identityId, table.externalGroup] }),
+    idxExternalGroup: index("idx_user_identity_groups_external_group").on(table.externalGroup),
   })
 );
