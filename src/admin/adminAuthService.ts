@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { AdminUser, UserRole, UserSession } from "../interfaces.js";
 import { createLocalPasswordAuthenticator } from "./authentication/localPasswordAuthenticator.js";
 import type { PasswordAuthenticator } from "./authentication/passwordAuthenticator.js";
+import type { SessionGuard } from "./authentication/sessionGuard.js";
 
 export { hashPassword, verifyPassword } from "./authentication/passwordHash.js";
 
@@ -37,7 +38,7 @@ export function hashSessionToken(token: string): string {
 /** Subset of the state store the auth service needs (satisfied by SqliteStateStore). */
 export interface AdminAuthStateStore {
   getUserByUsername(username: string): Promise<AdminUser | null>;
-  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null }): Promise<UserSession>;
+  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null; validatedAt?: Date | undefined }): Promise<UserSession>;
   getSessionByTokenHash(tokenHash: string): Promise<(UserSession & { user: AdminUser }) | null>;
   touchSession(tokenHash: string, update: { lastSeenAt: Date; expiresAt: Date }): Promise<void>;
   deleteSessionByTokenHash(tokenHash: string): Promise<boolean>;
@@ -67,15 +68,19 @@ export interface AdminAuthServiceDeps {
   stateStore: AdminAuthStateStore;
   /** Defaults to verifying the scrypt hash stored on the local user row. */
   authenticator?: PasswordAuthenticator | undefined;
+  /** Consulted on every session validation; a `revoke` verdict deletes the session. */
+  sessionGuard?: SessionGuard | undefined;
+  now?: (() => Date) | undefined;
 }
 
 /** Create the admin session auth service over the given store. */
 export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthService {
-  const { stateStore } = deps;
+  const { stateStore, sessionGuard } = deps;
   const authenticator = deps.authenticator ?? createLocalPasswordAuthenticator(stateStore);
+  const clock = deps.now ?? ((): Date => new Date());
 
   async function issueSession(user: AdminUser, identityId: string | null): Promise<AdminLoginSession> {
-    const now = new Date();
+    const now = clock();
     try {
       await stateStore.purgeExpiredSessions(now);
     } catch {
@@ -87,6 +92,7 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
       userId: user.id,
       expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
       identityId,
+      ...(identityId !== null ? { validatedAt: now } : {}),
     });
     return { token, user: { id: user.id, username: user.username, role: user.role } };
   }
@@ -114,7 +120,11 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
       const tokenHash = hashSessionToken(token);
       const session = await stateStore.getSessionByTokenHash(tokenHash);
       if (!session) return null;
-      const now = new Date();
+      const now = clock();
+      if (sessionGuard && (await sessionGuard.check(session, now)) === "revoke") {
+        await stateStore.deleteSessionByTokenHash(tokenHash);
+        return null;
+      }
       if (now.getTime() - session.lastSeenAt.getTime() > TOUCH_THROTTLE_MS) {
         try {
           await stateStore.touchSession(tokenHash, {

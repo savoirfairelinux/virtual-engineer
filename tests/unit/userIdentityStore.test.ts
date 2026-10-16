@@ -148,6 +148,26 @@ describe("userIdentityStore", () => {
     expect((await store.getUserById(userId))?.passwordHash).toBe("scrypt:new");
   });
 
+  it("revokes the sessions of every user linked to a source", async () => {
+    const { user } = await store.createExternalUser({
+      username: "fay", role: "viewer", authSourceId: sourceId, externalSubject: "uuid-fay", externalUsername: "fay",
+    });
+    const localId = await localUser("gus");
+    const at = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await store.createSession({ tokenHash: "fay-session", userId: user.id, expiresAt: new Date(Date.now() + 60_000), validatedAt: at });
+    await store.createSession({ tokenHash: "gus-session", userId: localId, expiresAt: new Date(Date.now() + 60_000) });
+
+    await expect(store.getSessionByTokenHash("fay-session")).resolves.toMatchObject({ validatedAt: at });
+    await expect(store.getSessionByTokenHash("gus-session")).resolves.toMatchObject({ validatedAt: null });
+    const later = new Date(at.getTime() + 60_000);
+    await store.markSessionValidated("gus-session", later);
+    await expect(store.getSessionByTokenHash("gus-session")).resolves.toMatchObject({ validatedAt: later });
+
+    await expect(store.deleteSessionsForAuthSource(sourceId)).resolves.toBe(1);
+    await expect(store.getSessionByTokenHash("fay-session")).resolves.toBeNull();
+    await expect(store.getSessionByTokenHash("gus-session")).resolves.not.toBeNull();
+  });
+
   it("records logins and follows user deletion; sources with links cannot be deleted", async () => {
     const { user, identity } = await store.createExternalUser({
       username: "erin", role: "viewer", authSourceId: sourceId, externalSubject: "uuid-erin", externalUsername: "erin",

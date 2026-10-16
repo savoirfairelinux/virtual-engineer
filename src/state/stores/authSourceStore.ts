@@ -29,6 +29,8 @@ export interface AuthSourceRecord {
   configJson: string;
   autoProvision: boolean;
   defaultRole: ProvisionedRole;
+  sessionMaxAgeHours: number;
+  revalidateIntervalMinutes: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,6 +42,8 @@ interface AuthSourceWritableFields {
   configJson?: string;
   autoProvision?: boolean;
   defaultRole?: ProvisionedRole;
+  sessionMaxAgeHours?: number;
+  revalidateIntervalMinutes?: number;
 }
 
 export interface AuthSourceStoreApi {
@@ -75,6 +79,8 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
       configJson: row.configJson,
       autoProvision: row.autoProvision === 1,
       defaultRole: row.defaultRole === "operator" ? "operator" : "viewer",
+      sessionMaxAgeHours: row.sessionMaxAgeHours,
+      revalidateIntervalMinutes: row.revalidateIntervalMinutes,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -103,6 +109,8 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
         configJson: input.configJson,
         autoProvision: input.autoProvision ? 1 : 0,
         defaultRole: input.defaultRole ?? "viewer",
+        ...(input.sessionMaxAgeHours !== undefined ? { sessionMaxAgeHours: input.sessionMaxAgeHours } : {}),
+        ...(input.revalidateIntervalMinutes !== undefined ? { revalidateIntervalMinutes: input.revalidateIntervalMinutes } : {}),
         createdAt: now,
         updatedAt: now,
       });
@@ -130,6 +138,8 @@ export function createAuthSourceStore(context: AuthSourceStoreContext): AuthSour
     if (partial.configJson !== undefined) set.configJson = partial.configJson;
     if (partial.autoProvision !== undefined) set.autoProvision = partial.autoProvision ? 1 : 0;
     if (partial.defaultRole !== undefined) set.defaultRole = partial.defaultRole;
+    if (partial.sessionMaxAgeHours !== undefined) set.sessionMaxAgeHours = partial.sessionMaxAgeHours;
+    if (partial.revalidateIntervalMinutes !== undefined) set.revalidateIntervalMinutes = partial.revalidateIntervalMinutes;
     try {
       await db.update(authSources).set(set).where(eq(authSources.id, id));
     } catch (err) {
