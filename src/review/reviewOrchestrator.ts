@@ -10,6 +10,7 @@ import {
   type ProjectPushTargetRecord,
   type ProjectReviewConfig,
   type ProjectRecord,
+  type ReviewAgentResult,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiscussionThread,
@@ -46,6 +47,9 @@ import { isReviewBranchSelected } from "../domain/reviewRepository.js";
 
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
+const CLEAN_MERGE_REVIEW_SUMMARY =
+  "Clean merge: this merge commit has no changes relative to the automatic merge of its parents, " +
+  "so no review needs to be run.";
 
 class ReviewCancelledError extends Error {}
 
@@ -53,6 +57,15 @@ class ReviewSupersededError extends Error {
   constructor(readonly latestDetails: ReviewChangeDetails) {
     super(`Review superseded by patchset ${latestDetails.currentPatchset}`);
   }
+}
+
+/**
+ * Paths that accept inline comments. A merge carries the provider's authoritative list, even
+ * when empty; an empty regular diff (e.g. a transient fetch failure) falls back to no filtering.
+ */
+function allowedCommentFiles(diff: ReviewChangeDiff): ReadonlySet<string> | undefined {
+  if (diff.merge !== undefined) return new Set(diff.merge.commentableFiles);
+  return diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
 }
 
 export function buildReviewSystemPrompt(
@@ -815,10 +828,12 @@ export class ReviewOrchestrator {
       // On a re-review, surface what changed since the patchset VE last
       // reviewed so the agent focuses new findings on the delta. Guarded:
       // providers without inter-patchset diff support skip this entirely, and
-      // empty deltas are dropped by the prompt builder.
+      // empty deltas are dropped by the prompt builder. A merge's tip-to-tip
+      // delta would reintroduce the merged branch, so merges skip it.
       let sinceLastReview: SinceLastReviewDelta | undefined;
       const previousReviewed = task.reviewedPatchset;
       if (
+        diff.merge === undefined &&
         previousReviewed !== null &&
         previousReviewed !== details.currentPatchset &&
         typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
@@ -843,140 +858,153 @@ export class ReviewOrchestrator {
         }
       }
 
-      const prompt = buildReviewPrompt({
-        details,
-        diff,
-        instructionsPrompt: reviewInstructions,
-        ...(priorComments.length > 0
-          ? {
-              priorComments: priorComments.map((c) => ({
-                ...(hostedReview ? { id: c.id } : {}),
-                file: c.file,
-                line: c.line,
-                message: c.message,
-              })),
-              reassessPriorFindings: hostedReview,
-            }
-          : {}),
-        ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
-        ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
-      });
-
-      emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
-
-      if (this.deps.workspaceRunner.prepareProjectWorkspace === undefined) {
-        throw new Error(
-          "workspaceRunner does not support prepareProjectWorkspace — cannot clone repository for review."
-        );
-      }
-
-      if (this.deps.workspaceRunner.runReviewInDocker === undefined) {
-        throw new Error(
-          "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
-        );
-      }
-      const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace.bind(this.deps.workspaceRunner);
-      const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
-
-      let handle: WorkspaceHandle | undefined;
+      // A clean merge changes nothing beyond already-reviewed commits, so no agent runs.
+      const cleanMerge = !hostedReview && diff.merge !== undefined && diff.files.length === 0;
       let rawOutput: string;
-
-      try {
-        handle = await this.awaitSignalAware(
-          this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
-          deadlineController.signal,
-          timeoutError,
-        );
-
-        const cloneResult = await this.awaitSignalAware(
-          prepareProjectWorkspace(
-            handle,
-            [cloneTarget],
-            project.postCloneScript || undefined,
-            sshKnownHostsPath ?? undefined,
-            deadlineController.signal,
-          ),
-          deadlineController.signal,
-          timeoutError,
-        );
-        if (!cloneResult.success) {
-          throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
-        }
-
-        if (this.deps.applyPatchset !== undefined) {
-          await this.awaitSignalAware(
-            this.deps.applyPatchset(handle, details, deadlineController.signal),
-            deadlineController.signal,
-            timeoutError,
-          );
-        }
-
-        emitReviewEvent("review.agent_started", {
-          mode: "docker",
-          reviewStrategy: projectAgentRuntime.reviewStrategy,
-        });
-
-        const stderrLineBuffer = { partial: "" };
-        const reviewHandle = handle;
-        const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
-          projectId: project.id,
-          reviewStrategy: projectAgentRuntime.reviewStrategy,
-          changeId,
-          revisionNumber: details.changeNumber,
-          patchset: details.currentPatchset,
-          repositoryName: details.project,
-          prompt,
-          systemPrompt: reviewSystemPrompt,
-          reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
-          agentToken: projectAgentRuntime.token,
-          model: projectAgentRuntime.model,
-          abortSignal: deadlineController.signal,
-          ...(projectAgentRuntime.providerOptions !== undefined && Object.keys(projectAgentRuntime.providerOptions).length > 0
-            ? { providerOptions: projectAgentRuntime.providerOptions }
-            : {}),
-          agentAdapter: projectAgentRuntime.adapter,
-          ...(this.deps.agentContainerImage !== undefined
-            ? { containerImage: this.deps.agentContainerImage }
-            : {}),
-          ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
-          ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
-          ...(projectAgentRuntime.openCodeProvider !== undefined ? { openCodeProvider: projectAgentRuntime.openCodeProvider } : {}),
-          ...(projectAgentRuntime.openCodeApiBase !== undefined ? { openCodeApiBase: projectAgentRuntime.openCodeApiBase } : {}),
-          ...(project.skillSourcesJson !== "[]"
-            ? { skillSourcesJson: project.skillSourcesJson }
-            : {}),
-        }, {
-          onStderrChunk: (chunk: string) => {
-            stderrLineBuffer.partial += chunk;
-            const lines = stderrLineBuffer.partial.split("\n");
-            stderrLineBuffer.partial = lines.pop() ?? "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
-            }
-          },
-        }), deadlineController.signal, timeoutError);
-        if (stderrLineBuffer.partial.trim()) {
-          processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
-        }
-        rawOutput = reviewResult.rawOutput;
-      } finally {
-        if (handle !== undefined) {
-          await this.deps.workspaceRunner.destroyWorkspace(handle).catch((err: unknown) =>
-            log.warn({ err, taskId }, "failed to destroy review workspace")
-          );
-        }
+      let result: ReviewAgentResult;
+      if (cleanMerge) {
         if (cycleLease !== undefined) {
           this.deps.concurrencyTracker?.release(cycleLease);
           cycleLease = undefined;
         }
+        emitReviewEvent("review.agent_skipped", { reason: "clean_merge", patchset: details.currentPatchset });
+        rawOutput = "";
+        result = { comments: [], summary: CLEAN_MERGE_REVIEW_SUMMARY, score: 0, replies: [] };
+      } else {
+        const prompt = buildReviewPrompt({
+          details,
+          diff,
+          instructionsPrompt: reviewInstructions,
+          ...(priorComments.length > 0
+            ? {
+                priorComments: priorComments.map((c) => ({
+                  ...(hostedReview ? { id: c.id } : {}),
+                  file: c.file,
+                  line: c.line,
+                  message: c.message,
+                })),
+                reassessPriorFindings: hostedReview,
+              }
+            : {}),
+          ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
+          ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
+        });
+
+        emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
+
+        if (this.deps.workspaceRunner.prepareProjectWorkspace === undefined) {
+          throw new Error(
+            "workspaceRunner does not support prepareProjectWorkspace — cannot clone repository for review."
+          );
+        }
+
+        if (this.deps.workspaceRunner.runReviewInDocker === undefined) {
+          throw new Error(
+            "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
+          );
+        }
+        const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace.bind(this.deps.workspaceRunner);
+        const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
+
+        let handle: WorkspaceHandle | undefined;
+
+        try {
+          handle = await this.awaitSignalAware(
+            this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
+            deadlineController.signal,
+            timeoutError,
+          );
+
+          const cloneResult = await this.awaitSignalAware(
+            prepareProjectWorkspace(
+              handle,
+              [cloneTarget],
+              project.postCloneScript || undefined,
+              sshKnownHostsPath ?? undefined,
+              deadlineController.signal,
+            ),
+            deadlineController.signal,
+            timeoutError,
+          );
+          if (!cloneResult.success) {
+            throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
+          }
+
+          if (this.deps.applyPatchset !== undefined) {
+            await this.awaitSignalAware(
+              this.deps.applyPatchset(handle, details, deadlineController.signal),
+              deadlineController.signal,
+              timeoutError,
+            );
+          }
+
+          emitReviewEvent("review.agent_started", {
+            mode: "docker",
+            reviewStrategy: projectAgentRuntime.reviewStrategy,
+          });
+
+          const stderrLineBuffer = { partial: "" };
+          const reviewHandle = handle;
+          const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
+            projectId: project.id,
+            reviewStrategy: projectAgentRuntime.reviewStrategy,
+            changeId,
+            revisionNumber: details.changeNumber,
+            patchset: details.currentPatchset,
+            repositoryName: details.project,
+            prompt,
+            systemPrompt: reviewSystemPrompt,
+            reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
+            agentToken: projectAgentRuntime.token,
+            model: projectAgentRuntime.model,
+            abortSignal: deadlineController.signal,
+            ...(projectAgentRuntime.providerOptions !== undefined && Object.keys(projectAgentRuntime.providerOptions).length > 0
+              ? { providerOptions: projectAgentRuntime.providerOptions }
+              : {}),
+            agentAdapter: projectAgentRuntime.adapter,
+            ...(this.deps.agentContainerImage !== undefined
+              ? { containerImage: this.deps.agentContainerImage }
+              : {}),
+            ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
+            ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
+            ...(projectAgentRuntime.openCodeProvider !== undefined ? { openCodeProvider: projectAgentRuntime.openCodeProvider } : {}),
+            ...(projectAgentRuntime.openCodeApiBase !== undefined ? { openCodeApiBase: projectAgentRuntime.openCodeApiBase } : {}),
+            ...(project.skillSourcesJson !== "[]"
+              ? { skillSourcesJson: project.skillSourcesJson }
+              : {}),
+          }, {
+            onStderrChunk: (chunk: string) => {
+              stderrLineBuffer.partial += chunk;
+              const lines = stderrLineBuffer.partial.split("\n");
+              stderrLineBuffer.partial = lines.pop() ?? "";
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
+              }
+            },
+          }), deadlineController.signal, timeoutError);
+          if (stderrLineBuffer.partial.trim()) {
+            processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
+          }
+          rawOutput = reviewResult.rawOutput;
+        } finally {
+          if (handle !== undefined) {
+            await this.deps.workspaceRunner.destroyWorkspace(handle).catch((err: unknown) =>
+              log.warn({ err, taskId }, "failed to destroy review workspace")
+            );
+          }
+          if (cycleLease !== undefined) {
+            this.deps.concurrencyTracker?.release(cycleLease);
+            cycleLease = undefined;
+          }
+        }
+
+        emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
+        emitReviewEvent("review.parsing", {});
+
+        result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
       }
-
-      emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
-      emitReviewEvent("review.parsing", {});
-
-      const result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
       const decision = getReviewDecision(result);
       if (hostedReview && decision < 0 && !result.requiredAction?.trim()) {
         throw new Error("A negative hosted review requires an actionable before approval step");
@@ -997,8 +1025,7 @@ export class ReviewOrchestrator {
       // comments would be recorded in posted_review_comments and surface in the
       // folded-summary appendix even though postReview filters them before
       // posting them inline.
-      const allowedReviewFiles =
-        diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
+      const allowedReviewFiles = allowedCommentFiles(diff);
       const inDiffComments = filterCommentsByAllowedFiles(result.comments, allowedReviewFiles, {
         changeId,
         phase: "pre-dedup",
@@ -1306,6 +1333,7 @@ export class ReviewOrchestrator {
           vote: decision,
           comments: result.comments,
           score: result.score,
+          ...(cleanMerge ? { agentSkipped: "clean_merge" } : {}),
           ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}),
         },
       };
@@ -1455,10 +1483,7 @@ export class ReviewOrchestrator {
     diff: ReviewChangeDiff,
     signal: AbortSignal,
   ): Promise<void> {
-    // An empty diff (e.g. a transient fetch failure) must not silently drop every
-    // comment: fall back to no filtering rather than an all-rejecting empty set.
-    const allowedFiles =
-      diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
+    const allowedFiles = allowedCommentFiles(diff);
     const filteredComments = filterCommentsByAllowedFiles(comments, allowedFiles, { changeId, revision });
     // Prefer the combined call when available so a retry posts comments + vote in
     // one review event instead of two, avoiding duplicate inline comments.

@@ -301,6 +301,16 @@ describe("normalizeAgentEvent", () => {
     );
   });
 
+  it("labels a review skipped for a clean merge", () => {
+    const result = normalizeAgentEvent({
+      ...baseEvent,
+      type: "review.agent_skipped",
+      data: { reason: "clean_merge", patchset: 2 },
+    });
+    expect(result.category).toBe("review");
+    expect(result.message).toBe("📝 Review not needed: clean merge");
+  });
+
 });
 
 // ── Deep-search in SDK event structures ─────────────────────────────────────

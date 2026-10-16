@@ -274,6 +274,7 @@ describe("GerritSshReviewProvider", () => {
   });
 
   describe("getChangeDiff", () => {
+    const REGULAR_PARENTS = "c0ffee p1\n";
     const DIFF_OUTPUT = [
       "diff --git a/src/main.ts b/src/main.ts",
       "--- a/src/main.ts",
@@ -288,7 +289,7 @@ describe("GerritSshReviewProvider", () => {
     it("clones via SSH and computes diff", async () => {
       // getChangeDetails via GerritSshClient.query; git operations via execFile
       mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
-      setGitResults(["", "", "", "", DIFF_OUTPUT]); // git init, remote add, fetch, checkout, diff
+      setGitResults(["", "", "", "", REGULAR_PARENTS, DIFF_OUTPUT]); // init, remote add, fetch, checkout, rev-list, diff
 
       const result = await makeProvider().getChangeDiff(CHANGE_ID);
 
@@ -298,6 +299,11 @@ describe("GerritSshReviewProvider", () => {
       expect(result.files[0]!.path).toBe("src/main.ts");
       expect(result.files[0]!.status).toBe("modified");
       expect(result.files[0]!.patch).toContain("+import { bar }");
+      expect(result.merge).toBeUndefined();
+      expect(gitFileCalls.find((c) => c.args[0] === "diff")?.args).toEqual([
+        "diff", "HEAD~1..HEAD", "--no-color", "--unified=5",
+      ]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
     it("detects added files", async () => {
@@ -310,7 +316,7 @@ describe("GerritSshReviewProvider", () => {
         "+console.log('hello');",
       ].join("\n");
       mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
-      setGitResults(["", "", "", "", diff]);
+      setGitResults(["", "", "", "", REGULAR_PARENTS, diff]);
 
       const result = await makeProvider().getChangeDiff(CHANGE_ID);
       expect(result.files[0]!.status).toBe("added");
@@ -326,7 +332,7 @@ describe("GerritSshReviewProvider", () => {
         "-console.log('bye');",
       ].join("\n");
       mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
-      setGitResults(["", "", "", "", diff]);
+      setGitResults(["", "", "", "", REGULAR_PARENTS, diff]);
 
       const result = await makeProvider().getChangeDiff(CHANGE_ID);
       expect(result.files[0]!.status).toBe("deleted");
@@ -338,6 +344,160 @@ describe("GerritSshReviewProvider", () => {
 
       await expect(makeProvider().getChangeDiff(CHANGE_ID)).rejects.toThrow("git init failed");
       expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
+    });
+
+    describe("merge commits", () => {
+      const MERGE_PARENTS = "m1 p1 p2\n";
+      const REMERGE_OUTPUT = [
+        "diff --git a/kotlin/Server.kt b/kotlin/Server.kt",
+        "deleted file mode 100644",
+        "remerge CONFLICT (modify/delete): kotlin/Server.kt deleted in p2 and modified in p1.",
+        "index 1099837..0000000",
+        "--- a/kotlin/Server.kt",
+        "+++ /dev/null",
+        "@@ -1,2 +0,0 @@",
+        "-fun a() = 1",
+        "-fun b() = 3 // fix",
+      ].join("\n");
+      const MERGED_LOG = "s1\tPort the device server to Python\ns2\tDrop the Kotlin server\n";
+      const PATCH_SETS_WITH_FILES = {
+        ...SAMPLE_CHANGE,
+        patchSets: [
+          { number: 2, revision: "old", ref: "refs/changes/42/42/2", files: [{ file: "stale.ts", type: "MODIFIED" }] },
+          {
+            number: 3,
+            revision: "abc123def",
+            ref: "refs/changes/42/42/3",
+            files: [
+              { file: "/COMMIT_MSG", type: "ADDED" },
+              { file: "/MERGE_LIST", type: "ADDED" },
+              { file: "kotlin/Server.kt", type: "DELETED" },
+              { file: "README.md", type: "MODIFIED" },
+            ],
+          },
+        ],
+      };
+
+      function fetchArgs(): string[][] {
+        return gitFileCalls.filter((c) => c.args[0] === "fetch").map((c) => c.args);
+      }
+
+      it("diffs the merge against the automatic merge after deepening to the merge base", async () => {
+        mockQuery
+          .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+          .mockResolvedValueOnce(sshNdjson(PATCH_SETS_WITH_FILES));
+        setGitResults([
+          "", "", "", "", // init, remote add, fetch --depth=2, checkout
+          MERGE_PARENTS,
+          new Error("no merge base"),
+          "true\n", // rev-parse --is-shallow-repository
+          "", // fetch --depth=64
+          "base\n",
+          REMERGE_OUTPUT,
+          MERGED_LOG,
+        ]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(result.files).toEqual([expect.objectContaining({ path: "kotlin/Server.kt", status: "deleted" })]);
+        expect(result.files[0]!.patch).toContain("remerge CONFLICT (modify/delete)");
+        expect(result.merge).toEqual({
+          parents: ["p1", "p2"],
+          mergedCommits: [
+            { sha: "s1", subject: "Port the device server to Python" },
+            { sha: "s2", subject: "Drop the Kotlin server" },
+          ],
+          commentableFiles: ["kotlin/Server.kt", "README.md"],
+        });
+        expect(fetchArgs()).toEqual([
+          ["fetch", "--depth=2", "origin", "refs/changes/42/42/3"],
+          ["fetch", "--depth=64", "origin", "refs/changes/42/42/3"],
+        ]);
+        const show = gitFileCalls.find((c) => c.args[0] === "show");
+        expect(show?.args).toEqual(["show", "--remerge-diff", "--format=", "--no-color", "--unified=5", "HEAD"]);
+        expect((show?.opts["env"] as Record<string, string> | undefined)?.["LC_ALL"]).toBe("C");
+        expect(gitFileCalls.find((c) => c.args[0] === "log")?.args).toEqual([
+          "log", "--reverse", "--format=%H%x09%s", "HEAD^1..HEAD^2",
+        ]);
+        expect(gitFileCalls.some((c) => c.args[0] === "diff")).toBe(false);
+        expect(mockQuery).toHaveBeenLastCalledWith(
+          ["query", "--format", "JSON", "--patch-sets", "--files", "change:42"],
+          undefined,
+        );
+      });
+
+      it("uses a merge base already present in the shallow fetch", async () => {
+        mockQuery
+          .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+          .mockResolvedValueOnce(sshNdjson(PATCH_SETS_WITH_FILES));
+        setGitResults(["", "", "", "", MERGE_PARENTS, "base\n", REMERGE_OUTPUT, ""]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(fetchArgs()).toHaveLength(1);
+        expect(result.merge?.mergedCommits).toEqual([]);
+      });
+
+      it("treats a clean merge as an empty diff with authoritative commentable files", async () => {
+        mockQuery
+          .mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE))
+          .mockResolvedValueOnce(sshNdjson({
+            ...SAMPLE_CHANGE,
+            patchSets: [{ number: 3, revision: "abc123def", ref: "refs/changes/42/42/3", files: [{ file: "/MERGE_LIST", type: "ADDED" }] }],
+          }));
+        setGitResults(["", "", "", "", MERGE_PARENTS, "base\n", "", MERGED_LOG]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(result.files).toEqual([]);
+        expect(result.merge?.commentableFiles).toEqual([]);
+      });
+
+      it("deepens progressively then falls back to the first-parent diff without a merge base", async () => {
+        mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+        const noBase = new Error("no merge base");
+        setGitResults([
+          "", "", "", "", MERGE_PARENTS,
+          noBase, "true\n", "", // --depth=64
+          noBase, "true\n", "", // --depth=512
+          noBase, "true\n", "", // --depth=4096
+          noBase, "true\n", "", // --unshallow
+          noBase,
+          DIFF_OUTPUT,
+        ]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(fetchArgs().map((args) => args[1])).toEqual([
+          "--depth=2", "--depth=64", "--depth=512", "--depth=4096", "--unshallow",
+        ]);
+        expect(result.merge).toBeUndefined();
+        expect(result.files[0]!.path).toBe("src/main.ts");
+        expect(gitFileCalls.at(-1)?.args).toEqual(["diff", "HEAD~1..HEAD", "--no-color", "--unified=5"]);
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+      });
+
+      it("stops deepening once the repository is complete", async () => {
+        mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+        setGitResults(["", "", "", "", MERGE_PARENTS, new Error("no merge base"), "false\n", DIFF_OUTPUT]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(fetchArgs()).toHaveLength(1);
+        expect(result.merge).toBeUndefined();
+        expect(result.files[0]!.path).toBe("src/main.ts");
+      });
+
+      it("keeps the first-parent diff for octopus merges", async () => {
+        mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+        setGitResults(["", "", "", "", "m1 p1 p2 p3\n", DIFF_OUTPUT]);
+
+        const result = await makeProvider().getChangeDiff(CHANGE_ID, 3);
+
+        expect(result.merge).toBeUndefined();
+        expect(gitFileCalls.some((c) => c.args[0] === "merge-base")).toBe(false);
+        expect(result.files[0]!.path).toBe("src/main.ts");
+      });
     });
   });
 

@@ -876,6 +876,22 @@ export interface ReviewChangeDiff {
   changeId: ExternalChangeId;
   patchset: number;
   files: ReviewDiffFile[];
+  /** Set when `files` is a two-parent merge diffed against the automatic merge of its parents. */
+  merge?: ReviewMergeContext | undefined;
+}
+
+export interface ReviewMergeContext {
+  /** First parent (target-branch side), then the merged parent. */
+  parents: [string, string];
+  /** Commits brought in by the merged parent, oldest first; reviewed in their own changes. */
+  mergedCommits: ReviewMergedCommit[];
+  /** Provider-authoritative paths that accept inline comments; empty means none. */
+  commentableFiles: string[];
+}
+
+export interface ReviewMergedCommit {
+  sha: string;
+  subject: string;
 }
 
 export interface ReviewChangeDetails {

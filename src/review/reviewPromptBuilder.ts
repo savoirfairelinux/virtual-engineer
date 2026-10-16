@@ -4,11 +4,17 @@
  * Assembles the full prompt string passed to the review agent by combining
  * change metadata, the diff, and per-reviewer instructions.
  */
-import type { ReviewChangeDetails, ReviewChangeDiff, ReviewDiscussionThread } from "../interfaces.js";
+import type {
+  ReviewChangeDetails,
+  ReviewChangeDiff,
+  ReviewDiscussionThread,
+  ReviewMergeContext,
+} from "../interfaces.js";
 
 const DEFAULT_MAX_COMMIT_MESSAGE_CHARS = 8_000;
 const COMMIT_MESSAGE_TRUNCATION_NOTE =
   "\n\n[... commit message truncated to fit in the model context ...]";
+const MAX_LISTED_MERGED_COMMITS = 100;
 
 export interface ReviewPromptInput {
   details: ReviewChangeDetails;
@@ -123,6 +129,10 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     );
   }
 
+  if (diff.merge !== undefined) {
+    sections.push(``, `## Merge commit`, renderMergeContext(diff.merge, details.targetBranch));
+  }
+
   sections.push(
     ``,
     `## Files in this patchset`,
@@ -225,4 +235,40 @@ function renderSinceLastReview(delta: SinceLastReviewDelta): string {
     "",
     renderDiffSections(delta.diff),
   ].join("\n");
+}
+
+/** Scope a merge review to the merge's own changes; merged commits are context only. */
+function renderMergeContext(merge: ReviewMergeContext, targetBranch: string): string {
+  const [targetParent, mergedParent] = merge.parents;
+  const lines = [
+    `This change merges ${shortSha(mergedParent)} into \`${targetBranch}\` (first parent ${shortSha(targetParent)}).`,
+    "The diff below compares the merge with the automatic merge of both parents, so it contains only",
+    "what the merge itself changes: conflict resolutions (marked by `remerge CONFLICT` headers), manual",
+    "edits, and changes from either parent that the merge dropped. Review only these changes: check that",
+    "each resolution keeps the intent of both sides and that dropped changes are intentional.",
+  ];
+  if (merge.mergedCommits.length > 0) {
+    lines.push(
+      "",
+      "The merged commits below were already reviewed in their own changes. Use them as context only and",
+      "do not review their content again:",
+      ...merge.mergedCommits
+        .slice(0, MAX_LISTED_MERGED_COMMITS)
+        .map((commit) => `- ${shortSha(commit.sha)} ${commit.subject}`),
+    );
+    const unlisted = merge.mergedCommits.length - MAX_LISTED_MERGED_COMMITS;
+    if (unlisted > 0) lines.push(`- … and ${unlisted} more merged commits`);
+  }
+  lines.push(
+    "",
+    merge.commentableFiles.length > 0
+      ? `Inline comments are accepted only on: ${merge.commentableFiles.map((path) => `\`${path}\``).join(", ")}. ` +
+        "Report findings about other files in the summary, and use line 0 for files deleted by the merge."
+      : "No file accepts inline comments on this merge: report every finding in the summary.",
+  );
+  return lines.join("\n");
+}
+
+function shortSha(sha: string): string {
+  return sha.slice(0, 12);
 }

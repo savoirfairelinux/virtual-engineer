@@ -2143,6 +2143,143 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
   });
 });
 
+describe("ReviewOrchestrator.runReview - merge commits", () => {
+  const MERGE = {
+    parents: ["p1", "p2"] as [string, string],
+    mergedCommits: [{ sha: "s1", subject: "Port the device server to Python" }],
+  };
+
+  function reviewOutput(comments: Array<{ file: string; line: number; message: string; severity: string }>): string {
+    return [
+      "REVIEW_RESULT_START",
+      JSON.stringify({ comments, summary: "merge review", vote: -1, replies: [] }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+  }
+
+  function makeConcurrencyTracker() {
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    return { lease, tracker: { acquireWhenAvailable: vi.fn().mockResolvedValue(lease), release: vi.fn() } };
+  }
+
+  it("posts inline comments only on files the provider accepts for the merge", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      files: [
+        { path: "src/a.ts", status: "modified", patch: "+resolution" },
+        { path: "src/b.ts", status: "modified", patch: "+edit" },
+      ],
+      merge: { ...MERGE, commentableFiles: ["src/a.ts"] },
+    }));
+    const { runner } = makeWorkspaceRunner(reviewOutput([
+      { file: "src/a.ts", line: 1, message: "Resolution drops a guard", severity: "error" },
+      { file: "src/b.ts", line: 1, message: "Not commentable", severity: "error" },
+    ]));
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      [{ file: "src/a.ts", line: 1, message: "Resolution drops a guard", severity: "error" }],
+      "merge review",
+      undefined,
+      expect.any(AbortSignal),
+    );
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).toContain("## Merge commit");
+  });
+
+  it("drops every inline comment when no merge file accepts comments", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      merge: { ...MERGE, commentableFiles: [] },
+    }));
+    const { runner } = makeWorkspaceRunner();
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID, 2, [], "blocking", undefined, expect.any(AbortSignal),
+    );
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+  });
+
+  it("skips the agent for a clean merge and posts a neutral message", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      files: [],
+      merge: { ...MERGE, commentableFiles: [] },
+    }));
+    const { runner } = makeWorkspaceRunner();
+    const { lease, tracker } = makeConcurrencyTracker();
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner, { concurrencyTracker: tracker as never }))
+      .runReview(initial.taskId);
+
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(tracker.release).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID, 2, [], expect.stringContaining("no review needs to be run"), undefined, expect.any(AbortSignal),
+    );
+    expect(mocks.provider.vote).toHaveBeenCalledWith(
+      CHANGE_ID, 2, 0, expect.stringContaining("Clean merge"), expect.any(AbortSignal),
+    );
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(initial.taskId, 1, expect.objectContaining({
+      status: "success",
+      metadata: expect.objectContaining({ vote: 0, agentSkipped: "clean_merge" }),
+    }));
+    expect(mocks.store.task?.state).toBe("REVIEW_WATCHING");
+  });
+
+  it("stays silent on a clean-merge re-review with an unchanged neutral verdict", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      files: [],
+      merge: { ...MERGE, commentableFiles: [] },
+    }));
+    vi.mocked(mocks.store.getAgentCycles).mockResolvedValue([{ result: { metadata: { vote: 0 } } }]);
+    const { runner } = makeWorkspaceRunner();
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
+  it("does not fetch an inter-patchset delta for a merge", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDetails).mockResolvedValue(makeDetails({ currentPatchset: 3 }));
+    vi.mocked(mocks.provider.getChangeDiff).mockResolvedValue(makeDiff({
+      patchset: 3,
+      merge: { ...MERGE, commentableFiles: ["src/a.ts"] },
+    }));
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff({ patchset: 3 }));
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+    const { runner } = makeWorkspaceRunner();
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+  });
+});
+
 describe("ReviewOrchestrator.runReview â failure paths", () => {
   it("times out while loading change details before creating a workspace", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
