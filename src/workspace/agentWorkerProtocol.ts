@@ -1,3 +1,4 @@
+import { describeContextOverflow } from "../utils/errorClassifier.js";
 import { redactUrls } from "../utils/redactUrl.js";
 
 interface WorkerOutputContext {
@@ -103,12 +104,10 @@ export function decodeReviewWorkerOutput(stdout: string, context?: WorkerOutputC
 
   if (envelope["status"] === "failed") {
     const summary = envelope["summary"];
-    throw new AgentWorkerProtocolError(
-      typeof summary === "string" && summary.trim()
-        ? summary.trim()
-        : "Agent worker reported a failed review execution",
-      stdout, context,
-    );
+    const reason = typeof summary === "string" && summary.trim()
+      ? summary.trim()
+      : "Agent worker reported a failed review execution";
+    throw new AgentWorkerProtocolError(describeContextOverflow(reason) ?? reason, stdout, context);
   }
 
   if (envelope["status"] !== "success") {

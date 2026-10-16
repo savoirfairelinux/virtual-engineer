@@ -81,11 +81,13 @@ These launcher settings are not part of `AppConfig`:
 
 This remains RAM-backed storage (potentially swapped), not a disk quota. Size it
 for available memory and concurrent reviews; Git shallow fetches can still be
-large. Review diff directories are cleaned after success or failure. Set, for
-example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun `./scripts/start.sh` while
-no tasks are active. The mount option participates in the existing run-config
-hash, so changing it recreates the orchestrator container. This setting does not
-change OpenShell sandbox limits or Kubernetes deployment storage.
+large, and merge-commit reviews deepen the fetch until the merge base is present
+(up to the full history). Review diff directories are cleaned after success or
+failure. Set, for example, `REVIEW_DIFF_TMPFS_SIZE=4g` in `.env` and rerun
+`./scripts/start.sh` while no tasks are active. The mount option participates in
+the existing run-config hash, so changing it recreates the orchestrator
+container. This setting does not change OpenShell sandbox limits or Kubernetes
+deployment storage.
 
 ## Boot-time validation
 

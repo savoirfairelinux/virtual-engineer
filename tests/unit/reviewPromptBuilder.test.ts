@@ -332,3 +332,63 @@ describe("buildReviewPrompt since-last-review delta", () => {
     expect(prompt).not.toContain("diff truncated");
   });
 });
+
+describe("buildReviewPrompt — merge commits", () => {
+  const mergeDiff: ReviewChangeDiff = {
+    changeId: CHANGE_ID,
+    patchset: 3,
+    files: [{
+      path: "kotlin/Server.kt",
+      status: "deleted",
+      patch: "remerge CONFLICT (modify/delete): kotlin/Server.kt\n-fun b() = 3 // fix",
+    }],
+    merge: {
+      parents: ["1".repeat(40), "2".repeat(40)],
+      mergedCommits: [{ sha: "3".repeat(40), subject: "Port the device server to Python" }],
+      commentableFiles: ["kotlin/Server.kt", "README.md"],
+    },
+  };
+
+  it("omits the merge section for a regular change", () => {
+    const prompt = buildReviewPrompt({ details, diff, instructionsPrompt: "Review this." });
+    expect(prompt).not.toContain("## Merge commit");
+  });
+
+  it("scopes the review to the automatic-merge diff and lists merged commits as already reviewed", () => {
+    const prompt = buildReviewPrompt({ details, diff: mergeDiff, instructionsPrompt: "Review this." });
+
+    expect(prompt).toContain("## Merge commit");
+    expect(prompt).toContain("automatic merge");
+    expect(prompt).toContain("1".repeat(12));
+    expect(prompt).toContain(`- ${"3".repeat(12)} Port the device server to Python`);
+    expect(prompt).toContain("already reviewed");
+    expect(prompt).toContain("`kotlin/Server.kt`, `README.md`");
+    expect(prompt).toContain("line 0");
+    expect(prompt).toContain("-fun b() = 3 // fix");
+    expect(prompt.indexOf("## Merge commit")).toBeLessThan(prompt.indexOf("## Files in this patchset"));
+  });
+
+  it("asks for summary-only findings when no file accepts inline comments", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff: { ...mergeDiff, merge: { ...mergeDiff.merge!, commentableFiles: [] } },
+      instructionsPrompt: "Review this.",
+    });
+    expect(prompt).toContain("report every finding in the summary");
+  });
+
+  it("caps the merged-commit list with an explicit remainder", () => {
+    const mergedCommits = Array.from({ length: 105 }, (_, i) => ({
+      sha: String(i).padStart(40, "0"),
+      subject: `merged commit ${i}`,
+    }));
+    const prompt = buildReviewPrompt({
+      details,
+      diff: { ...mergeDiff, merge: { ...mergeDiff.merge!, mergedCommits } },
+      instructionsPrompt: "Review this.",
+    });
+    expect(prompt).toContain("merged commit 99\n");
+    expect(prompt).not.toContain("merged commit 100");
+    expect(prompt).toContain("… and 5 more merged commits");
+  });
+});

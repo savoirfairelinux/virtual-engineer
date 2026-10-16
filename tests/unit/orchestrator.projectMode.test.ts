@@ -916,6 +916,67 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(runSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("abandons without retrying or a ticket note when the prompt exceeds the model context window", async () => {
+    const task = makeTask({ cycleCount: 0 });
+    const abandonTask = vi.fn().mockResolvedValue(makeTask({ state: "ABANDONED" }));
+    const stateStore = makeStateStore({
+      startAgentCycle: vi.fn().mockResolvedValue(1),
+      getTask: vi.fn().mockResolvedValue(task),
+      abandonTask,
+    });
+    const workspace = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "failed",
+        modifiedFiles: [],
+        summary: "Agent worker error: CAPIError: 400 prompt token count of 1107212 exceeds the limit of 872000",
+        agentLogs: "",
+        metadata: {},
+      }),
+    });
+    const redmine = makeRedmine();
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn().mockResolvedValue(
+          makeAgentRecord({ integrationId: "agent-int", modelConfigJson: "{}" })
+        ),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((id: string) => {
+          if (id === "redmine-int") return redmine;
+          if (id === "agent-int") return { name: "agent", execute: vi.fn() } as unknown as AgentAdapter;
+          return null;
+        }),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn().mockResolvedValue({
+        clone: vi.fn(),
+        push: vi.fn(),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main" }),
+        useChangeIdContinuity: false,
+        reviewSystemLabel: "gitlab",
+      } as unknown as VcsConnector),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, workspace, undefined, undefined, projectMode);
+
+    await (orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "RETRY_CYCLE");
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+      task.taskId,
+      "Prompt exceeds the model context window (1,107,212 > 872,000 tokens). " +
+        "The input is too large for this model; retrying will not help.",
+    );
+    expect(abandonTask).toHaveBeenCalledWith(task.taskId);
+    expect(redmine.addNote).not.toHaveBeenCalled();
+    expect(workspace.destroyWorkspace).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     {
       label: "agent record is missing",

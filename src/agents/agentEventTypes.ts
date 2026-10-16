@@ -468,6 +468,10 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       return "📝 Review started";
     case "review.prompt_built":
       return "📝 Review prompt built";
+    case "review.agent_skipped":
+      return readStr(data, ["reason"]) === "clean_merge"
+        ? "📝 Review not needed: clean merge"
+        : "📝 Review agent skipped";
     case "review.agent_started":
       return "📝 Review agent running…";
     case "review.agent_completed": {

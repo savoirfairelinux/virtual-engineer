@@ -862,6 +862,24 @@ describe("Orchestrator", () => {
     expect(redmineConnector.addNote).not.toHaveBeenCalled();
   });
 
+  it("records a context-window overflow for the admin UI only", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({ getTask: vi.fn().mockResolvedValue(task) });
+    const redmineConnector = makeRedmineConnector();
+    const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
+
+    await (orchestrator as any).handleFatalError(
+      task,
+      new Error("CAPIError: 400 prompt token count of 1107212 exceeds the limit of 872000"),
+    );
+
+    const reason = "Prompt exceeds the model context window (1,107,212 > 872,000 tokens). " +
+      "The input is too large for this model; retrying will not help.";
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(task.taskId, reason);
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", { error: reason });
+    expect(redmineConnector.addNote).not.toHaveBeenCalled();
+  });
+
   it("extracts acceptance criteria from a ticket description", () => {
     expect(extractAcceptanceCriteria(makeRedmineTicket().description)).toEqual([
       "- [ ] Preserve Change-Id",

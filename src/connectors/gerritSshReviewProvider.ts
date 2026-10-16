@@ -18,6 +18,7 @@ import {
   type ReviewDiffFile,
   type ReviewDiscussionThread,
   type ReviewFileStatus,
+  type ReviewMergedCommit,
   type ReviewProvider,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
@@ -41,6 +42,11 @@ const GERRIT_CHANGE_THREAD_ID = "gerrit-change";
 // and potentially large diffs. SSH query/review operations are handled by
 // GerritSshClient which has its own timeout constants.
 const GIT_TIMEOUT_MS = 120_000;
+const GIT_MAX_BUFFER = 10 * 1024 * 1024;
+// The final step fetches the full history when bounded deepening is not enough.
+const MERGE_BASE_DEEPEN_STEPS = ["--depth=64", "--depth=512", "--depth=4096", "--unshallow"] as const;
+
+type GitRunner = (args: string[]) => Promise<string>;
 
 // ─── SSH query schemas ────────────────────────────────────────────────────────
 
@@ -88,6 +94,12 @@ const SshChangeSchema = z.object({
   }).optional(),
   allReviewers: z.array(SshAccountSchema).optional(),
   createdOn: z.number().optional(),
+});
+
+const SshPatchSetFilesSchema = z.object({
+  patchSets: z.array(SshPatchSetSchema.extend({
+    files: z.array(SshFileSchema).optional(),
+  })).optional(),
 });
 
 // ─── Provider config ──────────────────────────────────────────────────────────
@@ -251,7 +263,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
     return approvals.some((a) => a.by?.username !== undefined && a.by.username === this.config.sshUser);
   }
 
-  /** Clone the patchset ref via git and produce a per-file unified diff. */
+  /**
+   * Diff the patchset against its parent. A two-parent merge is diffed against the
+   * automatic merge of its parents, which is Gerrit's default base for merges.
+   */
   async getChangeDiff(
     changeId: ExternalChangeId,
     patchset?: number,
@@ -282,26 +297,54 @@ export class GerritSshReviewProvider implements ReviewProvider {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
         GIT_SSH_COMMAND: sshCmd,
+        // remerge-diff conflict headers are localized; keep them English for the agent.
+        LC_ALL: "C",
+      };
+      const git: GitRunner = async (args) => {
+        const { stdout } = await execFileAsync("git", args, {
+          cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, env: gitEnv, signal,
+        });
+        return stdout;
       };
 
-      // Init a bare repo and fetch just the patchset ref + its parent
-      await execFileAsync("git", ["init"], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
-      await execFileAsync("git", ["remote", "add", "origin", sshUrl], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
-      await execFileAsync(
-        "git",
-        ["fetch", "--depth=2", "origin", changeRef],
-        { cwd: dir, timeout: GIT_TIMEOUT_MS, env: gitEnv, signal }
-      );
-      await execFileAsync("git", ["checkout", "FETCH_HEAD"], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
+      await git(["init"]);
+      await git(["remote", "add", "origin", sshUrl]);
+      await git(["fetch", "--depth=2", "origin", changeRef]);
+      await git(["checkout", "FETCH_HEAD"]);
 
-      // Generate unified diff against parent
-      const { stdout: diffOutput } = await execFileAsync(
-        "git",
-        ["diff", "HEAD~1..HEAD", "--no-color", "--unified=5"],
-        { cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, signal }
-      );
+      const [firstParent, mergedParent, ...extraParents] =
+        (await git(["rev-list", "--parents", "-n", "1", "HEAD"])).trim().split(/\s+/).slice(1);
+      const isTwoParentMerge = firstParent !== undefined && mergedParent !== undefined && extraParents.length === 0;
+      if (isTwoParentMerge && await deepenToMergeBase(git, changeRef)) {
+        const files = parseDiffOutput(
+          await git(["show", "--remerge-diff", "--format=", "--no-color", "--unified=5", "HEAD"]),
+        );
+        const mergedCommits = parseMergedCommits(
+          await git(["log", "--reverse", "--format=%H%x09%s", "HEAD^1..HEAD^2"]),
+        );
+        const commentableFiles = await this.getCommentableFiles(details.changeNumber, ps, signal);
+        log.info(
+          {
+            changeId,
+            patchset: ps,
+            fileCount: files.length,
+            mergedCommitCount: mergedCommits.length,
+            commentableFileCount: commentableFiles.length,
+          },
+          "computed merge diff against the automatic merge"
+        );
+        return {
+          changeId,
+          patchset: ps,
+          files,
+          merge: { parents: [firstParent, mergedParent], mergedCommits, commentableFiles },
+        };
+      }
+      if (isTwoParentMerge) {
+        log.warn({ changeId, patchset: ps }, "merge base not found; diffing the merge against its first parent");
+      }
 
-      const files = parseDiffOutput(diffOutput);
+      const files = parseDiffOutput(await git(["diff", "HEAD~1..HEAD", "--no-color", "--unified=5"]));
       log.info(
         { changeId, patchset: ps, fileCount: files.length },
         "computed diff from SSH checkout"
@@ -310,6 +353,18 @@ export class GerritSshReviewProvider implements ReviewProvider {
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  /** Paths Gerrit accepts inline comments on for this patchset (its default-base file list). */
+  private async getCommentableFiles(changeNumber: number, patchset: number, signal?: AbortSignal): Promise<string[]> {
+    const raw = await this.sshClient.query(
+      ["query", "--format", "JSON", "--patch-sets", "--files", `change:${changeNumber}`],
+      signal,
+    );
+    const entry = SshPatchSetFilesSchema.parse(parseSshNdjson(raw)[0] ?? {});
+    const files = entry.patchSets?.find((candidate) => candidate.number === patchset)?.files ?? [];
+    // Gerrit magic files such as /COMMIT_MSG and /MERGE_LIST are not repository paths.
+    return [...new Set(files.map((file) => file.file).filter((path) => !path.startsWith("/")))];
   }
 
   /**
@@ -543,6 +598,38 @@ export class GerritSshReviewProvider implements ReviewProvider {
   }
 }
 
+// ─── Merge diff helpers ───────────────────────────────────────────────────────
+
+/** Deepen the shallow fetch until the merge parents share a base; false when they never do. */
+async function deepenToMergeBase(git: GitRunner, changeRef: string): Promise<boolean> {
+  for (const step of MERGE_BASE_DEEPEN_STEPS) {
+    if (await hasMergeBase(git)) return true;
+    if ((await git(["rev-parse", "--is-shallow-repository"])).trim() !== "true") return false;
+    await git(["fetch", step, "origin", changeRef]);
+  }
+  return hasMergeBase(git);
+}
+
+async function hasMergeBase(git: GitRunner): Promise<boolean> {
+  try {
+    await git(["merge-base", "HEAD^1", "HEAD^2"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Parse `git log --format=%H%x09%s` output. */
+function parseMergedCommits(logOutput: string): ReviewMergedCommit[] {
+  return logOutput
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      return { sha: line.slice(0, tab), subject: line.slice(tab + 1) };
+    });
+}
+
 // ─── Diff parser ──────────────────────────────────────────────────────────────
 
 /**
@@ -558,10 +645,17 @@ function parseDiffOutput(diffText: string): ReviewDiffFile[] {
   for (const chunk of chunks) {
     const lines = chunk.split("\n");
     // First line: "a/path b/path"
-    const headerMatch = lines[0]?.match(/^a\/(.+?) b\/(.+?)$/);
-    if (!headerMatch) continue;
+    const headerMatch = lines[0]?.match(/^("(?:[^"\\]|\\.)*"|a\/.+?) ("(?:[^"\\]|\\.)*"|b\/.+)$/);
+    if (headerMatch?.[1] === undefined || headerMatch[2] === undefined) {
+      throw new Error("Cannot parse Git diff header");
+    }
+    const oldPath = decodeGitDiffPath(headerMatch[1]);
+    const destinationPath = decodeGitDiffPath(headerMatch[2]);
+    if (!oldPath.startsWith("a/") || !destinationPath.startsWith("b/")) {
+      throw new Error("Cannot parse Git diff path prefixes");
+    }
 
-    const newPath = headerMatch[2] ?? headerMatch[1] ?? "";
+    const newPath = destinationPath.slice(2);
     let status: ReviewFileStatus = "modified";
 
     // Detect status from the diff header lines
@@ -577,6 +671,31 @@ function parseDiffOutput(diffText: string): ReviewDiffFile[] {
   }
 
   return files;
+}
+
+function decodeGitDiffPath(path: string): string {
+  if (!path.startsWith('"')) return path;
+
+  const body = path.slice(1, -1);
+  const tokens = body.match(/\\(?:[0-3][0-7]{2}|[abfnrtv"\\])|[^\\"]+/g) ?? [];
+  if (tokens.join("") !== body) throw new Error("Cannot parse Git diff path escape");
+
+  const escapes: Readonly<Record<string, string>> = {
+    a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", '"': '"', "\\": "\\",
+  };
+  const bytes = tokens.map((token) => {
+    if (!token.startsWith("\\")) return Buffer.from(token);
+    const escaped = token.slice(1);
+    if (/^[0-3][0-7]{2}$/.test(escaped)) return Buffer.from([Number.parseInt(escaped, 8)]);
+    const decoded = escapes[escaped];
+    if (decoded === undefined) throw new Error("Cannot parse Git diff path escape");
+    return Buffer.from(decoded);
+  });
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(bytes));
+  } catch (cause) {
+    throw new Error("Cannot parse Git diff path encoding", { cause });
+  }
 }
 
 /**

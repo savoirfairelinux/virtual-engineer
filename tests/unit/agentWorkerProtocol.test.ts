@@ -42,6 +42,26 @@ describe("decodeReviewWorkerOutput", () => {
     }))).toThrow("Agent worker error: model unavailable");
   });
 
+  it("reports a context-window overflow as a non-retryable reason and keeps the original error", () => {
+    const stdout = JSON.stringify({
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent worker error: Last error: CAPIError: 400 prompt token count of 1107212 exceeds the limit of 872000",
+      agentLogs: "",
+    });
+    try {
+      decodeReviewWorkerOutput(stdout);
+      expect.fail("expected a protocol error");
+    } catch (error) {
+      const failure = error as AgentWorkerProtocolError;
+      expect(failure.message).toBe(
+        "Prompt exceeds the model context window (1,107,212 > 872,000 tokens). " +
+        "The input is too large for this model; retrying will not help.",
+      );
+      expect(failure.diagnostics.stdout).toContain("prompt token count of 1107212");
+    }
+  });
+
   it.each([
     ["invalid JSON", "not-json"],
     ["missing rawOutput", JSON.stringify({ status: "success" })],

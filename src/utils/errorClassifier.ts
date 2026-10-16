@@ -40,15 +40,66 @@ const INFRASTRUCTURE_ERROR_PATTERNS: readonly RegExp[] = [
  * configuration failure that should NOT be posted to the external ticket.
  */
 export function isInfrastructureError(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : error === undefined || error === null
-          ? ""
-          : safeStringify(error);
+  const message = errorMessage(error);
   return INFRASTRUCTURE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+interface ContextOverflowPattern {
+  pattern: RegExp;
+  /** Capture groups holding the prompt size and the model limit, when the message reports them. */
+  counts?: { prompt: number; limit: number } | undefined;
+}
+
+/** Model-provider rejections of a prompt larger than the model context window. */
+const CONTEXT_OVERFLOW_PATTERNS: readonly ContextOverflowPattern[] = [
+  // GitHub Copilot API
+  { pattern: /prompt token count of (\d+) exceeds the limit of (\d+)/i, counts: { prompt: 1, limit: 2 } },
+  // Anthropic
+  { pattern: /prompt is too long:\s*(\d+) tokens\s*>\s*(\d+) maximum/i, counts: { prompt: 1, limit: 2 } },
+  // OpenAI
+  {
+    pattern: /maximum context length is (\d+) tokens[\s\S]*?(?:resulted in|requested) (\d+) tokens/i,
+    counts: { prompt: 2, limit: 1 },
+  },
+  // Gemini
+  {
+    pattern: /input token count \(?(\d+)\)? exceeds the maximum number of tokens allowed \(?(\d+)\)?/i,
+    counts: { prompt: 1, limit: 2 },
+  },
+  { pattern: /\bcontext_length_exceeded\b/i },
+];
+
+/**
+ * Readable, non-retryable failure reason when a model rejected the prompt for
+ * exceeding its context window; null for any other error.
+ */
+export function describeContextOverflow(error: unknown): string | null {
+  const message = errorMessage(error);
+  for (const { pattern, counts } of CONTEXT_OVERFLOW_PATTERNS) {
+    const match = pattern.exec(message);
+    if (match === null) continue;
+    const promptTokens = counts === undefined ? undefined : match[counts.prompt];
+    const limitTokens = counts === undefined ? undefined : match[counts.limit];
+    const size = promptTokens !== undefined && limitTokens !== undefined
+      ? ` (${formatTokenCount(promptTokens)} > ${formatTokenCount(limitTokens)} tokens)`
+      : "";
+    return `Prompt exceeds the model context window${size}. The input is too large for this model; retrying will not help.`;
+  }
+  return null;
+}
+
+function formatTokenCount(digits: string): string {
+  return Number(digits).toLocaleString("en-US");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : error === undefined || error === null
+        ? ""
+        : safeStringify(error);
 }
 
 /** Best-effort `JSON.stringify`; falls back to `String()` for circular/BigInt values that would throw. */
