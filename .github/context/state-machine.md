@@ -29,6 +29,10 @@
 | `REVIEW_DONE` | terminal | Review completed cleanly |
 | `REVIEW_FAILED` | terminal | Review flow failed irrecoverably |
 
+## Dashboard categories
+
+`TASK_STATUS_CATEGORIES` (`src/domain/tasks.ts`) is the single dashboard taxonomy: **running** (`AGENT_RUNNING`, `FEEDBACK_PROCESSING`, `CLOSING`, `REVIEW_RUNNING`, `REVIEW_COMMENTING`), **queued** (`DETECTED`, `CONTEXT_BUILDING`, `RETRY_CYCLE`, `REVIEW_PENDING`), **watching** (`IN_REVIEW`, `REVIEW_WATCHING`), **completed** (`MERGED`, `DONE`, `REVIEW_DONE`), **failed** (`FAILED`, `REVIEW_FAILED`) and **abandoned** (`ABANDONED`). The coarse `TASK_WORKFLOW_BUCKETS` used by cost, model-usage and project statistics derive from it: running/queued → `active`, watching → `watching`, completed → `done`, failed/abandoned → `failed`. The admin UI mirrors the classifier in `src/admin/ui/states.ts`; a parity test guards drift. These categories are presentation only and do not affect terminality or transitions.
+
 ## Valid Transitions (`VALID_TRANSITIONS`)
 
 ```text

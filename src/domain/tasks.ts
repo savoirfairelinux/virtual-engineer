@@ -52,38 +52,64 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
   ...CODE_REVIEW_TERMINAL_STATES,
 ]);
 
-/** Dashboard-facing workflow bucket for a task state — distinct from state-machine terminality. */
-export type TaskWorkflowBucket = "active" | "watching" | "done" | "failed";
+/**
+ * Fine-grained dashboard category for a task state. "queued" states wait for
+ * execution (no agent running yet); "watching" states wait on external review.
+ */
+export type TaskStatusCategory = "running" | "queued" | "watching" | "completed" | "failed" | "abandoned";
 
-function classifyTaskWorkflowBucket(state: TaskState): TaskWorkflowBucket {
+function classifyTaskStatusCategory(state: TaskState): TaskStatusCategory {
   switch (state) {
-    case "DETECTED":
-    case "CONTEXT_BUILDING":
     case "AGENT_RUNNING":
     case "FEEDBACK_PROCESSING":
-    case "RETRY_CYCLE":
     case "CLOSING":
     case "REVIEW_RUNNING":
     case "REVIEW_COMMENTING":
-      return "active";
-    case "IN_REVIEW":
+      return "running";
+    case "DETECTED":
+    case "CONTEXT_BUILDING":
+    case "RETRY_CYCLE":
     case "REVIEW_PENDING":
+      return "queued";
+    case "IN_REVIEW":
     case "REVIEW_WATCHING":
       return "watching";
     case "MERGED":
     case "DONE":
     case "REVIEW_DONE":
-      return "done";
+      return "completed";
     case "FAILED":
-    case "ABANDONED":
     case "REVIEW_FAILED":
       return "failed";
+    case "ABANDONED":
+      return "abandoned";
     default: {
       // Exhaustiveness check — a new TaskState must be classified here.
       const _exhaustive: never = state;
       throw new Error(`Unclassified task state: ${String(_exhaustive)}`);
     }
   }
+}
+
+/** Single source of truth for the dashboard's fine-grained task categories. */
+export const TASK_STATUS_CATEGORIES: ReadonlyMap<TaskState, TaskStatusCategory> = new Map(
+  TASK_STATES.map((state) => [state, classifyTaskStatusCategory(state)])
+);
+
+/** Dashboard-facing workflow bucket for a task state — distinct from state-machine terminality. */
+export type TaskWorkflowBucket = "active" | "watching" | "done" | "failed";
+
+const CATEGORY_WORKFLOW_BUCKET: Readonly<Record<TaskStatusCategory, TaskWorkflowBucket>> = {
+  running: "active",
+  queued: "active",
+  watching: "watching",
+  completed: "done",
+  failed: "failed",
+  abandoned: "failed",
+};
+
+function classifyTaskWorkflowBucket(state: TaskState): TaskWorkflowBucket {
+  return CATEGORY_WORKFLOW_BUCKET[classifyTaskStatusCategory(state)];
 }
 
 /** Single source of truth for dashboard bucketing (active/watching/done/failed) across every `TaskState`. */
