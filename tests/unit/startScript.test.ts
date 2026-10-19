@@ -735,6 +735,8 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain('--name ve-local-keycloak');
     expect(script).toContain('KC_HTTP_PORT=18081');
     expect(script).toContain('deploy/docker/keycloak-realm.json');
+    expect(script).toContain('_keycloak_timeout="${KEYCLOAK_READY_TIMEOUT_SECONDS:-420}"');
+    expect(script).toContain("Managed local Keycloak exited during startup");
     expect(realm).toContain('"clientId": "openshell-ci"');
     expect(realm).toContain('"serviceAccountsEnabled": true');
     expect(realm).toContain('"openshell-admin"');

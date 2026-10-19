@@ -317,16 +317,24 @@ else
       -v ve-local-keycloak-data:/opt/keycloak/data \
       -v "$ROOT_DIR/deploy/docker/keycloak-realm.json:/opt/keycloak/data/import/openshell-realm.json:ro,Z" \
       "$KEYCLOAK_IMAGE" start-dev --import-realm >/dev/null
+    # start-dev re-runs Quarkus augmentation on every boot; cold starts on a
+    # loaded host routinely exceed three minutes.
+    _keycloak_timeout="${KEYCLOAK_READY_TIMEOUT_SECONDS:-420}"
+    [[ "$_keycloak_timeout" =~ ^[1-9][0-9]*$ ]] \
+      || error "KEYCLOAK_READY_TIMEOUT_SECONDS must be a positive integer."
+    _keycloak_deadline=$((SECONDS + _keycloak_timeout))
     _keycloak_ready=false
-    for _ in {1..80}; do
-      if curl -fsS "http://127.0.0.1:18081/realms/openshell/.well-known/openid-configuration" >/dev/null 2>&1; then
+    while (( SECONDS < _keycloak_deadline )); do
+      if curl -fsS --max-time 5 "http://127.0.0.1:18081/realms/openshell/.well-known/openid-configuration" >/dev/null 2>&1; then
         _keycloak_ready=true
         break
       fi
+      [[ "$(docker inspect -f '{{.State.Running}}' ve-local-keycloak 2>/dev/null)" == "true" ]] \
+        || error "Managed local Keycloak exited during startup. Check: docker logs ve-local-keycloak"
       sleep 2
     done
     [[ "$_keycloak_ready" == "true" ]] \
-      || error "Managed local Keycloak did not become ready. Check: docker logs ve-local-keycloak"
+      || error "Managed local Keycloak did not become ready within ${_keycloak_timeout}s (raise KEYCLOAK_READY_TIMEOUT_SECONDS if it is still starting). Check: docker logs ve-local-keycloak"
     # `start-dev --import-realm` skips a realm that already exists, so a data
     # volume written under an older secret keeps rejecting the current one.
     if ! printf 'grant_type=client_credentials&client_id=%s&client_secret=%s' \
