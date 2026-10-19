@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_TASK_FILTERS, TaskList } from "./TaskList.tsx";
+import { TaskList, taskFiltersFromHash } from "./TaskList.tsx";
 import type { TaskListFilters } from "./TaskList.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
 import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
 import type { ApiTask } from "../../types.ts";
+import { classifyWorkflowBucket } from "../../states.ts";
 
 interface TasksViewProps {
   tasks: ApiTask[];
@@ -11,12 +12,14 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, onRefresh }: TasksViewProps) {
-  const [filters, setFilters] = useState<TaskListFilters>(DEFAULT_TASK_FILTERS);
+  const [filters, setFilters] = useState<TaskListFilters>(() => taskFiltersFromHash(window.location.hash));
   const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 700px)").matches ?? false);
   const [showCompactDetail, setShowCompactDetail] = useState(() => window.location.hash.startsWith("#tasks/"));
   const [selectedId, setSelectedId] = useState<string>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
-    return tasks.find((t) => t.taskId === part)?.taskId ?? tasks[0]?.taskId ?? "";
+    const { statuses } = taskFiltersFromHash(window.location.hash);
+    const firstVisible = tasks.find((t) => statuses.length === 0 || statuses.includes(classifyWorkflowBucket(t.state)));
+    return tasks.find((t) => t.taskId === part)?.taskId ?? firstVisible?.taskId ?? "";
   });
 
   const tasksRef = useRef(tasks);

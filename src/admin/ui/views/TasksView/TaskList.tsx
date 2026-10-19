@@ -34,6 +34,17 @@ export const DEFAULT_TASK_FILTERS: TaskListFilters = {
   query: "",
 };
 
+const STATUS_FILTER_IDS = new Set<string>(FILTERS.map((filter) => filter.id).filter((id) => id !== "all"));
+
+/** Initial filters from a `#tasks?status=<bucket>` deep link (e.g. the General View failed counter). */
+export function taskFiltersFromHash(hash: string): TaskListFilters {
+  const queryStart = hash.indexOf("?");
+  if (queryStart < 0) return DEFAULT_TASK_FILTERS;
+  const statuses = new URLSearchParams(hash.slice(queryStart + 1)).getAll("status")
+    .filter((status): status is TaskWorkflowBucket => STATUS_FILTER_IDS.has(status));
+  return statuses.length === 0 ? DEFAULT_TASK_FILTERS : { ...DEFAULT_TASK_FILTERS, statuses: [...new Set(statuses)] };
+}
+
 interface TaskRowProps {
   task: ApiTask;
   selected: boolean;

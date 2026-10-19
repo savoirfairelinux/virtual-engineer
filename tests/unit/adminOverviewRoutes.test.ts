@@ -99,11 +99,13 @@ describe("Admin API — Overview route stats bucketing", () => {
     expect((r.body?.["stats"] as Record<string, unknown>)["activeTasks"]).toBe(1);
   });
 
-  it("counts a recently-updated ABANDONED task as failed (previously fell into no bucket)", async () => {
+  it("counts a recently-updated ABANDONED task as abandoned, not as a failure needing attention", async () => {
     await start([makeTask("t1", "ABANDONED", new Date(NOW))]);
     const r = await rest(server, "/api/admin/overview");
     expect(r.status).toBe(200);
-    expect((r.body?.["stats"] as Record<string, unknown>)["failedLast7d"]).toBe(1);
+    const stats = r.body?.["stats"] as Record<string, unknown>;
+    expect(stats["failedLast7d"]).toBe(0);
+    expect(stats["abandonedLast7d"]).toBe(1);
   });
 
   it("buckets one representative state per remaining category", async () => {
@@ -132,6 +134,25 @@ describe("Admin API — Overview route stats bucketing", () => {
     expect(r.status).toBe(200);
     const stats = r.body?.["stats"] as Record<string, unknown>;
     expect(stats["completedLast7d"]).toBe(0);
+    expect(stats["failedLast7d"]).toBe(0);
+  });
+
+  it("does not count a failed attempt superseded by a newer task for the same ticket", async () => {
+    const failed = { ...makeTask("old-attempt", "FAILED", new Date(NOW - 60_000)), ticketId: makeTicketId("shared") };
+    const retried = { ...makeTask("new-attempt", "DONE", new Date(NOW)), ticketId: makeTicketId("shared") };
+    await start([failed, retried]);
+    const stats = (await rest(server, "/api/admin/overview")).body?.["stats"] as Record<string, unknown>;
+    expect(stats["failedLast7d"]).toBe(0);
+    expect(stats["completedLast7d"]).toBe(1);
+  });
+
+  it("windows outcomes by when the task entered its terminal state, not by later updated_at bumps", async () => {
+    const eightDaysAgo = new Date(NOW - 8 * 24 * 60 * 60 * 1000);
+    const deps = makeDeps([makeTask("old-fail", "FAILED", new Date(NOW))]);
+    deps.stateStore.getCurrentStateEnteredAt = vi.fn(async () => new Map([[makeTaskId("old-fail"), eightDaysAgo]]));
+    server = createAdminServer(deps);
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const stats = (await rest(server, "/api/admin/overview")).body?.["stats"] as Record<string, unknown>;
     expect(stats["failedLast7d"]).toBe(0);
   });
 });
@@ -353,7 +374,8 @@ describe("Admin API - General View CSV export", () => {
     expect(metricRow(csv, "task_summary", "instance", "active")).toContain(',"1","tasks",""');
     expect(metricRow(csv, "task_summary", "instance", "watching")).toContain(',"1","tasks",""');
     expect(metricRow(csv, "task_summary", "instance", "completed")).toContain(`,"${days === null ? 3 : 1}","tasks",""`);
-    expect(metricRow(csv, "task_summary", "instance", "failed")).toContain(',"1","tasks",""');
+    expect(metricRow(csv, "task_summary", "instance", "failed")).toContain(',"0","tasks",""');
+    expect(metricRow(csv, "task_summary", "instance", "abandoned")).toContain(',"1","tasks",""');
     expect(metricRow(csv, "task_distribution", "category", "abandoned")).toContain(',"1","tasks",""');
     const bins = csv.split("\r\n").filter((row) => row.startsWith('"throughput","bin",'));
     expect(bins).toHaveLength(14);

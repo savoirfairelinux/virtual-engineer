@@ -5,7 +5,7 @@ import { Tag } from "../components/Tag.tsx";
 import { StatePill } from "../components/StatePill.tsx";
 import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { TONE, STATES, isActiveState } from "../states.ts";
+import { TONE, STATES, classifyWorkflowBucket, isActiveState } from "../states.ts";
 import { api } from "../api.ts";
 import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
 import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCostSummaryProject, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
@@ -18,6 +18,7 @@ interface OverviewViewProps {
   canViewConfig?: boolean | undefined;
   pollingIntervalMs: number;
   onNavigate: (v: "tasks" | "config", taskId?: string) => void;
+  onOpenFailedTasks?: (() => void) | undefined;
 }
 
 function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
@@ -604,9 +605,10 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
   );
 }
 
-export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate }: OverviewViewProps) {
+export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate, onOpenFailedTasks }: OverviewViewProps) {
+  const abandonedLast7d = overview?.stats.abandonedLast7d ?? 0;
   const active   = tasks.filter((t) => isActiveState(t.state)).length;
-  const watching = tasks.filter((t) => ["REVIEW_WATCHING", "IN_REVIEW", "REVIEW_PENDING"].includes(t.state)).length;
+  const watching = tasks.filter((t) => classifyWorkflowBucket(t.state) === "watching").length;
 
   return (
     <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
@@ -644,7 +646,14 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
           <Stat label="Active now"    value={active}   sub="agent cycles in flight" tone="active" icon="bolt" big />
           <Stat label="Watching"      value={watching} sub="awaiting next patchset"  tone="warn"   icon="eye"  big />
           <Stat label="Completed · 7d" value={overview?.stats.completedLast7d ?? "—"} sub="merged or reviewed" tone="ok" icon="check" big />
-          <Stat label="Failed · 7d"   value={overview?.stats.failedLast7d ?? "—"} sub="needs attention" tone="danger" icon="alert" big />
+          <Stat
+            label="Failed · 7d"
+            value={overview?.stats.failedLast7d ?? "—"}
+            sub={abandonedLast7d > 0 ? `needs attention · excl. ${abandonedLast7d} abandoned` : "needs attention"}
+            tone="danger" icon="alert" big
+            onClick={onOpenFailedTasks}
+            title={onOpenFailedTasks ? "Open failed tasks" : undefined}
+          />
         </div>
 
         {/* mid row */}

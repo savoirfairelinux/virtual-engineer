@@ -344,6 +344,7 @@ export interface ApiOverview {
     watchingTasks: number;
     completedLast7d: number;
     failedLast7d: number;
+    abandonedLast7d: number;
     activeProviders: number;
   };
   throughput: number[];        // last 14 polling ticks

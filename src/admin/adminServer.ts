@@ -144,6 +144,7 @@ export interface AdminProviderSummary {
 export interface AdminServerDependencies {
   stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">
     & Partial<Pick<StateStore, "getReviewVoteCounts">>
+    & Partial<Pick<StateStore, "getCurrentStateEnteredAt">>
     & Partial<Pick<StateStore, "getProjectStatistics">>;
   /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
   allowUnauthenticatedAdmin?: boolean | undefined;

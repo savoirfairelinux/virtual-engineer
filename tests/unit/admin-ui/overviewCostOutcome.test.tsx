@@ -127,7 +127,7 @@ describe("Overview outcome cost dimensions", () => {
 
   describe("Overview review vote periods", () => {
     const overview: ApiOverview = {
-      stats: { activeTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 0, activeProviders: 0 },
+      stats: { activeTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 0, abandonedLast7d: 0, activeProviders: 0 },
       throughput: [],
       reviewVotes: { plus2: 7, plus1: 0, minus1: 0, minus2: 0 },
       runtime: {
@@ -255,5 +255,25 @@ describe("Overview outcome cost dimensions", () => {
     expect(modelCard.getByText("Loading…")).toBeTruthy();
     expect(costCard.queryByText("instance total")).toBeNull();
     expect(modelCard.queryByTitle("claude-sonnet · Done · 1 runs")).toBeNull();
+  });
+
+  describe("Overview failure surfaces", () => {
+    it("excludes abandoned tasks from the failed stat and opens failed tasks on click", async () => {
+      const onOpenFailedTasks = vi.fn();
+      const overview: ApiOverview = {
+        stats: { activeTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 2, abandonedLast7d: 3, activeProviders: 0 },
+        throughput: [],
+        reviewVotes: { plus2: 0, plus1: 0, minus1: 0, minus2: 0 },
+        runtime: { environment: "test", version: "1", uptime: "1m", dbSize: "1 KB", maxCycles: 1, maxRetries: 1, pollingInterval: "30s", logLevel: "error" },
+      };
+      render(<OverviewView overview={overview} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined} onOpenFailedTasks={onOpenFailedTasks} />);
+      await screen.findByText("instance total");
+      const stat = screen.getByRole("button", { name: /Failed/ });
+      expect(stat.textContent).toContain("excl. 3 abandoned");
+      fireEvent.keyDown(stat, { key: "Enter" });
+      fireEvent.click(stat);
+      expect(onOpenFailedTasks).toHaveBeenCalledTimes(2);
+    });
   });
 });

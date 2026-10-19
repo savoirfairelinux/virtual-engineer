@@ -81,6 +81,7 @@ describe("App identity loading", () => {
       if (path === "/api/admin/status") return { polling: { running: true, intervalMs: 30000 } };
       if (path === "/api/admin/config") return { config: {} };
       if (path === "/api/admin/overview") return null;
+      if (path === "/api/admin/providers") return { providers: [] };
       throw new Error(`Unexpected path: ${path}`);
     });
   });
