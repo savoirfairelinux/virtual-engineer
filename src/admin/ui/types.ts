@@ -341,6 +341,8 @@ export interface ApiProvider {
 export interface ApiOverview {
   stats: {
     activeTasks: number;
+    runningTasks: number;
+    queuedTasks: number;
     watchingTasks: number;
     completedLast7d: number;
     failedLast7d: number;

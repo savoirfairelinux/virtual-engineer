@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { TaskList, taskFiltersFromHash } from "./TaskList.tsx";
+import { TaskList, taskFiltersFromHash, taskMatchesStatusFilters } from "./TaskList.tsx";
 import type { TaskListFilters } from "./TaskList.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
 import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
 import type { ApiTask } from "../../types.ts";
-import { classifyWorkflowBucket } from "../../states.ts";
 
 interface TasksViewProps {
   tasks: ApiTask[];
@@ -18,7 +17,7 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   const [selectedId, setSelectedId] = useState<string>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
     const { statuses } = taskFiltersFromHash(window.location.hash);
-    const firstVisible = tasks.find((t) => statuses.length === 0 || statuses.includes(classifyWorkflowBucket(t.state)));
+    const firstVisible = tasks.find((t) => taskMatchesStatusFilters(t, statuses));
     return tasks.find((t) => t.taskId === part)?.taskId ?? firstVisible?.taskId ?? "";
   });
 

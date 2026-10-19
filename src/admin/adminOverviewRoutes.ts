@@ -18,7 +18,7 @@ import type {
   ReviewVoteOptions,
   TaskId,
 } from "../interfaces.js";
-import { makeProjectId, makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
+import { makeProjectId, makeTaskId, TASK_STATES, TASK_STATUS_CATEGORIES, type TaskStatusCategory } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
 import { deduplicateByTicket, filterTasksByReadAccess } from "./adminTaskRoutes.js";
 import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
@@ -137,11 +137,15 @@ type TaskOutcome = "completed" | "failed" | "abandoned";
 
 /** Terminal outcome shown on the dashboard; ABANDONED is deliberate, not a failure needing attention. */
 function taskOutcome(task: Task): TaskOutcome | null {
-  if (task.state === "ABANDONED") return "abandoned";
-  const bucket = TASK_WORKFLOW_BUCKETS.get(task.state);
-  if (bucket === "done") return "completed";
-  if (bucket === "failed") return "failed";
-  return null;
+  const category = TASK_STATUS_CATEGORIES.get(task.state);
+  return category === "completed" || category === "failed" || category === "abandoned" ? category : null;
+}
+
+function countCategory(tasks: readonly Task[], ...categories: TaskStatusCategory[]): number {
+  return tasks.filter((task) => {
+    const category = TASK_STATUS_CATEGORIES.get(task.state);
+    return category !== undefined && categories.includes(category);
+  }).length;
 }
 
 /**
@@ -279,22 +283,17 @@ function analyticsCsv(
     const beforeEnd = options.before === undefined ? time <= end : time < end;
     return afterStart && beforeEnd;
   };
-  for (const bucket of ["active", "watching"] as const) {
-    add("task_summary", totalScope, bucket,
-      currentTasks.filter((task) => TASK_WORKFLOW_BUCKETS.get(task.state) === bucket).length, "tasks", { period: "current" });
-  }
+  add("task_summary", totalScope, "active", countCategory(currentTasks, "running", "queued"), "tasks", { period: "current" });
+  add("task_summary", totalScope, "watching", countCategory(currentTasks, "watching"), "tasks", { period: "current" });
   for (const outcome of ["completed", "failed", "abandoned"] as const) {
     add("task_summary", totalScope, outcome,
       currentTasks.filter((task) => taskOutcome(task) === outcome && inWindow(outcomeTime(task))).length, "tasks");
   }
-  const distribution: Record<string, readonly Task["state"][]> = {
-    running: ["AGENT_RUNNING", "FEEDBACK_PROCESSING", "CLOSING", "REVIEW_RUNNING", "REVIEW_COMMENTING"],
-    watching: ["IN_REVIEW", "REVIEW_WATCHING"], completed: ["MERGED", "DONE", "REVIEW_DONE"],
-    queued: ["DETECTED", "CONTEXT_BUILDING", "RETRY_CYCLE", "REVIEW_PENDING"],
-    failed: ["FAILED", "REVIEW_FAILED"], abandoned: ["ABANDONED"],
-  };
+  const distributionOrder: readonly TaskStatusCategory[] = ["running", "watching", "completed", "queued", "failed", "abandoned"];
+  const distribution = distributionOrder.map((category) =>
+    [category, TASK_STATES.filter((state) => TASK_STATUS_CATEGORIES.get(state) === category)] as const);
   add("task_distribution", totalScope, "total", currentTasks.length, "tasks", { period: "current" });
-  for (const [category, states] of Object.entries(distribution)) {
+  for (const [category, states] of distribution) {
     add("task_distribution", "category", category,
       currentTasks.filter((task) => states.includes(task.state)).length, "tasks", { period: "current" });
     for (const state of states) {
@@ -446,8 +445,10 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
         .filter((t) => taskOutcome(t) === outcome && outcomeTime(t) > sevenDaysAgo).length;
 
       const stats = {
-        activeTasks:      currentTasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "active").length,
-        watchingTasks:    currentTasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "watching").length,
+        activeTasks:      countCategory(currentTasks, "running", "queued"),
+        runningTasks:     countCategory(currentTasks, "running"),
+        queuedTasks:      countCategory(currentTasks, "queued"),
+        watchingTasks:    countCategory(currentTasks, "watching"),
         completedLast7d:  recentOutcome("completed"),
         failedLast7d:     recentOutcome("failed"),
         abandonedLast7d:  recentOutcome("abandoned"),

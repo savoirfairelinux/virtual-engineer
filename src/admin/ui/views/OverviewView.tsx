@@ -5,7 +5,7 @@ import { Tag } from "../components/Tag.tsx";
 import { StatePill } from "../components/StatePill.tsx";
 import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { TONE, STATES, classifyWorkflowBucket, isActiveState, type ToneKey } from "../states.ts";
+import { TONE, STATUS_CATEGORIES, classifyStatusCategory, type TaskStatusCategory, type ToneKey } from "../states.ts";
 import { api } from "../api.ts";
 import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
 import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCostSummaryProject, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
@@ -21,17 +21,14 @@ interface OverviewViewProps {
   onOpenFailedTasks?: (() => void) | undefined;
 }
 
+function countByCategory(tasks: ApiTask[]): Record<TaskStatusCategory, number> {
+  const counts: Record<TaskStatusCategory, number> = { running: 0, queued: 0, watching: 0, completed: 0, failed: 0, abandoned: 0 };
+  for (const t of tasks) counts[classifyStatusCategory(t.state)] += 1;
+  return counts;
+}
+
 function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
-  const counts: Record<string, number> = {};
-  for (const t of tasks) {
-    const meta = STATES[t.state];
-    if (!meta) continue;
-    counts[meta.tone] = (counts[meta.tone] ?? 0) + 1;
-  }
-  const order = ["active", "warn", "ok", "info", "danger", "muted"] as const;
-  const labels: Record<string, string> = {
-    active: "Running", warn: "Watching", ok: "Completed", info: "Queued", danger: "Failed", muted: "Abandoned",
-  };
+  const counts = countByCategory(tasks);
   const total = tasks.length;
   return (
     <div className="card" style={{ padding: "18px 20px", flex: 1, minWidth: 0 }}>
@@ -43,17 +40,17 @@ function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
         <div style={{ height: "10px", borderRadius: "99px", background: "var(--panel-2)", marginBottom: "18px" }} />
       ) : (
         <div style={{ display: "flex", height: "10px", borderRadius: "99px", overflow: "hidden", gap: "2px", marginBottom: "18px" }}>
-          {order.map((o) => counts[o] ? (
-            <div key={o} title={labels[o]} style={{ flex: counts[o], background: TONE[o].c, opacity: 0.9 }} />
+          {STATUS_CATEGORIES.map((c) => counts[c.id] ? (
+            <div key={c.id} title={c.label} style={{ flex: counts[c.id], background: TONE[c.tone].c, opacity: 0.9 }} />
           ) : null)}
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 22px" }}>
-        {order.filter((o) => counts[o]).map((o) => (
-          <div key={o} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
-            <span style={{ width: 9, height: 9, borderRadius: 99, background: TONE[o].c, flex: "none" }} />
-            <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1 }}>{labels[o]}</span>
-            <span className="mono metric-val" style={{ fontSize: "12.5px", fontWeight: 600 }}>{counts[o]}</span>
+        {STATUS_CATEGORIES.filter((c) => counts[c.id]).map((c) => (
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+            <span style={{ width: 9, height: 9, borderRadius: 99, background: TONE[c.tone].c, flex: "none" }} />
+            <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1 }}>{c.label}</span>
+            <span className="mono metric-val" style={{ fontSize: "12.5px", fontWeight: 600 }}>{counts[c.id]}</span>
           </div>
         ))}
       </div>
@@ -522,14 +519,16 @@ function ModelUsageCard() {
 }
 
 function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks", taskId?: string) => void }) {
-  const recent = tasks
-    .filter((t) => isActiveState(t.state))
-    .slice(0, 6);
+  // Running work first, then tasks still waiting to start.
+  const running = tasks.filter((t) => classifyStatusCategory(t.state) === "running");
+  const queued = tasks.filter((t) => classifyStatusCategory(t.state) === "queued");
+  const recent = [...running, ...queued].slice(0, 6);
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "15px 18px", borderBottom: "1px solid var(--border-soft)" }}>
         <span className="live-dot" style={{ width: 8, height: 8, borderRadius: 99, background: "var(--ok)" }} />
-        <span style={{ fontSize: "13px", fontWeight: 600 }}>In flight now</span>
+        <span style={{ fontSize: "13px", fontWeight: 600 }}>Active work</span>
+        <span className="mono" style={{ fontSize: "11px", color: "var(--text-faint)" }}>{running.length} running · {queued.length} queued</span>
         <div style={{ flex: 1 }} />
         <button className="btn sm" onClick={() => onOpen("tasks")}>
           Open queue <Icon name="arrow" size={13} />
@@ -640,8 +639,7 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
 
 export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate, onOpenFailedTasks }: OverviewViewProps) {
   const abandonedLast7d = overview?.stats.abandonedLast7d ?? 0;
-  const active   = tasks.filter((t) => isActiveState(t.state)).length;
-  const watching = tasks.filter((t) => classifyWorkflowBucket(t.state) === "watching").length;
+  const counts = countByCategory(tasks);
 
   return (
     <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
@@ -676,8 +674,8 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
 
         {/* stat row */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
-          <Stat label="Active now"    value={active}   sub="agent cycles in flight" tone="active" icon="bolt" big />
-          <Stat label="Watching"      value={watching} sub="awaiting next patchset"  tone="warn"   icon="eye"  big />
+          <Stat label="Running now"   value={counts.running}  sub={counts.queued > 0 ? `agents in flight · ${counts.queued} queued` : "agents in flight"} tone="active" icon="bolt" big />
+          <Stat label="Watching"      value={counts.watching} sub="awaiting review or next patchset" tone="warn" icon="eye" big />
           <Stat label="Completed · 7d" value={overview?.stats.completedLast7d ?? "—"} sub="merged or reviewed" tone="ok" icon="check" big />
           <Stat
             label="Failed · 7d"

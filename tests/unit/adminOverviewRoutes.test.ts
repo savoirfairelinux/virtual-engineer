@@ -124,6 +124,17 @@ describe("Admin API — Overview route stats bucketing", () => {
     expect(stats["failedLast7d"]).toBe(1);
   });
 
+  it("splits active work into running and queued, counting a pending review as queued rather than watching", async () => {
+    await start([
+      makeTask("gen", "AGENT_RUNNING", new Date(NOW)),
+      makeTask("detected", "DETECTED", new Date(NOW)),
+      makeTask("pending-review", "REVIEW_PENDING", new Date(NOW)),
+      makeTask("watch", "REVIEW_WATCHING", new Date(NOW)),
+    ]);
+    const stats = (await rest(server, "/api/admin/overview")).body?.["stats"] as Record<string, unknown>;
+    expect(stats).toMatchObject({ activeTasks: 3, runningTasks: 1, queuedTasks: 2, watchingTasks: 1 });
+  });
+
   it("excludes done/failed tasks updated more than 7 days ago from the 7-day counters", async () => {
     const eightDaysAgo = new Date(NOW - 8 * 24 * 60 * 60 * 1000);
     await start([
