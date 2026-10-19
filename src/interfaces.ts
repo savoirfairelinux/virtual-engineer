@@ -1649,6 +1649,8 @@ export interface StateStore {
   ): Promise<ProjectStatistics>;
 
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
+  /** Latest entry time into each task's current state (pause/resume rows ignored). */
+  getCurrentStateEnteredAt(taskIds: TaskId[]): Promise<Map<TaskId, Date>>;
 
   // Comment deduplication
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;

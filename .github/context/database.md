@@ -46,6 +46,7 @@ to reflect edits. This read-time API adds no schema, index, or migration.
 ## Task soft deletion and cost history
 
 - `tasks.deleted_at` (nullable epoch-seconds timestamp) marks tasks hidden from operational reads (`getTask`, `getAllTasks`, active/retry lookup paths) without dropping immutable historical rows.
+- `getCurrentStateEnteredAt(taskIds)` returns, per task, the newest `state_transitions.created_at` whose `to_state` equals the current `tasks.state` and `from_state <> to_state` (pause/resume rows excluded), batched by 900 IDs. Tasks without such a row are omitted; callers fall back to `updated_at`, which unrelated writes can bump.
 - `deleteTask(taskId)` now soft-deletes terminal tasks by setting `deleted_at` (and still removing mutable change/comment rows), so `agent_cycles` and `state_transitions` remain available for cost/model/statistics aggregates and audit history.
 - `deleteTaskGroup(taskId)` delegates to the same soft-delete semantics for terminal siblings sharing ticket/change identity; it does not physically delete immutable history rows.
 - Project reassignment/deletion paths (`adoptOrphanedTasksForProject`, `deleteProject`) only mutate rows with `deleted_at IS NULL`, so soft-deleted tasks keep their snapshot bindings and are never resurrected by orphan adoption.
