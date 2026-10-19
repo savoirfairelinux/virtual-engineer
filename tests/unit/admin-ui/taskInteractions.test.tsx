@@ -158,7 +158,9 @@ describe("task interactions", () => {
 
     expect(taskTypes.nextElementSibling).toBe(statuses);
     expect(statuses.children).toHaveLength(7);
-    expect(statuses.style.display).toBe("grid");
+    expect(statuses.style.display).toBe("flex");
+    expect(statuses.style.flexWrap).toBe("wrap");
+    expect(queued.style.minWidth).toBe("");
     expect(taskTypes.style.display).toBe("grid");
     expect(within(taskTypes).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Coding", "Review"]);
     expect(within(statuses).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Abandoned", "Queued"]);
