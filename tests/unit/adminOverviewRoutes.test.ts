@@ -157,6 +157,19 @@ describe("Admin API — Overview route stats bucketing", () => {
     expect(stats["completedLast7d"]).toBe(1);
   });
 
+  it("keeps independent sources sharing a ticket ID and per-project reviews of one change distinct", async () => {
+    const shared = makeTicketId("42");
+    const change = "I0123" as Task["externalChangeId"];
+    await start([
+      { ...makeTask("redmine", "FAILED", new Date(NOW - 60_000)), ticketId: shared, ticketSourceIntegrationId: "redmine-a" },
+      { ...makeTask("jira", "DONE", new Date(NOW)), ticketId: shared, ticketSourceIntegrationId: "jira-b" },
+      { ...makeTask("review-a", "REVIEW_FAILED", new Date(NOW - 60_000)), externalChangeId: change, projectId: "project-a" as Task["projectId"] },
+      { ...makeTask("review-b", "REVIEW_DONE", new Date(NOW)), externalChangeId: change, projectId: "project-b" as Task["projectId"] },
+    ]);
+    const stats = (await rest(server, "/api/admin/overview")).body?.["stats"] as Record<string, unknown>;
+    expect(stats).toMatchObject({ failedLast7d: 2, completedLast7d: 2 });
+  });
+
   it("windows outcomes by when the task entered its terminal state, not by later updated_at bumps", async () => {
     const eightDaysAgo = new Date(NOW - 8 * 24 * 60 * 60 * 1000);
     const deps = makeDeps([makeTask("old-fail", "FAILED", new Date(NOW))]);
@@ -353,6 +366,17 @@ describe("Admin API - General View CSV export", () => {
     expect(csv).toContain('"2026-10-01T00:00:00.000Z","2026-10-03T00:00:00.000Z"');
     expect(response.headers.get("content-disposition")).toContain("2026-10-01_2026-10-02.csv");
     expect((await fetch(`${url}?projectId=unknown`)).status).toBe(400);
+  });
+
+  it("does not merge tasks from different exported projects that share a ticket or change", async () => {
+    const change = "I0456" as Task["externalChangeId"];
+    const deps = makeDeps([
+      { ...makeTask("a", "DONE", new Date(NOW)), ticketId: makeTicketId("7"), externalChangeId: change, projectId: "project-a" as Task["projectId"] },
+      { ...makeTask("b", "DONE", new Date(NOW)), ticketId: makeTicketId("7"), externalChangeId: change, projectId: "project-b" as Task["projectId"] },
+      { ...makeTask("b-retry", "DONE", new Date(NOW + 1)), ticketId: makeTicketId("7"), externalChangeId: change, projectId: "project-b" as Task["projectId"] },
+    ]);
+    const csv = await (await fetch(`${await start(deps)}?days=7`)).text();
+    expect(metricRow(csv, "task_distribution", "instance", "total")).toContain(',"2","tasks",""');
   });
 
   it("returns JSON rather than a partial attachment if an aggregate fails", async () => {

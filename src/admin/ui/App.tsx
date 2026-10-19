@@ -35,6 +35,8 @@ interface TutorialLaunch {
 }
 
 const OVERVIEW_REFRESH_MS = 30_000;
+/** Overview data requested more recently than this is not re-fetched when the view opens. */
+const OVERVIEW_FRESH_MS = 5_000;
 
 function viewFromHash(hash: string): ViewId {
   if (hash.startsWith("#config")) return "config";
@@ -122,7 +124,8 @@ export function App() {
   }, [configSection, configWorkflowActive, pendingTutorialKey, view]);
   const dataGenerationRef = useRef(0);
   const loadRequestRef = useRef(0);
-  const overviewVisitedRef = useRef(false);
+  // When overview/providers were last requested (0 = never), so opening Overview only skips fresh data.
+  const overviewRequestedAtRef = useRef(0);
   // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
   // false and authenticated starts as true — skipping the setup screen. This effect catches
   // that case: if the server reports no users exist, force the setup screen regardless.
@@ -176,7 +179,7 @@ export function App() {
 
   const resetLoadedData = useCallback(() => {
     dataGenerationRef.current += 1;
-    overviewVisitedRef.current = false;
+    overviewRequestedAtRef.current = 0;
     setTasks([]);
     setProviders([]);
     setIntegrations([]);
@@ -210,6 +213,7 @@ export function App() {
     const generation = dataGenerationRef.current;
     const requestId = ++loadRequestRef.current;
     setLoadError(null);
+    overviewRequestedAtRef.current = Date.now();
     // Viewer-safe reads — always fetched.
     const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
@@ -304,9 +308,8 @@ export function App() {
   useEffect(() => {
     if (!authenticated || view !== "overview") return;
     const generation = dataGenerationRef.current;
-    const firstVisit = !overviewVisitedRef.current;
-    overviewVisitedRef.current = true;
     const refresh = () => {
+      overviewRequestedAtRef.current = Date.now();
       void api.get<ApiOverview>("/api/admin/overview")
         .then((r) => { if (generation === dataGenerationRef.current) setOverview(r); })
         .catch(() => { /* keep the last snapshot; the next tick retries */ });
@@ -314,8 +317,8 @@ export function App() {
         .then((r) => { if (generation === dataGenerationRef.current) setProviders(r.providers); })
         .catch(() => { /* keep the last snapshot; the next tick retries */ });
     };
-    // loadAll already fetched both on the first visit; refresh immediately when returning.
-    if (!firstVisit) refresh();
+    // Skip the immediate fetch only when loadAll (or a previous tick) just requested both.
+    if (Date.now() - overviewRequestedAtRef.current >= OVERVIEW_FRESH_MS) refresh();
     const id = setInterval(refresh, OVERVIEW_REFRESH_MS);
     return () => clearInterval(id);
   }, [authenticated, view]);

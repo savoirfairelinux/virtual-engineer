@@ -273,26 +273,42 @@ function pickLatest(a: Task | undefined, b: Task): boolean {
   return false;
 }
 
-/** Deduplicate tasks, keeping the most-recent per ticketId and per externalChangeId. */
+function ticketDedupKey(task: Task): string {
+  const source = task.ticketSourceIntegrationId ?? task.ticketSourceLabel;
+  return JSON.stringify([source, task.projectId ?? null, task.ticketId]);
+}
+
+function changeDedupKey(task: Task, changeId: string): string {
+  return JSON.stringify([task.projectId ?? null, changeId]);
+}
+
+/**
+ * Deduplicate retry attempts, keeping the most-recent task per ticket and per
+ * external change. Both passes are scoped by project (and the ticket pass by
+ * ticket source) so independent sources sharing a ticket ID and separate
+ * per-project reviews of the same change stay distinct.
+ */
 export function deduplicateByTicket(tasks: Task[]): Task[] {
   const byTicket = new Map<string, Task>();
   for (const task of tasks) {
-    if (pickLatest(byTicket.get(task.ticketId), task)) {
-      byTicket.set(task.ticketId, task);
+    const key = ticketDedupKey(task);
+    if (pickLatest(byTicket.get(key), task)) {
+      byTicket.set(key, task);
     }
   }
 
   const byChangeId = new Map<string, Task>();
   for (const task of byTicket.values()) {
     if (!task.externalChangeId) continue;
-    if (pickLatest(byChangeId.get(task.externalChangeId), task)) {
-      byChangeId.set(task.externalChangeId, task);
+    const key = changeDedupKey(task, task.externalChangeId);
+    if (pickLatest(byChangeId.get(key), task)) {
+      byChangeId.set(key, task);
     }
   }
 
   return Array.from(byTicket.values()).filter((task) => {
     if (task.externalChangeId) {
-      return byChangeId.get(task.externalChangeId) === task;
+      return byChangeId.get(changeDedupKey(task, task.externalChangeId)) === task;
     }
     return true;
   });

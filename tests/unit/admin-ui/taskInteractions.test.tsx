@@ -220,6 +220,24 @@ describe("task interactions", () => {
     expect(screen.queryByRole("button", { name: "Reset filters" })).toBeNull();
   });
 
+  it("selects the first task matching a deep-linked status filter once tasks load asynchronously", () => {
+    const { rerender } = renderQueue([]);
+    window.history.replaceState({}, "", "#tasks?status=failed");
+    rerender(<TasksView key="deep-link" tasks={[]} onRefresh={vi.fn()} />);
+    rerender(<TasksView key="deep-link" tasks={queueTasks} onRefresh={vi.fn()} />);
+    expect(window.location.hash).toBe("#tasks/failed-review");
+    expect(screen.queryByText("Select a task to inspect its cycles and timeline.")).toBeNull();
+  });
+
+  it("selects nothing when no loaded task matches the deep-linked status filter", () => {
+    const { rerender } = renderQueue([]);
+    window.history.replaceState({}, "", "#tasks?status=abandoned");
+    rerender(<TasksView key="deep-link" tasks={[]} onRefresh={vi.fn()} />);
+    rerender(<TasksView key="deep-link" tasks={queueTasks} onRefresh={vi.fn()} />);
+    expect(window.location.hash).toBe("#tasks?status=abandoned");
+    expect(screen.getByText("Select a task to inspect its cycles and timeline.")).toBeTruthy();
+  });
+
   it("filters reviews independently and preserves the selected detail when filtering it out", () => {
     renderQueue();
     const selectedHash = window.location.hash;

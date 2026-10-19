@@ -42,13 +42,15 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
     if (selectedId && tasks.some((t) => t.taskId === selectedId)) return;
     const part = window.location.hash.split("/")[1] ?? "";
     const fromHash = tasks.find((t) => t.taskId === part)?.taskId;
-    const id = fromHash ?? tasks[0]?.taskId ?? "";
+    const id = fromHash ?? tasks.find((t) => taskMatchesStatusFilters(t, filters.statuses))?.taskId ?? "";
     if (id) {
       setSelectedId(id);
       if (fromHash) setShowCompactDetail(true);
       else if (!compact) window.location.hash = `tasks/${id}`;
+    } else if (selectedId) {
+      setSelectedId("");
     }
-  }, [compact, tasks, selectedId]);
+  }, [compact, tasks, selectedId, filters.statuses]);
 
   useEffect(() => {
     const onHashChange = () => {
