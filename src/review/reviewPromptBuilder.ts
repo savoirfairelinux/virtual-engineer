@@ -4,14 +4,24 @@
  * Assembles the full prompt string passed to the review agent by combining
  * change metadata, the diff, and per-reviewer instructions.
  */
-import type {
-  ReviewChangeDetails,
-  ReviewChangeDiff,
-  ReviewDiscussionThread,
-  ReviewMergeContext,
+import {
+  REVIEW_ATTACHMENT_DIR,
+  type ReviewAttachment,
+  type ReviewChangeDetails,
+  type ReviewChangeDiff,
+  type ReviewDiscussionThread,
+  type ReviewMergeContext,
 } from "../interfaces.js";
 
 const DEFAULT_MAX_COMMIT_MESSAGE_CHARS = 8_000;
+/**
+ * Upper bound on diff text inlined in the prompt (~100k tokens). Larger diffs are
+ * attached in full as repository files and only partially inlined, so the agent
+ * keeps access to every file without overflowing the model context window.
+ */
+export const DEFAULT_MAX_INLINE_DIFF_CHARS = 400_000;
+export const FULL_DIFF_ATTACHMENT = "change.diff";
+export const DELTA_DIFF_ATTACHMENT = "since-last-review.diff";
 const COMMIT_MESSAGE_TRUNCATION_NOTE =
   "\n\n[... commit message truncated to fit in the model context ...]";
 const MAX_LISTED_MERGED_COMMITS = 100;
@@ -40,6 +50,14 @@ export interface ReviewPromptInput {
    * seeing the full change. Omitted on the first review pass.
    */
   sinceLastReview?: SinceLastReviewDelta | undefined;
+  /** Inline diff budget in characters; defaults to {@link DEFAULT_MAX_INLINE_DIFF_CHARS}. */
+  maxInlineDiffChars?: number | undefined;
+}
+
+/** Prompt plus the files it references, which must be written before the agent runs. */
+export interface ReviewPrompt {
+  prompt: string;
+  attachments: ReviewAttachment[];
 }
 
 /** Inter-patchset delta surfaced to the agent on a re-review. */
@@ -61,7 +79,7 @@ export interface PriorReviewComment {
 }
 
 /** Build the full prompt sent to the review agent for a single change. */
-export function buildReviewPrompt(input: ReviewPromptInput): string {
+export function buildReviewPrompt(input: ReviewPromptInput): ReviewPrompt {
   const {
     details,
     diff,
@@ -70,6 +88,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     reassessPriorFindings,
     discussionThreads,
     sinceLastReview,
+    maxInlineDiffChars = DEFAULT_MAX_INLINE_DIFF_CHARS,
   } = input;
 
   const header = [
@@ -86,7 +105,19 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     .map((f) => `- ${f.status.toUpperCase().padEnd(8)} ${f.path}`)
     .join("\n");
 
-  const diffSections = renderDiffSections(diff);
+  const hasDelta = sinceLastReview !== undefined && sinceLastReview.diff.files.length > 0;
+  const attachments: ReviewAttachment[] = [];
+  const fullDiffText = renderDiffSections(diff.files);
+  const deltaDiffText = hasDelta ? renderDiffSections(sinceLastReview.diff.files) : "";
+  const fitsInline = fullDiffText.length + deltaDiffText.length <= maxInlineDiffChars;
+  // Over budget, the delta gets at most half the budget and the full diff the rest.
+  const deltaBudget = hasDelta ? Math.floor(maxInlineDiffChars / 2) : 0;
+  const deltaSections = fitsInline || !hasDelta
+    ? deltaDiffText
+    : renderBudgetedDiff(sinceLastReview.diff, deltaBudget, DELTA_DIFF_ATTACHMENT, attachments);
+  const diffSections = fitsInline
+    ? fullDiffText
+    : renderBudgetedDiff(diff, maxInlineDiffChars - deltaSections.length, FULL_DIFF_ATTACHMENT, attachments);
 
   const sections = [
     header,
@@ -121,11 +152,11 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     );
   }
 
-  if (sinceLastReview && sinceLastReview.diff.files.length > 0) {
+  if (hasDelta) {
     sections.push(
       ``,
       `## Changes since last reviewed patchset (PS ${sinceLastReview.fromPatchset} \u2192 ${sinceLastReview.toPatchset})`,
-      renderSinceLastReview(sinceLastReview),
+      renderSinceLastReview(deltaSections),
     );
   }
 
@@ -142,7 +173,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     diffSections,
   );
 
-  return sections.join("\n");
+  return { prompt: sections.join("\n"), attachments };
 }
 
 /**
@@ -208,11 +239,48 @@ function renderDiscussionThreads(threads: ReviewDiscussionThread[]): string {
   ].join("\n");
 }
 
-/** Render every file's diff; an oversized prompt must fail, not silently omit files. */
-function renderDiffSections(diff: ReviewChangeDiff): string {
-  return diff.files.map((file) =>
-    `### ${file.path} (${file.status})\n\`\`\`diff\n${file.patch || "(no textual diff)"}\n\`\`\``
-  ).join("\n\n");
+type ReviewDiffFile = ReviewChangeDiff["files"][number];
+
+function renderFileDiff(file: ReviewDiffFile): string {
+  return `### ${file.path} (${file.status})\n\`\`\`diff\n${file.patch || "(no textual diff)"}\n\`\`\``;
+}
+
+function renderDiffSections(files: readonly ReviewDiffFile[]): string {
+  return files.map(renderFileDiff).join("\n\n");
+}
+
+/**
+ * Render an oversized diff: the complete diff is attached as a repository file and
+ * files are inlined while they fit the budget. Every file not inlined is explicitly
+ * listed with a pointer to the attachment, so nothing is silently omitted.
+ */
+function renderBudgetedDiff(
+  diff: ReviewChangeDiff,
+  budget: number,
+  attachmentName: string,
+  attachments: ReviewAttachment[],
+): string {
+  const attachmentPath = `${REVIEW_ATTACHMENT_DIR}/${attachmentName}`;
+  attachments.push({ fileName: attachmentName, content: renderDiffSections(diff.files) + "\n" });
+  let remaining = budget;
+  let inlinedCount = 0;
+  const sections = diff.files.map((file) => {
+    const rendered = renderFileDiff(file);
+    if (rendered.length <= remaining) {
+      remaining -= rendered.length;
+      inlinedCount += 1;
+      return rendered;
+    }
+    const lineCount = file.patch.length === 0 ? 0 : file.patch.split("\n").length;
+    return `### ${file.path} (${file.status})\n(diff not inlined: ${lineCount} lines — read the \`### ${file.path}\` section of \`${attachmentPath}\`)`;
+  });
+  const note = [
+    `> This diff is too large to inline in full: ${inlinedCount} of ${diff.files.length} files are inlined below.`,
+    `> The complete diff of every file is in \`${attachmentPath}\` (relative to the repository root).`,
+    "> Read the sections of the files that are not inlined from it before reviewing them. The",
+    `> \`${REVIEW_ATTACHMENT_DIR}\` files are provided by the reviewer tooling and are not part of the change.`,
+  ].join("\n");
+  return [note, ...sections].join("\n\n");
 }
 
 function truncateCommitMessage(description: string): string {
@@ -226,14 +294,14 @@ function truncateCommitMessage(description: string): string {
  * Rebase noise (upstream changes pulled in between patchsets) may appear here;
  * the note tells the agent to treat it as such.
  */
-function renderSinceLastReview(delta: SinceLastReviewDelta): string {
+function renderSinceLastReview(deltaDiffText: string): string {
   return [
     "These are the changes between the patchset you last reviewed and the current",
     "one. Focus genuinely new findings on this delta. If the change was rebased,",
     "some hunks here may be upstream churn rather than author edits — judge",
     "accordingly. The full change is still provided below for context.",
     "",
-    renderDiffSections(delta.diff),
+    deltaDiffText,
   ].join("\n");
 }
 

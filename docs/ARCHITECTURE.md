@@ -484,7 +484,7 @@ Drives the **code-review lifecycle** for a single change.
   REVIEW_RUNNING
        │
        ├─ clone repo host-side (HostGitExecutor) + git fetch refs/changes/<patchset>
-       ├─ buildReviewPrompt(diff + "already reported" prior comments)
+       ├─ buildReviewPrompt(diff + "already reported" prior comments; oversized diffs attached under .git/ve-review/)
        │
        ├─ sandbox create + upload workspace → exec agent (REVIEW_MODE=1)
        │     reads USER_PROMPT_FILE (uploaded prompt)
