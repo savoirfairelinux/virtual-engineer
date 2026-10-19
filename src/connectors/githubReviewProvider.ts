@@ -940,16 +940,27 @@ function mapFileStatus(status: string): ReviewFileStatus {
   }
 }
 
+// Machine-generated files (Drizzle snapshots, lockfiles) are routinely too large
+// for GitHub to return a patch and carry no reviewable intent.
+const GENERATED_FILE_PATTERN =
+  /(?:^|\/)(?:meta\/\d+_snapshot\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+
 /**
  * GitHub omits `patch` for binary files and pure renames/mode changes (zero
  * changed lines) as well as for oversized text diffs. Only the latter makes the
  * diff incomplete; missing line counts are treated as unknown and rejected.
+ * Known generated files are exempt and kept with an empty patch.
  */
 function assertTextualPatchesPresent(
   files: ReadonlyArray<{ filename: string; patch?: string | null | undefined; changes?: number | undefined }>,
   context: string,
 ): void {
-  const missing = files.find((file) => (file.patch === undefined || file.patch === null) && file.changes !== 0);
+  const missing = files.find(
+    (file) =>
+      (file.patch === undefined || file.patch === null) &&
+      file.changes !== 0 &&
+      !GENERATED_FILE_PATTERN.test(file.filename),
+  );
   if (missing !== undefined) {
     throw new Error(`${context}: patch unavailable for ${missing.filename}; cannot review an incomplete diff`);
   }

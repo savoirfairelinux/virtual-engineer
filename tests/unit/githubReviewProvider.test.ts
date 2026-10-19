@@ -670,6 +670,18 @@ describe("GitHubReviewProvider", () => {
     ]);
   });
 
+  it("tolerates oversized generated files (Drizzle snapshots, lockfiles) without a patch", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "drizzle/meta/0009_snapshot.json", status: "added", additions: 9000, deletions: 0, changes: 9000 },
+      { filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: "@@\n+new" },
+    ]));
+    const result = await new GitHubReviewProvider(config).getChangeDiff(cid);
+    expect(result.files).toEqual([
+      { path: "drizzle/meta/0009_snapshot.json", status: "added", patch: "" },
+      { path: "src/a.ts", status: "modified", patch: "@@\n+new" },
+    ]);
+  });
+
   it("getInterPatchsetDiff compares the old reviewed commit with the current head", async () => {
     const fromSha = "1111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const toSha = "2222222222222bbbbbbbbbbbbbbbbbbbbbbbbb";
