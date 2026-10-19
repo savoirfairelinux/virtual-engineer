@@ -257,6 +257,35 @@ describe("PluginManager", () => {
       // Redmine should still be null due to invalid config
     });
 
+    it("records degraded and inactive integrations as activation failures until disabled", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "bad-config",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "not-a-url" }),
+          enabled: true,
+        }),
+        makeIntegration({
+          id: "bad-secret",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: "veenc:v1:not-valid-ciphertext", virtualEngineerUserLogin: "ve" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "current-secret" });
+
+      await mgr.loadFromDatabase();
+
+      const failures = new Map(mgr.getActivationFailures().map((failure) => [failure.integration.id, failure]));
+      expect(failures.get("bad-config")).toMatchObject({ active: true });
+      expect(failures.get("bad-config")?.failedCapabilities).toContain("issue_tracking");
+      expect(failures.get("bad-secret")).toMatchObject({ active: false, failedCapabilities: [] });
+      expect(mgr.isIntegrationActive("bad-secret")).toBe(false);
+
+      await mgr.disablePlugin("bad-config");
+      expect(mgr.getActivationFailures().map((failure) => failure.integration.id)).toEqual(["bad-secret"]);
+    });
+
     it("passes copilot sessionToken through to the plugin factory", async () => {
       const store = makeStore([
         makeIntegration({

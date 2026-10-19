@@ -41,12 +41,40 @@ export function buildAdminProviderSummaries(
     ...pluginManager.getActiveIntegrationsByCapability("agent_execution"),
   ];
 
+  const failures = new Map(pluginManager.getActivationFailures().map((failure) => [failure.integration.id, failure]));
   for (const integration of activeIntegrations) {
     if (summaries.some((s) => s.id === integration.id)) continue;
-    summaries.push(buildAdminProviderSummaryForIntegration(integration, config));
+    const summary = buildAdminProviderSummaryForIntegration(integration, config);
+    const failure = failures.get(integration.id);
+    summaries.push(failure && failure.failedCapabilities.length > 0
+      ? { ...summary, status: "error", details: [`Connector failed: ${failure.failedCapabilities.join(", ")}`, ...summary.details] }
+      : summary);
+  }
+  for (const failure of failures.values()) {
+    if (failure.active || summaries.some((s) => s.id === failure.integration.id)) continue;
+    summaries.push(buildFailedIntegrationSummary(failure.integration));
   }
 
   return summaries;
+}
+
+/** Summary for an enabled integration that could not be activated at runtime. */
+function buildFailedIntegrationSummary(integration: Integration): AdminProviderSummary {
+  const descriptor = getProviderDescriptor(integration.provider);
+  const domainCapabilities = descriptor ? getProviderDomainCapabilities(descriptor) : [];
+  return {
+    id: integration.id,
+    name: integration.name,
+    category: domainCapabilities.includes("issue_tracking")
+      ? "ticketing"
+      : domainCapabilities.includes("code_review") ? "review" : "agent",
+    domainCapabilities,
+    intake: {},
+    enabled: integration.enabled,
+    configured: true,
+    status: "error",
+    details: ["Not active: activation failed; check the integration configuration and orchestrator logs"],
+  };
 }
 
 /** Build a single `AdminProviderSummary` for an active integration, with type-specific detail lines. */

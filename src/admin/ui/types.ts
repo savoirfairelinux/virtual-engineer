@@ -334,7 +334,7 @@ export interface ApiProvider {
   category: "ticketing" | "review" | "agent" | "runtime";
   enabled: boolean;
   configured: boolean;
-  status: "ready" | "disabled" | "incomplete";
+  status: "ready" | "disabled" | "incomplete" | "error";
   details: string[];
 }
 

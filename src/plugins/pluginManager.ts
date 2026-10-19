@@ -45,6 +45,13 @@ export type ConnectionTester = (config: unknown) => Promise<ConnectionTestResult
 
 export type PluginChangeCallback = () => void;
 
+/** An enabled integration whose activation failed entirely (`active: false`) or for some capabilities. */
+export interface IntegrationActivationFailure {
+  integration: Integration;
+  active: boolean;
+  failedCapabilities: DomainCapability[];
+}
+
 /** Capabilities that produce a runtime `PluginInstance` (cached per integration). */
 const INSTANCE_CAPABILITIES: readonly DomainCapability[] = ["issue_tracking", "code_review", "agent_execution"];
 const INTERNAL_CREDENTIAL_FIELDS = ["webhookSecret"] as const;
@@ -75,6 +82,8 @@ export class PluginManager {
   private readonly factories = new Map<ProviderId, PluginFactory>();
   private readonly testers = new Map<ProviderId, ConnectionTester>();
   private readonly changeCallbacks: PluginChangeCallback[] = [];
+  /** Enabled integrations whose last activation failed entirely or for some capabilities. */
+  private readonly activationFailures = new Map<string, IntegrationActivationFailure>();
 
   constructor(
     private readonly integrationStore: IntegrationStore,
@@ -310,6 +319,14 @@ export class PluginManager {
     return getCapabilityIntake(descriptor, capability);
   }
 
+  /**
+   * Enabled integrations whose last activation failed, either entirely (not
+   * active) or for some capability connectors (active but degraded).
+   */
+  getActivationFailures(): IntegrationActivationFailure[] {
+    return [...this.activationFailures.values()];
+  }
+
   /** All currently active providers. */
   getActiveProviders(): ProviderId[] {
     const providers = new Set<ProviderId>();
@@ -451,12 +468,22 @@ export class PluginManager {
 
   /** Build and register all instance-producing capability connectors for an integration. */
   private activateIntegration(integration: Integration): void {
-    const descriptor = this.getDescriptor(integration.provider);
-    // Validate managed credentials before registration; capability build errors
-    // are caught below and must not leave an undecryptable integration active.
-    this.decryptIntegrationConfig(integration);
+    this.activationFailures.delete(integration.id);
+    let descriptor: ProviderDescriptor;
+    try {
+      descriptor = this.getDescriptor(integration.provider);
+      // Validate managed credentials before registration; capability build errors
+      // are caught below and must not leave an undecryptable integration active.
+      this.decryptIntegrationConfig(integration);
+    } catch (err) {
+      if (integration.enabled) {
+        this.activationFailures.set(integration.id, { integration, active: false, failedCapabilities: [] });
+      }
+      throw err;
+    }
     this.activeIntegrationsById.set(integration.id, integration);
 
+    const failedCapabilities: DomainCapability[] = [];
     for (const capability of getProviderDomainCapabilities(descriptor)) {
       if (!INSTANCE_CAPABILITIES.includes(capability)) {
         continue;
@@ -467,11 +494,15 @@ export class PluginManager {
           this.instancesByCapability.set(instanceKey(integration.id, capability), instance);
         }
       } catch (err) {
+        failedCapabilities.push(capability);
         log.error(
           { provider: integration.provider, capability, name: integration.name, err },
           "failed to instantiate capability connector"
         );
       }
+    }
+    if (failedCapabilities.length > 0) {
+      this.activationFailures.set(integration.id, { integration, active: true, failedCapabilities });
     }
 
     this.notifyChange();
@@ -479,6 +510,7 @@ export class PluginManager {
 
   /** Remove an integration and all its capability connectors from the active registry. */
   private deactivateIntegration(integration: Integration): boolean {
+    this.activationFailures.delete(integration.id);
     const hadIntegration = this.activeIntegrationsById.delete(integration.id);
     let removed = false;
     for (const capability of INSTANCE_CAPABILITIES) {
@@ -598,6 +630,7 @@ export class PluginManager {
   private resetActiveState(): void {
     this.activeIntegrationsById.clear();
     this.instancesByCapability.clear();
+    this.activationFailures.clear();
   }
 
   /** Look up a registered provider descriptor, throwing if not found. */

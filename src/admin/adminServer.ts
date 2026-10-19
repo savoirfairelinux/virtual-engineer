@@ -137,7 +137,7 @@ export interface AdminProviderSummary {
   intake: Partial<Record<DomainCapability, Array<"polling" | "webhook" | "stream">>>;
   enabled: boolean;
   configured: boolean;
-  status: "ready" | "disabled" | "incomplete";
+  status: "ready" | "disabled" | "incomplete" | "error";
   details: readonly string[];
 }
 

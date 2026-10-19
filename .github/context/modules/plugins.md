@@ -83,7 +83,8 @@ Credential fields are encrypted for storage with the versioned `veenc:v1:` envel
 5. Project-mode runtime paths may either reuse the active integration-global connector via `getConnectorForIntegration(integrationId)` or build a project-bound connector via `createConnectorForIntegration(integrationId, context)` / `createConnectorForCapability(integrationId, capability, context)` when the VE project owns part of the provider binding. Review status polling uses the repository prefix in `owner/repo#number` change ids to select an exact `repoKey`; it does not fall back to the first repository in a multi-repository binding.
 6. Active Copilot integrations are instantiated only from explicit token-bearing integration config plus the app-level default model; project Agent records remain the place where per-agent Copilot models are selected.
 7. Review runtime paths resolve the active review backend by `integrationId` or by scanning active `code_review` integrations whose descriptor declares `createReviewer`; generic orchestration layers must not special-case Gerrit.
-8. Older per-type helpers have been removed; resolve only by `integrationId`, capability, or provider.
+8. `getActivationFailures()` lists enabled integrations that failed activation (`active: false`, e.g. descriptor or credential-decrypt errors) or activated with failed capability connectors (`active: true`, `failedCapabilities`). Entries are cleared on re-activation, deactivation, and reset; the admin provider summary reports them as `error`.
+9. Older per-type helpers have been removed; resolve only by `integrationId`, capability, or provider.
 
 ## Event-intake mechanisms
 

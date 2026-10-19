@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CurrentUserProvider } from "../../../src/admin/ui/authContext.js";
-import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview } from "../../../src/admin/ui/types.js";
+import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview, ApiProvider } from "../../../src/admin/ui/types.js";
 
 const apiGet = vi.hoisted(() => vi.fn());
 
@@ -257,7 +257,33 @@ describe("Overview outcome cost dimensions", () => {
     expect(modelCard.queryByTitle("claude-sonnet · Done · 1 runs")).toBeNull();
   });
 
-  describe("Overview failure surfaces", () => {
+  describe("Overview failure and provider health surfaces", () => {
+    const provider = (id: string, status: ApiProvider["status"]): ApiProvider => ({
+      id, name: `Provider ${id}`, category: "ticketing", enabled: status !== "disabled", configured: true, status, details: [`${id} detail`],
+    });
+
+    it("puts failing providers first, reports issues, and summarises rows beyond the limit", async () => {
+      const providers = [
+        ...Array.from({ length: 8 }, (_, index) => provider(`ok-${index}`, "ready")),
+        provider("broken", "error"),
+      ];
+      render(<OverviewView overview={null} tasks={[]} providers={providers} activeIntegrationCount={8}
+        pollingIntervalMs={30000} onNavigate={() => undefined} />);
+      await screen.findByText("instance total");
+      const card = within(screen.getByText("Provider health").closest(".card")!);
+      const names = card.getAllByText(/^Provider (ok-\d|broken)$/).map((node) => node.textContent);
+      expect(names[0]).toBe("Provider broken");
+      expect(card.getByText("1 issue")).toBeTruthy();
+      expect(card.getByText("+1 more provider")).toBeTruthy();
+    });
+
+    it("shows an empty state instead of a blank provider card", async () => {
+      render(<OverviewView overview={null} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined} />);
+      await screen.findByText("instance total");
+      expect(screen.getByText("No providers visible.")).toBeTruthy();
+    });
+
     it("excludes abandoned tasks from the failed stat and opens failed tasks on click", async () => {
       const onOpenFailedTasks = vi.fn();
       const overview: ApiOverview = {

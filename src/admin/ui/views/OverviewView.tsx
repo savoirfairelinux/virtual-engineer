@@ -5,7 +5,7 @@ import { Tag } from "../components/Tag.tsx";
 import { StatePill } from "../components/StatePill.tsx";
 import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { TONE, STATES, classifyWorkflowBucket, isActiveState } from "../states.ts";
+import { TONE, STATES, classifyWorkflowBucket, isActiveState, type ToneKey } from "../states.ts";
 import { api } from "../api.ts";
 import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
 import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCostSummaryProject, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
@@ -568,12 +568,34 @@ function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks"
   );
 }
 
+const PROVIDER_HEALTH_LIMIT = 8;
+
+const PROVIDER_STATUS_TONE: Record<ApiProvider["status"], ToneKey> = {
+  error: "danger",
+  incomplete: "warn",
+  ready: "ok",
+  disabled: "muted",
+};
+
+const PROVIDER_STATUS_RANK: Record<ApiProvider["status"], number> = {
+  error: 0,
+  incomplete: 1,
+  ready: 2,
+  disabled: 3,
+};
+
 function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiProvider[]; onOpen: (v: "config") => void; canViewConfig: boolean }) {
+  // Problems first so they are never hidden behind the row limit.
+  const ordered = [...providers].sort((a, b) => (PROVIDER_STATUS_RANK[a.status] ?? 0) - (PROVIDER_STATUS_RANK[b.status] ?? 0));
+  const shown = ordered.slice(0, PROVIDER_HEALTH_LIMIT);
+  const hidden = ordered.length - shown.length;
+  const issues = providers.filter((p) => p.status === "error" || p.status === "incomplete").length;
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "15px 18px", borderBottom: "1px solid var(--border-soft)" }}>
         <Icon name="server" size={15} style={{ color: "var(--text-faint)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600 }}>Provider health</span>
+        {issues > 0 && <Tag tone="danger">{issues} {issues === 1 ? "issue" : "issues"}</Tag>}
         <div style={{ flex: 1 }} />
         {canViewConfig && (
           <button className="btn sm" onClick={() => onOpen("config")}>
@@ -581,8 +603,11 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
           </button>
         )}
       </div>
-      {providers.slice(0, 8).map((p) => {
-        const tone = p.status === "ready" ? "ok" : p.status === "disabled" ? "muted" : "danger";
+      {shown.length === 0 && (
+        <div style={{ padding: "24px 18px", color: "var(--text-ghost)", fontSize: "13px" }}>No providers visible.</div>
+      )}
+      {shown.map((p) => {
+        const tone = PROVIDER_STATUS_TONE[p.status] ?? "danger";
         return (
           <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 18px", borderBottom: "1px solid var(--border-soft)" }}>
             <span
@@ -593,7 +618,10 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
               <div style={{ fontSize: "12.5px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {p.name}
               </div>
-              <div style={{ fontSize: "10.5px", color: "var(--text-faint)", marginTop: "1px" }}>
+              <div
+                title={p.details.join(" · ")}
+                style={{ fontSize: "10.5px", color: tone === "danger" ? TONE.danger.c : "var(--text-faint)", marginTop: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
                 {p.details.slice(0, 1).join(", ")}
               </div>
             </div>
@@ -601,6 +629,11 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
           </div>
         );
       })}
+      {hidden > 0 && (
+        <div style={{ padding: "10px 18px", fontSize: "12px", color: "var(--text-faint)" }}>
+          +{hidden} more {hidden === 1 ? "provider" : "providers"}
+        </div>
+      )}
     </div>
   );
 }
