@@ -5,7 +5,7 @@ import { Tag } from "../components/Tag.tsx";
 import { StatePill } from "../components/StatePill.tsx";
 import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { TONE, STATES, isActiveState } from "../states.ts";
+import { TONE, STATUS_CATEGORIES, classifyStatusCategory, type TaskStatusCategory, type ToneKey } from "../states.ts";
 import { api } from "../api.ts";
 import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
 import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCostSummaryProject, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
@@ -18,19 +18,17 @@ interface OverviewViewProps {
   canViewConfig?: boolean | undefined;
   pollingIntervalMs: number;
   onNavigate: (v: "tasks" | "config", taskId?: string) => void;
+  onOpenFailedTasks?: (() => void) | undefined;
+}
+
+function countByCategory(tasks: ApiTask[]): Record<TaskStatusCategory, number> {
+  const counts: Record<TaskStatusCategory, number> = { running: 0, queued: 0, watching: 0, completed: 0, failed: 0, abandoned: 0 };
+  for (const t of tasks) counts[classifyStatusCategory(t.state)] += 1;
+  return counts;
 }
 
 function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
-  const counts: Record<string, number> = {};
-  for (const t of tasks) {
-    const meta = STATES[t.state];
-    if (!meta) continue;
-    counts[meta.tone] = (counts[meta.tone] ?? 0) + 1;
-  }
-  const order = ["active", "warn", "ok", "info", "danger", "muted"] as const;
-  const labels: Record<string, string> = {
-    active: "Running", warn: "Watching", ok: "Completed", info: "Queued", danger: "Failed", muted: "Abandoned",
-  };
+  const counts = countByCategory(tasks);
   const total = tasks.length;
   return (
     <div className="card" style={{ padding: "18px 20px", flex: 1, minWidth: 0 }}>
@@ -42,17 +40,17 @@ function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
         <div style={{ height: "10px", borderRadius: "99px", background: "var(--panel-2)", marginBottom: "18px" }} />
       ) : (
         <div style={{ display: "flex", height: "10px", borderRadius: "99px", overflow: "hidden", gap: "2px", marginBottom: "18px" }}>
-          {order.map((o) => counts[o] ? (
-            <div key={o} title={labels[o]} style={{ flex: counts[o], background: TONE[o].c, opacity: 0.9 }} />
+          {STATUS_CATEGORIES.map((c) => counts[c.id] ? (
+            <div key={c.id} title={c.label} style={{ flex: counts[c.id], background: TONE[c.tone].c, opacity: 0.9 }} />
           ) : null)}
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 22px" }}>
-        {order.filter((o) => counts[o]).map((o) => (
-          <div key={o} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
-            <span style={{ width: 9, height: 9, borderRadius: 99, background: TONE[o].c, flex: "none" }} />
-            <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1 }}>{labels[o]}</span>
-            <span className="mono metric-val" style={{ fontSize: "12.5px", fontWeight: 600 }}>{counts[o]}</span>
+        {STATUS_CATEGORIES.filter((c) => counts[c.id]).map((c) => (
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+            <span style={{ width: 9, height: 9, borderRadius: 99, background: TONE[c.tone].c, flex: "none" }} />
+            <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1 }}>{c.label}</span>
+            <span className="mono metric-val" style={{ fontSize: "12.5px", fontWeight: 600 }}>{counts[c.id]}</span>
           </div>
         ))}
       </div>
@@ -521,14 +519,16 @@ function ModelUsageCard() {
 }
 
 function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks", taskId?: string) => void }) {
-  const recent = tasks
-    .filter((t) => isActiveState(t.state))
-    .slice(0, 6);
+  // Running work first, then tasks still waiting to start.
+  const running = tasks.filter((t) => classifyStatusCategory(t.state) === "running");
+  const queued = tasks.filter((t) => classifyStatusCategory(t.state) === "queued");
+  const recent = [...running, ...queued].slice(0, 6);
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "15px 18px", borderBottom: "1px solid var(--border-soft)" }}>
         <span className="live-dot" style={{ width: 8, height: 8, borderRadius: 99, background: "var(--ok)" }} />
-        <span style={{ fontSize: "13px", fontWeight: 600 }}>In flight now</span>
+        <span style={{ fontSize: "13px", fontWeight: 600 }}>Active work</span>
+        <span className="mono" style={{ fontSize: "11px", color: "var(--text-faint)" }}>{running.length} running · {queued.length} queued</span>
         <div style={{ flex: 1 }} />
         <button className="btn sm" onClick={() => onOpen("tasks")}>
           Open queue <Icon name="arrow" size={13} />
@@ -567,12 +567,34 @@ function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks"
   );
 }
 
+const PROVIDER_HEALTH_LIMIT = 8;
+
+const PROVIDER_STATUS_TONE: Record<ApiProvider["status"], ToneKey> = {
+  error: "danger",
+  incomplete: "warn",
+  ready: "ok",
+  disabled: "muted",
+};
+
+const PROVIDER_STATUS_RANK: Record<ApiProvider["status"], number> = {
+  error: 0,
+  incomplete: 1,
+  ready: 2,
+  disabled: 3,
+};
+
 function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiProvider[]; onOpen: (v: "config") => void; canViewConfig: boolean }) {
+  // Problems first so they are never hidden behind the row limit.
+  const ordered = [...providers].sort((a, b) => (PROVIDER_STATUS_RANK[a.status] ?? 0) - (PROVIDER_STATUS_RANK[b.status] ?? 0));
+  const shown = ordered.slice(0, PROVIDER_HEALTH_LIMIT);
+  const hidden = ordered.length - shown.length;
+  const issues = providers.filter((p) => p.status === "error" || p.status === "incomplete").length;
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "15px 18px", borderBottom: "1px solid var(--border-soft)" }}>
         <Icon name="server" size={15} style={{ color: "var(--text-faint)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600 }}>Provider health</span>
+        {issues > 0 && <Tag tone="danger">{issues} {issues === 1 ? "issue" : "issues"}</Tag>}
         <div style={{ flex: 1 }} />
         {canViewConfig && (
           <button className="btn sm" onClick={() => onOpen("config")}>
@@ -580,8 +602,11 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
           </button>
         )}
       </div>
-      {providers.slice(0, 8).map((p) => {
-        const tone = p.status === "ready" ? "ok" : p.status === "disabled" ? "muted" : "danger";
+      {shown.length === 0 && (
+        <div style={{ padding: "24px 18px", color: "var(--text-ghost)", fontSize: "13px" }}>No providers visible.</div>
+      )}
+      {shown.map((p) => {
+        const tone = PROVIDER_STATUS_TONE[p.status] ?? "danger";
         return (
           <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 18px", borderBottom: "1px solid var(--border-soft)" }}>
             <span
@@ -592,7 +617,10 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
               <div style={{ fontSize: "12.5px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {p.name}
               </div>
-              <div style={{ fontSize: "10.5px", color: "var(--text-faint)", marginTop: "1px" }}>
+              <div
+                title={p.details.join(" · ")}
+                style={{ fontSize: "10.5px", color: tone === "danger" ? TONE.danger.c : "var(--text-faint)", marginTop: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
                 {p.details.slice(0, 1).join(", ")}
               </div>
             </div>
@@ -600,13 +628,18 @@ function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiPr
           </div>
         );
       })}
+      {hidden > 0 && (
+        <div style={{ padding: "10px 18px", fontSize: "12px", color: "var(--text-faint)" }}>
+          +{hidden} more {hidden === 1 ? "provider" : "providers"}
+        </div>
+      )}
     </div>
   );
 }
 
-export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate }: OverviewViewProps) {
-  const active   = tasks.filter((t) => isActiveState(t.state)).length;
-  const watching = tasks.filter((t) => ["REVIEW_WATCHING", "IN_REVIEW", "REVIEW_PENDING"].includes(t.state)).length;
+export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate, onOpenFailedTasks }: OverviewViewProps) {
+  const abandonedLast7d = overview?.stats.abandonedLast7d ?? 0;
+  const counts = countByCategory(tasks);
 
   return (
     <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
@@ -641,10 +674,17 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
 
         {/* stat row */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
-          <Stat label="Active now"    value={active}   sub="agent cycles in flight" tone="active" icon="bolt" big />
-          <Stat label="Watching"      value={watching} sub="awaiting next patchset"  tone="warn"   icon="eye"  big />
+          <Stat label="Running now"   value={counts.running}  sub={counts.queued > 0 ? `agents in flight · ${counts.queued} queued` : "agents in flight"} tone="active" icon="bolt" big />
+          <Stat label="Watching"      value={counts.watching} sub="awaiting review or next patchset" tone="warn" icon="eye" big />
           <Stat label="Completed · 7d" value={overview?.stats.completedLast7d ?? "—"} sub="merged or reviewed" tone="ok" icon="check" big />
-          <Stat label="Failed · 7d"   value={overview?.stats.failedLast7d ?? "—"} sub="needs attention" tone="danger" icon="alert" big />
+          <Stat
+            label="Failed · 7d"
+            value={overview?.stats.failedLast7d ?? "—"}
+            sub={abandonedLast7d > 0 ? `needs attention · excl. ${abandonedLast7d} abandoned` : "needs attention"}
+            tone="danger" icon="alert" big
+            onClick={onOpenFailedTasks}
+            title={onOpenFailedTasks ? "Open failed tasks" : undefined}
+          />
         </div>
 
         {/* mid row */}

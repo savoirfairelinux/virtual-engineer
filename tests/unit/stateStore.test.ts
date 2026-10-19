@@ -21,6 +21,26 @@ describe("SqliteStateStore", () => {
     store.close();
   });
 
+  it("reports when each task entered its current state, ignoring pause/resume rows and later updated_at bumps", async () => {
+    const raw = (store as unknown as { raw: Database.Database }).raw;
+    raw.prepare("INSERT INTO tasks (task_id, ticket_id, task_type, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("failed-task", "T-1", "code-gen", "FAILED", 100, 9_000);
+    raw.prepare("INSERT INTO tasks (task_id, ticket_id, task_type, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("no-history", "T-2", "code-gen", "DONE", 100, 9_000);
+    const insertTransition = raw.prepare(
+      "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+    );
+    insertTransition.run("failed-task", "DETECTED", "FAILED", "{}", 1_000);
+    insertTransition.run("failed-task", "FAILED", "DETECTED", "{}", 2_000);
+    insertTransition.run("failed-task", "DETECTED", "FAILED", "{}", 3_000);
+    insertTransition.run("failed-task", "FAILED", "FAILED", JSON.stringify({ action: "pause" }), 5_000);
+
+    const entered = await store.getCurrentStateEnteredAt([makeTaskId("failed-task"), makeTaskId("no-history")]);
+
+    expect(entered.get(makeTaskId("failed-task"))?.getTime()).toBe(3_000_000);
+    expect(entered.has(makeTaskId("no-history"))).toBe(false);
+  });
+
   it("aggregates review votes in batches without loading cycle payloads", async () => {
     const raw = (store as unknown as { raw: Database.Database }).raw;
     const insertTask = raw.prepare(

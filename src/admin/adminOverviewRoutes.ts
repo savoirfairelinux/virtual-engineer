@@ -18,9 +18,9 @@ import type {
   ReviewVoteOptions,
   TaskId,
 } from "../interfaces.js";
-import { makeProjectId, makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
+import { makeProjectId, makeTaskId, TASK_STATES, TASK_STATUS_CATEGORIES, type TaskStatusCategory } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
-import { filterTasksByReadAccess } from "./adminTaskRoutes.js";
+import { deduplicateByTicket, filterTasksByReadAccess } from "./adminTaskRoutes.js";
 import { getAuthContext, getEffectivePermissions, requestCanAccessResource } from "./authContext.js";
 
 const log = getLogger("admin-overview");
@@ -29,6 +29,7 @@ export interface OverviewRouteStore {
   getAllTasks(): Promise<Task[]>;
   getAgentCycles(taskId: ReturnType<typeof makeTaskId>): Promise<AgentCycle[]>;
   getReviewVoteCounts?(taskIds: TaskId[], since?: Date, options?: ReviewVoteOptions): Promise<ReviewVoteCounts>;
+  getCurrentStateEnteredAt?(taskIds: TaskId[]): Promise<Map<TaskId, Date>>;
   getCostSummary(options?: CycleSummaryOptions): Promise<CostSummary>;
   getModelUsageSummary(options?: CycleSummaryOptions): Promise<ModelUsageSummary>;
 }
@@ -132,6 +133,34 @@ function filterModelUsageSummary(
   };
 }
 
+type TaskOutcome = "completed" | "failed" | "abandoned";
+
+/** Terminal outcome shown on the dashboard; ABANDONED is deliberate, not a failure needing attention. */
+function taskOutcome(task: Task): TaskOutcome | null {
+  const category = TASK_STATUS_CATEGORIES.get(task.state);
+  return category === "completed" || category === "failed" || category === "abandoned" ? category : null;
+}
+
+function countCategory(tasks: readonly Task[], ...categories: TaskStatusCategory[]): number {
+  return tasks.filter((task) => {
+    const category = TASK_STATUS_CATEGORIES.get(task.state);
+    return category !== undefined && categories.includes(category);
+  }).length;
+}
+
+/**
+ * Resolve when each terminal task reached its outcome. `updatedAt` also moves on
+ * unrelated writes (project unbinding, push-ref updates), so the latest
+ * transition into the current state is preferred when the store provides it.
+ */
+async function resolveOutcomeTimes(tasks: Task[], store: OverviewRouteStore): Promise<(task: Task) => number> {
+  const terminalIds = tasks.filter((task) => taskOutcome(task) !== null).map((task) => task.taskId);
+  const entered = store.getCurrentStateEnteredAt && terminalIds.length > 0
+    ? await store.getCurrentStateEnteredAt(terminalIds)
+    : new Map<TaskId, Date>();
+  return (task) => (entered.get(task.taskId) ?? task.updatedAt).getTime();
+}
+
 /** Compute throughput: count of tasks updated in each of the last N polling-interval windows. */
 function computeThroughput(tasks: Task[], pollingIntervalMs: number): number[] {
   const now = Date.now();
@@ -205,7 +234,7 @@ type AnalyticsDimensions = Partial<Record<
 >>;
 
 function analyticsCsv(
-  tasks: Task[], cost: CostSummary, models: ModelUsageSummary, votes: ReviewVoteCounts,
+  tasks: Task[], currentTasks: Task[], outcomeTime: (task: Task) => number, cost: CostSummary, models: ModelUsageSummary, votes: ReviewVoteCounts,
   now: number, since: Date | undefined, period: string,
   options: ReviewVoteOptions & { selectedProjects?: boolean } = {},
 ): string {
@@ -249,29 +278,26 @@ function analyticsCsv(
     }
   }
 
-  for (const bucket of ["active", "watching", "done", "failed"] as const) {
-    const current = bucket === "active" || bucket === "watching";
-    const count = tasks.filter((task) => {
-      const updatedAt = task.updatedAt.getTime();
-      const afterStart = options.inclusiveSince ? updatedAt >= (since?.getTime() ?? -Infinity) : updatedAt > (since?.getTime() ?? -Infinity);
-      const beforeEnd = options.before === undefined ? updatedAt <= end : updatedAt < end;
-      return TASK_WORKFLOW_BUCKETS.get(task.state) === bucket && (current || (afterStart && beforeEnd));
-    }).length;
-    add("task_summary", totalScope, bucket === "done" ? "completed" : bucket, count, "tasks",
-      current ? { period: "current" } : {});
-  }
-  const distribution: Record<string, readonly Task["state"][]> = {
-    running: ["AGENT_RUNNING", "FEEDBACK_PROCESSING", "CLOSING", "REVIEW_RUNNING", "REVIEW_COMMENTING"],
-    watching: ["IN_REVIEW", "REVIEW_WATCHING"], completed: ["MERGED", "DONE", "REVIEW_DONE"],
-    queued: ["DETECTED", "CONTEXT_BUILDING", "RETRY_CYCLE", "REVIEW_PENDING"],
-    failed: ["FAILED", "REVIEW_FAILED"], abandoned: ["ABANDONED"],
+  const inWindow = (time: number): boolean => {
+    const afterStart = options.inclusiveSince ? time >= (since?.getTime() ?? -Infinity) : time > (since?.getTime() ?? -Infinity);
+    const beforeEnd = options.before === undefined ? time <= end : time < end;
+    return afterStart && beforeEnd;
   };
-  add("task_distribution", totalScope, "total", tasks.length, "tasks", { period: "current" });
-  for (const [category, states] of Object.entries(distribution)) {
+  add("task_summary", totalScope, "active", countCategory(currentTasks, "running", "queued"), "tasks", { period: "current" });
+  add("task_summary", totalScope, "watching", countCategory(currentTasks, "watching"), "tasks", { period: "current" });
+  for (const outcome of ["completed", "failed", "abandoned"] as const) {
+    add("task_summary", totalScope, outcome,
+      currentTasks.filter((task) => taskOutcome(task) === outcome && inWindow(outcomeTime(task))).length, "tasks");
+  }
+  const distributionOrder: readonly TaskStatusCategory[] = ["running", "watching", "completed", "queued", "failed", "abandoned"];
+  const distribution = distributionOrder.map((category) =>
+    [category, TASK_STATES.filter((state) => TASK_STATUS_CATEGORIES.get(state) === category)] as const);
+  add("task_distribution", totalScope, "total", currentTasks.length, "tasks", { period: "current" });
+  for (const [category, states] of distribution) {
     add("task_distribution", "category", category,
-      tasks.filter((task) => states.includes(task.state)).length, "tasks", { period: "current" });
+      currentTasks.filter((task) => states.includes(task.state)).length, "tasks", { period: "current" });
     for (const state of states) {
-      add("task_distribution", "state", "tasks", tasks.filter((task) => task.state === state).length,
+      add("task_distribution", "state", "tasks", currentTasks.filter((task) => task.state === state).length,
         "tasks", { period: "current", taskState: state });
     }
   }
@@ -386,7 +412,9 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       const tasks = selected === undefined ? allTasks : allTasks.filter((task) => task.projectId != null && selected.has(task.projectId));
       const voteOptions = custom ? { before, inclusiveSince: true } : undefined;
       const votes = await computeReviewVotes(tasks, deps.stateStore, since, voteOptions);
-      const csv = analyticsCsv(tasks, cost, models, votes, now, since, period, { ...voteOptions, selectedProjects: selected !== undefined });
+      const currentTasks = deduplicateByTicket(tasks);
+      const outcomeTime = await resolveOutcomeTimes(currentTasks, deps.stateStore);
+      const csv = analyticsCsv(tasks, currentTasks, outcomeTime, cost, models, votes, now, since, period, { ...voteOptions, selectedProjects: selected !== undefined });
       const suffix = custom ? `${from}_${to}` : period;
       res.statusCode = 200;
       res.setHeader("content-type", "text/csv; charset=utf-8");
@@ -405,14 +433,25 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       const tasks = deps.projectStore
         ? await filterTasksByReadAccess(req, allTasks, deps.projectStore)
         : allTasks;
+      // Counters follow the task list: one row per ticket/change, so a superseded
+      // FAILED attempt is not reported once a newer attempt exists.
+      const currentTasks = deps.projectStore
+        ? await filterTasksByReadAccess(req, deduplicateByTicket(allTasks), deps.projectStore)
+        : deduplicateByTicket(allTasks);
+      const outcomeTime = await resolveOutcomeTimes(currentTasks, deps.stateStore);
       const now = Date.now();
       const sevenDaysAgo = now - SEVEN_DAYS_MS;
+      const recentOutcome = (outcome: TaskOutcome): number => currentTasks
+        .filter((t) => taskOutcome(t) === outcome && outcomeTime(t) > sevenDaysAgo).length;
 
       const stats = {
-        activeTasks:      tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "active").length,
-        watchingTasks:    tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "watching").length,
-        completedLast7d:  tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "done" && t.updatedAt.getTime() > sevenDaysAgo).length,
-        failedLast7d:     tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "failed" && t.updatedAt.getTime() > sevenDaysAgo).length,
+        activeTasks:      countCategory(currentTasks, "running", "queued"),
+        runningTasks:     countCategory(currentTasks, "running"),
+        queuedTasks:      countCategory(currentTasks, "queued"),
+        watchingTasks:    countCategory(currentTasks, "watching"),
+        completedLast7d:  recentOutcome("completed"),
+        failedLast7d:     recentOutcome("failed"),
+        abandonedLast7d:  recentOutcome("abandoned"),
         activeProviders:  0, // populated separately via /api/admin/providers
       };
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_TASK_FILTERS, TaskList } from "./TaskList.tsx";
+import { TaskList, taskFiltersFromHash, taskMatchesStatusFilters } from "./TaskList.tsx";
 import type { TaskListFilters } from "./TaskList.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
 import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
@@ -11,12 +11,14 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, onRefresh }: TasksViewProps) {
-  const [filters, setFilters] = useState<TaskListFilters>(DEFAULT_TASK_FILTERS);
+  const [filters, setFilters] = useState<TaskListFilters>(() => taskFiltersFromHash(window.location.hash));
   const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 700px)").matches ?? false);
   const [showCompactDetail, setShowCompactDetail] = useState(() => window.location.hash.startsWith("#tasks/"));
   const [selectedId, setSelectedId] = useState<string>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
-    return tasks.find((t) => t.taskId === part)?.taskId ?? tasks[0]?.taskId ?? "";
+    const { statuses } = taskFiltersFromHash(window.location.hash);
+    const firstVisible = tasks.find((t) => taskMatchesStatusFilters(t, statuses));
+    return tasks.find((t) => t.taskId === part)?.taskId ?? firstVisible?.taskId ?? "";
   });
 
   const tasksRef = useRef(tasks);
@@ -40,13 +42,15 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
     if (selectedId && tasks.some((t) => t.taskId === selectedId)) return;
     const part = window.location.hash.split("/")[1] ?? "";
     const fromHash = tasks.find((t) => t.taskId === part)?.taskId;
-    const id = fromHash ?? tasks[0]?.taskId ?? "";
+    const id = fromHash ?? tasks.find((t) => taskMatchesStatusFilters(t, filters.statuses))?.taskId ?? "";
     if (id) {
       setSelectedId(id);
       if (fromHash) setShowCompactDetail(true);
       else if (!compact) window.location.hash = `tasks/${id}`;
+    } else if (selectedId) {
+      setSelectedId("");
     }
-  }, [compact, tasks, selectedId]);
+  }, [compact, tasks, selectedId, filters.statuses]);
 
   useEffect(() => {
     const onHashChange = () => {

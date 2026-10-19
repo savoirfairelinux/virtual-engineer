@@ -34,6 +34,7 @@ vi.mock("../../../src/admin/ui/shell/TopBar.js", () => ({
     <>
       <div data-testid="app-state" data-user={user?.username ?? "loading"}>{taskCount}</div>
       <button onClick={() => setView("tasks")}>Tasks</button>
+      <button onClick={() => setView("overview")}>Overview</button>
       <button onClick={onLogout}>Sign out</button>
     </>
   ),
@@ -81,6 +82,7 @@ describe("App identity loading", () => {
       if (path === "/api/admin/status") return { polling: { running: true, intervalMs: 30000 } };
       if (path === "/api/admin/config") return { config: {} };
       if (path === "/api/admin/overview") return null;
+      if (path === "/api/admin/providers") return { providers: [] };
       throw new Error(`Unexpected path: ${path}`);
     });
   });
@@ -172,6 +174,28 @@ describe("App identity loading", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     expect(await screen.findByTestId("auth-screen")).toBeTruthy();
+  });
+
+  it("refreshes stale overview data when Overview is first opened after another view", async () => {
+    window.history.replaceState({}, "", "#tasks");
+    apiMocks.getMe.mockResolvedValue({
+      id: "viewer-1", username: "viewer", role: "viewer",
+      capabilities: { superuser: false, grants: { "task.read": "*", "overview.read": "*" } },
+    });
+    const overviewCalls = () => apiMocks.get.mock.calls.filter(([path]) => path === "/api/admin/overview").length;
+    apiMocks.get.mockClear();
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("app-state").getAttribute("data-user")).toBe("viewer"));
+    await waitFor(() => expect(screen.getByTestId("app-state").textContent).toBe("1"));
+    const loaded = overviewCalls();
+    expect(loaded).toBeGreaterThan(0);
+
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(realNow + 20_000);
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+
+    await waitFor(() => expect(overviewCalls()).toBe(loaded + 1));
+    vi.restoreAllMocks();
   });
 
   it("keeps the Configuration workflow active across its setup sections", () => {

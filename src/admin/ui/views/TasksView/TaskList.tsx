@@ -2,17 +2,35 @@ import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
-import { classifyWorkflowBucket, isActiveState } from "../../states.ts";
+import { classifyStatusCategory, isActiveState, type TaskStatusCategory } from "../../states.ts";
 import { relativeTime } from "../../api.ts";
-import type { ApiTask, TaskType, TaskWorkflowBucket } from "../../types.ts";
+import type { ApiTask, TaskType } from "../../types.ts";
 
-const FILTERS: { id: "all" | TaskWorkflowBucket; label: string }[] = [
-  { id: "all",      label: "All" },
-  { id: "active",   label: "Active" },
-  { id: "watching", label: "Watching" },
-  { id: "done",     label: "Done" },
-  { id: "failed",   label: "Failed" },
+export type TaskStatusFilter = "active" | "watching" | "done" | "failed" | "abandoned";
+
+const STATUS_FILTER_CATEGORIES: Readonly<Record<TaskStatusFilter, readonly TaskStatusCategory[]>> = {
+  active: ["running", "queued"],
+  watching: ["watching"],
+  done: ["completed"],
+  failed: ["failed"],
+  abandoned: ["abandoned"],
+};
+
+const FILTERS: { id: "all" | TaskStatusFilter; label: string }[] = [
+  { id: "all",       label: "All" },
+  { id: "active",    label: "Active" },
+  { id: "watching",  label: "Watching" },
+  { id: "done",      label: "Done" },
+  { id: "failed",    label: "Failed" },
+  { id: "abandoned", label: "Abandoned" },
 ];
+
+/** Whether a task matches the selected status chips (none selected = all). */
+export function taskMatchesStatusFilters(task: Pick<ApiTask, "state">, statuses: readonly TaskStatusFilter[]): boolean {
+  if (statuses.length === 0) return true;
+  const category = classifyStatusCategory(task.state);
+  return statuses.some((status) => STATUS_FILTER_CATEGORIES[status].includes(category));
+}
 
 const TASK_TYPES: { id: "all" | TaskType; label: string }[] = [
   { id: "all", label: "All" },
@@ -21,7 +39,7 @@ const TASK_TYPES: { id: "all" | TaskType; label: string }[] = [
 ];
 
 export interface TaskListFilters {
-  statuses: readonly TaskWorkflowBucket[];
+  statuses: readonly TaskStatusFilter[];
   taskType: "all" | TaskType;
   queuedOnly: boolean;
   query: string;
@@ -33,6 +51,17 @@ export const DEFAULT_TASK_FILTERS: TaskListFilters = {
   queuedOnly: false,
   query: "",
 };
+
+const STATUS_FILTER_IDS = new Set<string>(FILTERS.map((filter) => filter.id).filter((id) => id !== "all"));
+
+/** Initial filters from a `#tasks?status=<bucket>` deep link (e.g. the General View failed counter). */
+export function taskFiltersFromHash(hash: string): TaskListFilters {
+  const queryStart = hash.indexOf("?");
+  if (queryStart < 0) return DEFAULT_TASK_FILTERS;
+  const statuses = new URLSearchParams(hash.slice(queryStart + 1)).getAll("status")
+    .filter((status): status is TaskStatusFilter => STATUS_FILTER_IDS.has(status));
+  return statuses.length === 0 ? DEFAULT_TASK_FILTERS : { ...DEFAULT_TASK_FILTERS, statuses: [...new Set(statuses)] };
+}
 
 interface TaskRowProps {
   task: ApiTask;
@@ -129,11 +158,10 @@ export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect
     }
     return true;
   });
-  const filtered = matchingTasks.filter((task) =>
-    filters.statuses.length === 0 || filters.statuses.includes(classifyWorkflowBucket(task.state)));
+  const filtered = matchingTasks.filter((task) => taskMatchesStatusFilters(task, filters.statuses));
   const hasFilters = filters.statuses.length > 0 || filters.taskType !== "all" || filters.queuedOnly || filters.query.length > 0;
 
-  function toggleStatus(status: "all" | TaskWorkflowBucket): void {
+  function toggleStatus(status: "all" | TaskStatusFilter): void {
     const statuses = status === "all" ? [] : filters.statuses.includes(status)
       ? filters.statuses.filter((selected) => selected !== status)
       : [...filters.statuses, status];

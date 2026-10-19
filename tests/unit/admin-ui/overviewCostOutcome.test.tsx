@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CurrentUserProvider } from "../../../src/admin/ui/authContext.js";
-import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview } from "../../../src/admin/ui/types.js";
+import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview, ApiProvider, ApiTask } from "../../../src/admin/ui/types.js";
 
 const apiGet = vi.hoisted(() => vi.fn());
 
@@ -127,7 +127,7 @@ describe("Overview outcome cost dimensions", () => {
 
   describe("Overview review vote periods", () => {
     const overview: ApiOverview = {
-      stats: { activeTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 0, activeProviders: 0 },
+      stats: { activeTasks: 0, runningTasks: 0, queuedTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 0, abandonedLast7d: 0, activeProviders: 0 },
       throughput: [],
       reviewVotes: { plus2: 7, plus1: 0, minus1: 0, minus2: 0 },
       runtime: {
@@ -255,5 +255,76 @@ describe("Overview outcome cost dimensions", () => {
     expect(modelCard.getByText("Loading…")).toBeTruthy();
     expect(costCard.queryByText("instance total")).toBeNull();
     expect(modelCard.queryByTitle("claude-sonnet · Done · 1 runs")).toBeNull();
+  });
+
+  describe("Overview failure and provider health surfaces", () => {
+    const provider = (id: string, status: ApiProvider["status"]): ApiProvider => ({
+      id, name: `Provider ${id}`, category: "ticketing", enabled: status !== "disabled", configured: true, status, details: [`${id} detail`],
+    });
+
+    it("puts failing providers first, reports issues, and summarises rows beyond the limit", async () => {
+      const providers = [
+        ...Array.from({ length: 8 }, (_, index) => provider(`ok-${index}`, "ready")),
+        provider("broken", "error"),
+      ];
+      render(<OverviewView overview={null} tasks={[]} providers={providers} activeIntegrationCount={8}
+        pollingIntervalMs={30000} onNavigate={() => undefined} />);
+      await screen.findByText("instance total");
+      const card = within(screen.getByText("Provider health").closest(".card")!);
+      const names = card.getAllByText(/^Provider (ok-\d|broken)$/).map((node) => node.textContent);
+      expect(names[0]).toBe("Provider broken");
+      expect(card.getByText("1 issue")).toBeTruthy();
+      expect(card.getByText("+1 more provider")).toBeTruthy();
+    });
+
+    it("shows an empty state instead of a blank provider card", async () => {
+      render(<OverviewView overview={null} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined} />);
+      await screen.findByText("instance total");
+      expect(screen.getByText("No providers visible.")).toBeTruthy();
+    });
+
+    it("uses the same categories for the stat row, distribution and active work feed", async () => {
+      const task = (taskId: string, state: ApiTask["state"]): ApiTask => ({
+        taskId, taskType: state.startsWith("REVIEW_") ? "code-review" : "code-gen", ticketId: taskId, ticketSourceLabel: "github:test",
+        ticketTitle: `Task ${taskId}`, ticketDescription: "", state, gerritChangeId: null, currentPatchset: 0, reviewedPatchset: null,
+        cycleCount: 0, failureReason: null, ticketUrl: null, reviewUrl: null, displayId: taskId,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      } as ApiTask);
+      const snapshot: ApiOverview = {
+        stats: { activeTasks: 2, runningTasks: 1, queuedTasks: 1, watchingTasks: 1, completedLast7d: 0, failedLast7d: 0, abandonedLast7d: 0, activeProviders: 0 },
+        throughput: [],
+        reviewVotes: { plus2: 0, plus1: 0, minus1: 0, minus2: 0 },
+        runtime: { environment: "test", version: "1", uptime: "1m", dbSize: "1 KB", maxCycles: 1, maxRetries: 1, pollingInterval: "30s", logLevel: "error" },
+      };
+      render(<OverviewView overview={snapshot} pollingIntervalMs={30000} onNavigate={() => undefined} providers={[]} activeIntegrationCount={0}
+        tasks={[task("run", "AGENT_RUNNING"), task("pending", "REVIEW_PENDING"), task("watch", "REVIEW_WATCHING")]} />);
+      await screen.findByText("instance total");
+      expect(screen.getByText("agents in flight · 1 queued")).toBeTruthy();
+      const distribution = within(screen.getByText("Task distribution").closest(".card")!);
+      const count = (label: string) => distribution.getByText(label).parentElement?.lastElementChild?.textContent;
+      expect(count("Running")).toBe("1");
+      expect(count("Queued")).toBe("1");
+      expect(count("Watching")).toBe("1");
+      expect(screen.getByText("1 running · 1 queued")).toBeTruthy();
+    });
+
+    it("excludes abandoned tasks from the failed stat and opens failed tasks on click", async () => {
+      const onOpenFailedTasks = vi.fn();
+      const overview: ApiOverview = {
+        stats: { activeTasks: 0, runningTasks: 0, queuedTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 2, abandonedLast7d: 3, activeProviders: 0 },
+        throughput: [],
+        reviewVotes: { plus2: 0, plus1: 0, minus1: 0, minus2: 0 },
+        runtime: { environment: "test", version: "1", uptime: "1m", dbSize: "1 KB", maxCycles: 1, maxRetries: 1, pollingInterval: "30s", logLevel: "error" },
+      };
+      render(<OverviewView overview={overview} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined} onOpenFailedTasks={onOpenFailedTasks} />);
+      await screen.findByText("instance total");
+      const stat = screen.getByRole("button", { name: /Failed/ });
+      expect(stat.textContent).toContain("excl. 3 abandoned");
+      fireEvent.keyDown(stat, { key: "Enter" });
+      fireEvent.click(stat);
+      expect(onOpenFailedTasks).toHaveBeenCalledTimes(2);
+    });
   });
 });

@@ -153,6 +153,7 @@ async function importRuntime(
   const pluginManagerInstance = {
     loadFromDatabase,
     getActiveIntegrations: vi.fn(() => getAllActiveIntegrations()),
+    getActivationFailures: vi.fn(() => []),
     getActiveIntegrationById: vi.fn((integrationId: string) => {
       return getAllActiveIntegrations().find((integration) => integration.id === integrationId) ?? null;
     }),

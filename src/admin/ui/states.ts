@@ -82,38 +82,64 @@ export const TERM_DIVERGE: Partial<Record<TaskState, TaskState>> = {
   REVIEW_FAILED: "REVIEW_RUNNING",
 };
 
-/* Dashboard workflow bucket, mirrored from src/domain/tasks.ts (not importable across the UI build boundary). */
+/* Dashboard categories, mirrored from src/domain/tasks.ts (not importable across the UI build boundary). */
+export type TaskStatusCategory = "running" | "queued" | "watching" | "completed" | "failed" | "abandoned";
 type WorkflowBucket = "active" | "watching" | "done" | "failed";
 
-export function classifyWorkflowBucket(state: TaskState): WorkflowBucket {
+export function classifyStatusCategory(state: TaskState): TaskStatusCategory {
   switch (state) {
-    case "DETECTED":
-    case "CONTEXT_BUILDING":
     case "AGENT_RUNNING":
     case "FEEDBACK_PROCESSING":
-    case "RETRY_CYCLE":
     case "CLOSING":
     case "REVIEW_RUNNING":
     case "REVIEW_COMMENTING":
-      return "active";
-    case "IN_REVIEW":
+      return "running";
+    case "DETECTED":
+    case "CONTEXT_BUILDING":
+    case "RETRY_CYCLE":
     case "REVIEW_PENDING":
+      return "queued";
+    case "IN_REVIEW":
     case "REVIEW_WATCHING":
       return "watching";
     case "MERGED":
     case "DONE":
     case "REVIEW_DONE":
-      return "done";
+      return "completed";
     case "FAILED":
-    case "ABANDONED":
     case "REVIEW_FAILED":
       return "failed";
+    case "ABANDONED":
+      return "abandoned";
     default: {
       // Exhaustiveness check — a new TaskState must be classified here.
       const _exhaustive: never = state;
       throw new Error(`Unclassified task state: ${String(_exhaustive)}`);
     }
   }
+}
+
+/* Display order, label and tone for each category; STATES tones follow these. */
+export const STATUS_CATEGORIES: readonly { id: TaskStatusCategory; label: string; tone: ToneKey }[] = [
+  { id: "running",   label: "Running",   tone: "active" },
+  { id: "queued",    label: "Queued",    tone: "info" },
+  { id: "watching",  label: "Watching",  tone: "warn" },
+  { id: "completed", label: "Completed", tone: "ok" },
+  { id: "failed",    label: "Failed",    tone: "danger" },
+  { id: "abandoned", label: "Abandoned", tone: "muted" },
+];
+
+const CATEGORY_WORKFLOW_BUCKET: Readonly<Record<TaskStatusCategory, WorkflowBucket>> = {
+  running: "active",
+  queued: "active",
+  watching: "watching",
+  completed: "done",
+  failed: "failed",
+  abandoned: "failed",
+};
+
+export function classifyWorkflowBucket(state: TaskState): WorkflowBucket {
+  return CATEGORY_WORKFLOW_BUCKET[classifyStatusCategory(state)];
 }
 
 export const TERMINAL_STATES = new Set<TaskState>(

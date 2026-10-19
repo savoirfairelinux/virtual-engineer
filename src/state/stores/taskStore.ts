@@ -94,6 +94,7 @@ export interface TaskStoreApi {
   getReviewVoteCounts(taskIds: TaskId[], since?: Date, options?: ReviewVoteOptions): Promise<ReviewVoteCounts>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
+  getCurrentStateEnteredAt(taskIds: TaskId[]): Promise<Map<TaskId, Date>>;
   getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
   pauseTask(taskId: TaskId): Promise<Task>;
   resumeTask(taskId: TaskId): Promise<Task>;
@@ -665,6 +666,33 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Latest time each task entered its current state, from `state_transitions`.
+   * Pause/resume rows (from_state = to_state) are ignored so they never move
+   * the date. Tasks without a matching transition are omitted.
+   */
+  function getCurrentStateEnteredAt(taskIds: TaskId[]): Promise<Map<TaskId, Date>> {
+    return Promise.resolve().then(() => {
+      const enteredAt = new Map<TaskId, Date>();
+      const batchSize = 900;
+      for (let offset = 0; offset < taskIds.length; offset += batchSize) {
+        const batch = taskIds.slice(offset, offset + batchSize);
+        const placeholders = batch.map(() => "?").join(", ");
+        const rows = raw.prepare(`
+          SELECT st.task_id AS taskId, MAX(st.created_at) AS enteredAt
+          FROM state_transitions st
+          JOIN tasks t ON t.task_id = st.task_id
+          WHERE st.task_id IN (${placeholders})
+            AND st.to_state = t.state
+            AND st.from_state <> st.to_state
+          GROUP BY st.task_id
+        `).all(...batch) as Array<{ taskId: string; enteredAt: number }>;
+        for (const row of rows) enteredAt.set(row.taskId as TaskId, new Date(row.enteredAt * 1000));
+      }
+      return enteredAt;
+    });
   }
 
   async function getStateTransitions(taskId: TaskId): Promise<StateTransition[]> {
@@ -1266,6 +1294,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getReviewVoteCounts,
     getAgentCycleEvents,
     getStateTransitions,
+    getCurrentStateEnteredAt,
     getFailedAttemptCount,
     pauseTask,
     resumeTask,

@@ -34,6 +34,10 @@ interface TutorialLaunch {
   token: number;
 }
 
+const OVERVIEW_REFRESH_MS = 30_000;
+/** Overview data requested more recently than this is not re-fetched when the view opens. */
+const OVERVIEW_FRESH_MS = 5_000;
+
 function viewFromHash(hash: string): ViewId {
   if (hash.startsWith("#config")) return "config";
   if (hash.startsWith("#tasks")) return "tasks";
@@ -120,6 +124,8 @@ export function App() {
   }, [configSection, configWorkflowActive, pendingTutorialKey, view]);
   const dataGenerationRef = useRef(0);
   const loadRequestRef = useRef(0);
+  // When overview/providers were last requested (0 = never), so opening Overview only skips fresh data.
+  const overviewRequestedAtRef = useRef(0);
   // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
   // false and authenticated starts as true — skipping the setup screen. This effect catches
   // that case: if the server reports no users exist, force the setup screen regardless.
@@ -173,6 +179,7 @@ export function App() {
 
   const resetLoadedData = useCallback(() => {
     dataGenerationRef.current += 1;
+    overviewRequestedAtRef.current = 0;
     setTasks([]);
     setProviders([]);
     setIntegrations([]);
@@ -206,19 +213,23 @@ export function App() {
     const generation = dataGenerationRef.current;
     const requestId = ++loadRequestRef.current;
     setLoadError(null);
+    overviewRequestedAtRef.current = Date.now();
     // Viewer-safe reads — always fetched.
     const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
       api.get<ApiStatus>("/api/admin/status"),
       api.get<ApiConfig>("/api/admin/config"),
       api.get<ApiOverview>("/api/admin/overview"),
+      // Provider health is an overview read, so viewers without config access see it too.
+      api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
     ]);
     if (generation !== dataGenerationRef.current || requestId !== loadRequestRef.current) return;
     if (baseResults[0].status === "fulfilled") setTasks(baseResults[0].value.tasks);
     if (baseResults[1].status === "fulfilled") setStatus(baseResults[1].value);
     if (baseResults[2].status === "fulfilled") setConfig(baseResults[2].value.config);
     if (baseResults[3].status === "fulfilled") setOverview(baseResults[3].value);
-    const failed = ["tasks", "status", "configuration", "overview"]
+    if (baseResults[4].status === "fulfilled") setProviders(baseResults[4].value.providers);
+    const failed = ["tasks", "status", "configuration", "overview", "providers"]
       .filter((_, index) => {
         const result = baseResults[index];
         return result?.status === "rejected"
@@ -230,7 +241,6 @@ export function App() {
       return;
     }
     const results = await Promise.allSettled([
-      api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
       api.get<{ integrations: ApiIntegration[] }>("/api/admin/integrations"),
       api.get<{ plugins: ApiPlugin[] }>("/api/admin/plugins"),
       api.get<{ agents: ApiAgent[] }>("/api/admin/agents"),
@@ -240,17 +250,16 @@ export function App() {
     ]);
 
     if (generation !== dataGenerationRef.current || requestId !== loadRequestRef.current) return;
-    if (results[0].status === "fulfilled") setProviders(results[0].value.providers);
-    if (results[1].status === "fulfilled") {
-      setIntegrations(results[1].value.integrations);
+    if (results[0].status === "fulfilled") {
+      setIntegrations(results[0].value.integrations);
       setIntegrationsLoaded(true);
     }
-    if (results[2].status === "fulfilled") setPlugins(results[2].value.plugins);
-    if (results[3].status === "fulfilled") setAgents(results[3].value.agents);
-    if (results[4].status === "fulfilled") setProjects(results[4].value.projects);
-    if (results[5].status === "fulfilled") setPrompts(results[5].value.prompts);
-    if (results[6].status === "fulfilled") setOauthApps(results[6].value.apps);
-    const names = ["providers", "integrations", "plugins", "agents", "projects", "prompts", "OAuth apps"];
+    if (results[1].status === "fulfilled") setPlugins(results[1].value.plugins);
+    if (results[2].status === "fulfilled") setAgents(results[2].value.agents);
+    if (results[3].status === "fulfilled") setProjects(results[3].value.projects);
+    if (results[4].status === "fulfilled") setPrompts(results[4].value.prompts);
+    if (results[5].status === "fulfilled") setOauthApps(results[5].value.apps);
+    const names = ["integrations", "plugins", "agents", "projects", "prompts", "OAuth apps"];
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected" && !(result.reason instanceof ApiError && result.reason.status === 403)) {
         failed.push(names[index] ?? "configuration data");
@@ -295,6 +304,25 @@ export function App() {
     return () => clearInterval(id);
   }, [authenticated]);
 
+  // Overview counters and provider health would otherwise stay at their first-load snapshot.
+  useEffect(() => {
+    if (!authenticated || view !== "overview") return;
+    const generation = dataGenerationRef.current;
+    const refresh = () => {
+      overviewRequestedAtRef.current = Date.now();
+      void api.get<ApiOverview>("/api/admin/overview")
+        .then((r) => { if (generation === dataGenerationRef.current) setOverview(r); })
+        .catch(() => { /* keep the last snapshot; the next tick retries */ });
+      void api.get<{ providers: ApiProvider[] }>("/api/admin/providers")
+        .then((r) => { if (generation === dataGenerationRef.current) setProviders(r.providers); })
+        .catch(() => { /* keep the last snapshot; the next tick retries */ });
+    };
+    // Skip the immediate fetch only when loadAll (or a previous tick) just requested both.
+    if (Date.now() - overviewRequestedAtRef.current >= OVERVIEW_FRESH_MS) refresh();
+    const id = setInterval(refresh, OVERVIEW_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [authenticated, view]);
+
   if (!authenticated || forcedSetupScreen) {
     return (
       <div className="app">
@@ -329,6 +357,10 @@ export function App() {
 
   function handleNavigate(v: "tasks" | "config", taskId?: string) {
     requestViewChange(v, taskId);
+  }
+
+  function handleOpenFailedTasks() {
+    if (requestViewChange("tasks")) window.location.hash = "tasks?status=failed";
   }
 
   function handleStartTutorial() {
@@ -415,6 +447,7 @@ export function App() {
               canViewConfig={canViewConfig}
               pollingIntervalMs={status?.polling.intervalMs ?? 30000}
               onNavigate={handleNavigate}
+              onOpenFailedTasks={handleOpenFailedTasks}
             />
           )}
           {effectiveView === "tasks" && (

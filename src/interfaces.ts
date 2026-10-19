@@ -34,6 +34,7 @@ export {
   CODE_REVIEW_STATES,
   CODE_REVIEW_TERMINAL_STATES,
   TASK_STATES,
+  TASK_STATUS_CATEGORIES,
   TASK_WORKFLOW_BUCKETS,
   TERMINAL_STATES,
   type ChangePerRepository,
@@ -42,6 +43,7 @@ export {
   type StateTransition,
   type Task,
   type TaskState,
+  type TaskStatusCategory,
   type TaskType,
   type TaskWorkflowBucket,
 } from "./domain/tasks.js";
@@ -1649,6 +1651,8 @@ export interface StateStore {
   ): Promise<ProjectStatistics>;
 
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
+  /** Latest entry time into each task's current state (pause/resume rows ignored). */
+  getCurrentStateEnteredAt(taskIds: TaskId[]): Promise<Map<TaskId, Date>>;
 
   // Comment deduplication
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;

@@ -141,7 +141,7 @@ describe("task interactions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Queued only" }));
 
     const statuses = within(screen.getByRole("group", { name: "Workflow status" }));
-    expect(statuses.getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Queued"]);
+    expect(statuses.getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Abandoned", "Queued"]);
     expect(statuses.getByRole<HTMLButtonElement>("button", { name: "Failed" }).disabled).toBe(false);
     expect(screen.getByLabelText("Task results").textContent).toBe("1/6");
 
@@ -157,11 +157,11 @@ describe("task interactions", () => {
     const queued = within(statuses).getByRole("button", { name: "Queued only" });
 
     expect(taskTypes.nextElementSibling).toBe(statuses);
-    expect(statuses.children).toHaveLength(6);
+    expect(statuses.children).toHaveLength(7);
     expect(statuses.style.display).toBe("grid");
     expect(taskTypes.style.display).toBe("grid");
     expect(within(taskTypes).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Coding", "Review"]);
-    expect(within(statuses).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Queued"]);
+    expect(within(statuses).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Abandoned", "Queued"]);
     expect(queued.style.cssText).toBe(within(statuses).getByRole("button", { name: "Active" }).style.cssText);
     expect(queued.getAttribute("aria-pressed")).toBe("false");
 
@@ -183,7 +183,7 @@ describe("task interactions", () => {
     rerender(<TasksView tasks={tasks} onRefresh={vi.fn()} />);
 
     const statuses = within(screen.getByRole("group", { name: "Workflow status" }));
-    expect(statuses.getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Queued"]);
+    expect(statuses.getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Active", "Watching", "Done", "Failed", "Abandoned", "Queued"]);
     expect(statuses.getByRole("button", { name: "All" }).getAttribute("aria-describedby")).toBeNull();
     expect(screen.getByLabelText("Task results").textContent).toBe("0/1001");
   });
@@ -220,6 +220,24 @@ describe("task interactions", () => {
     expect(screen.queryByRole("button", { name: "Reset filters" })).toBeNull();
   });
 
+  it("selects the first task matching a deep-linked status filter once tasks load asynchronously", () => {
+    const { rerender } = renderQueue([]);
+    window.history.replaceState({}, "", "#tasks?status=failed");
+    rerender(<TasksView key="deep-link" tasks={[]} onRefresh={vi.fn()} />);
+    rerender(<TasksView key="deep-link" tasks={queueTasks} onRefresh={vi.fn()} />);
+    expect(window.location.hash).toBe("#tasks/failed-review");
+    expect(screen.queryByText("Select a task to inspect its cycles and timeline.")).toBeNull();
+  });
+
+  it("selects nothing when no loaded task matches the deep-linked status filter", () => {
+    const { rerender } = renderQueue([]);
+    window.history.replaceState({}, "", "#tasks?status=abandoned");
+    rerender(<TasksView key="deep-link" tasks={[]} onRefresh={vi.fn()} />);
+    rerender(<TasksView key="deep-link" tasks={queueTasks} onRefresh={vi.fn()} />);
+    expect(window.location.hash).toBe("#tasks?status=abandoned");
+    expect(screen.getByText("Select a task to inspect its cycles and timeline.")).toBeTruthy();
+  });
+
   it("filters reviews independently and preserves the selected detail when filtering it out", () => {
     renderQueue();
     const selectedHash = window.location.hash;
@@ -237,7 +255,7 @@ describe("task interactions", () => {
   it("normalizes all workflow selections to All and keeps type All independent of status", () => {
     renderQueue();
     const statuses = within(screen.getByRole("group", { name: "Workflow status" }));
-    for (const name of ["Active", "Watching", "Done", "Failed"]) {
+    for (const name of ["Active", "Watching", "Done", "Failed", "Abandoned"]) {
       fireEvent.click(statuses.getByRole("button", { name }));
     }
     expect(statuses.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");

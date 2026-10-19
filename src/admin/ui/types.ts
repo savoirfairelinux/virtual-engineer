@@ -334,16 +334,19 @@ export interface ApiProvider {
   category: "ticketing" | "review" | "agent" | "runtime";
   enabled: boolean;
   configured: boolean;
-  status: "ready" | "disabled" | "incomplete";
+  status: "ready" | "disabled" | "incomplete" | "error";
   details: string[];
 }
 
 export interface ApiOverview {
   stats: {
     activeTasks: number;
+    runningTasks: number;
+    queuedTasks: number;
     watchingTasks: number;
     completedLast7d: number;
     failedLast7d: number;
+    abandonedLast7d: number;
     activeProviders: number;
   };
   throughput: number[];        // last 14 polling ticks
