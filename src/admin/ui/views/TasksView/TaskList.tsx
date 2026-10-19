@@ -231,7 +231,7 @@ export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect
           ))}
         </div>
 
-        <div role="group" aria-label="Workflow status" style={{ display: "grid", gridTemplateColumns: "0.65fr 1fr 1.4fr 0.9fr 0.95fr 1fr", gap: "3px" }}>
+        <div role="group" aria-label="Workflow status" style={{ display: "flex", flexWrap: "wrap", gap: "3px" }}>
           {[...FILTERS, { id: "queued", label: "Queued" } as const].map((filter) => {
             const selected = filter.id === "queued" ? filters.queuedOnly
               : filter.id === "all" ? filters.statuses.length === 0 : filters.statuses.includes(filter.id);
@@ -245,8 +245,8 @@ export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect
                   border: `1px solid ${selected ? "var(--accent-line)" : "var(--border-soft)"}`,
                   background: selected ? "var(--accent-soft)" : "transparent",
                   color: selected ? "var(--accent-strong)" : "var(--text-faint)",
-                  display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: "24px", whiteSpace: "nowrap",
-                  fontSize: "10.5px", fontWeight: 500, lineHeight: 1, padding: "2px 2px",
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "1 1 auto", height: "24px", whiteSpace: "nowrap",
+                  fontSize: "10.5px", fontWeight: 500, lineHeight: 1, padding: "2px 7px",
                   borderRadius: "var(--radius-sm)", cursor: "pointer", transition: "all 0.13s var(--ease)",
                 }}>
                 {filter.label}
