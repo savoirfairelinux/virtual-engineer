@@ -14,21 +14,23 @@
  * each sandbox as an ephemeral Pod on the cluster (k3s).
  */
 
-import { writeFile, unlink } from "fs/promises";
+import { mkdir, writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join, basename } from "path";
 import { createHash, randomUUID } from "node:crypto";
-import type {
-  AgentAdapter,
-  AgentResult,
-  CloneResult,
-  PatchsetCheckoutOptions,
-  ProjectPushTargetRecord,
-  ReviewWorkspaceInput,
-  TaskContext,
-  TaskId,
-  WorkspaceHandle,
-  WorkspaceRunner,
+import {
+  REVIEW_ATTACHMENT_DIR,
+  type AgentAdapter,
+  type AgentResult,
+  type CloneResult,
+  type PatchsetCheckoutOptions,
+  type ProjectPushTargetRecord,
+  type ReviewAttachment,
+  type ReviewWorkspaceInput,
+  type TaskContext,
+  type TaskId,
+  type WorkspaceHandle,
+  type WorkspaceRunner,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
@@ -163,6 +165,21 @@ function isPromptAware(adapter: AgentAdapter): adapter is PromptAwareAgentAdapte
 
 function hasReviewSpec(adapter: AgentAdapter): adapter is ReviewAgentAdapter {
   return typeof (adapter as Partial<ReviewAgentAdapter>).buildReviewContainerSpec === "function";
+}
+
+const REVIEW_ATTACHMENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Write review prompt attachments into the host repository before it is uploaded. */
+async function writeReviewAttachments(repoDir: string, attachments: ReviewAttachment[] | undefined): Promise<void> {
+  if (attachments === undefined || attachments.length === 0) return;
+  const attachmentDir = join(repoDir, REVIEW_ATTACHMENT_DIR);
+  await mkdir(attachmentDir, { recursive: true });
+  for (const attachment of attachments) {
+    if (!REVIEW_ATTACHMENT_NAME.test(attachment.fileName)) {
+      throw new Error(`Invalid review attachment file name: ${JSON.stringify(attachment.fileName)}`);
+    }
+    await writeFile(join(attachmentDir, attachment.fileName), attachment.content, "utf8");
+  }
 }
 
 /** Resolves the policy YAML to apply for a given task + execution mode. */
@@ -478,6 +495,12 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     if (!adapter || !hasReviewSpec(adapter)) {
       throw new Error("OpenShellWorkspaceRunner.runReviewInDocker requires a review-capable agent adapter");
     }
+    if (input.attachments !== undefined && input.attachments.length > 0 &&
+        (adapter.name === "goose" || adapter.name === "aider")) {
+      throw new Error(
+        `${adapter.name} cannot read review diff attachments; use a review engine with file-read tools for oversized diffs`
+      );
+    }
     const spec = adapter.buildReviewContainerSpec(input);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 
@@ -508,6 +531,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       });
       await this.applyEgress(name, spec.egress, input.abortSignal);
       await installSkillSources(dir, input.skillSourcesJson, providerFromAdapterName(adapter.name), input.abortSignal);
+      await writeReviewAttachments(dir, input.attachments);
       // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
       await this.deps.client.uploadToSandbox({
         name,

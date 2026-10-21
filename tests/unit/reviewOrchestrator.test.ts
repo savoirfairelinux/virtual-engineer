@@ -1855,6 +1855,32 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(prompt).not.toContain("diff truncated");
   });
 
+  it("attaches the complete diff when it exceeds the inline budget", async () => {
+    const initial = makeTask();
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const hugePatch = "+generated\n".repeat(50_000);
+    mocks.provider.getChangeDiff = vi.fn(async () => makeDiff({
+      files: [
+        { path: "src/generated.ts", status: "modified", patch: hugePatch },
+        { path: "src/last.ts", status: "modified", patch: "+last file" },
+      ],
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    const input = runner.runReviewInDocker.mock.calls[0]?.[1] as {
+      prompt: string;
+      attachments?: Array<{ fileName: string; content: string }>;
+    };
+    expect(input.prompt).not.toContain(hugePatch);
+    expect(input.prompt).toContain("+last file");
+    expect(input.prompt).toContain("`.git/ve-review/change.diff`");
+    expect(input.attachments).toHaveLength(1);
+    expect(input.attachments?.[0]?.content).toContain(hugePatch);
+  });
+
   it("fails without posting when the provider reports an incomplete diff", async () => {
     const initial = makeTask();
     const mocks = makeMocks(initial);

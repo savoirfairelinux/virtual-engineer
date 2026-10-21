@@ -871,7 +871,7 @@ export class ReviewOrchestrator {
         rawOutput = "";
         result = { comments: [], summary: CLEAN_MERGE_REVIEW_SUMMARY, score: 0, replies: [] };
       } else {
-        const prompt = buildReviewPrompt({
+        const { prompt, attachments: promptAttachments } = buildReviewPrompt({
           details,
           diff,
           instructionsPrompt: reviewInstructions,
@@ -890,7 +890,13 @@ export class ReviewOrchestrator {
           ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
         });
 
-        emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
+        emitReviewEvent("review.prompt_built", {
+          promptLength: prompt.length,
+          patchset: details.currentPatchset,
+          ...(promptAttachments.length > 0
+            ? { attachments: promptAttachments.map((a) => ({ fileName: a.fileName, length: a.content.length })) }
+            : {}),
+        });
 
         if (this.deps.workspaceRunner.prepareProjectWorkspace === undefined) {
           throw new Error(
@@ -953,6 +959,7 @@ export class ReviewOrchestrator {
             patchset: details.currentPatchset,
             repositoryName: details.project,
             prompt,
+            ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
             systemPrompt: reviewSystemPrompt,
             reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
             agentToken: projectAgentRuntime.token,

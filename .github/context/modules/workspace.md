@@ -27,7 +27,8 @@ The workspace module owns two unrelated concerns: (a) the **agent runtime** — 
 Additional invariants:
 
 - `listTrustedRepoPaths(handle)` returns only sub-paths VE itself cloned. `Orchestrator.pushProjectChanges()` refuses to run git anywhere else, so an agent-authored directory never receives push credentials.
-- Sandbox paths: `/sandbox` (writable workspace root), `/tmp/user-prompt.txt` (`USER_PROMPT_FILE`), `/app/agent-worker/` (worker runtime, read-only), and `/dev/pts` (the narrow PTY device tree needed by nested agent shells). `/workspace` and `/ve-home` do not exist.
+- Sandbox paths: `/sandbox` (writable workspace root), `/tmp/user-prompt.txt` (`USER_PROMPT_FILE`), `<repo>/.git/ve-review/` (review prompt attachments such as oversized diffs, written host-side before upload and read through repository-scoped read tools), `/app/agent-worker/` (worker runtime, read-only), and `/dev/pts` (the narrow PTY device tree needed by nested agent shells). `/workspace` and `/ve-home` do not exist.
+- `runReviewInDocker()` rejects reviews carrying diff attachments for Goose and Aider before sandbox creation: those engines have no file-read tools in review mode and must not return a partial review. Their fully inlined reviews are unchanged.
 - `collectPolicyDenials()` runs in a `finally` after every attempt: bounded `getSandboxLogs({ lines: 200, since: "75m" })` with a 30 s abort, parsed by `parseDenialEvent` (`src/openshell/denialEvents.ts`), deduplicated per sandbox by a fingerprint cache capped at 1 000 raw lines, and persisted through the injected `recordDenial` sink. There is no `denyEventPoller.ts`, no `pollDenials()`, and no `DenialSource`.
 - `execTimeoutSec` (from `AGENT_TIMEOUT_MS`) is passed to `sandbox exec --timeout`.
 

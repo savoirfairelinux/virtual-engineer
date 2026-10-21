@@ -651,6 +651,20 @@ export interface CloneResult {
   error?: string;
 }
 
+/**
+ * Repository-relative directory receiving review attachments. It sits inside
+ * `.git` so it stays out of the working tree while remaining readable by review
+ * agents restricted to the repository directory.
+ */
+export const REVIEW_ATTACHMENT_DIR = ".git/ve-review";
+
+/** File written to {@link REVIEW_ATTACHMENT_DIR} before the review agent runs. */
+export interface ReviewAttachment {
+  /** Plain file name (no directory separators). */
+  fileName: string;
+  content: string;
+}
+
 /** Input for running the review agent container. Workspace must be pre-cloned and patched. */
 export interface ReviewWorkspaceInput {
   /** Owning VE project, used to attribute runtime audit events. */
@@ -667,6 +681,8 @@ export interface ReviewWorkspaceInput {
   repositoryName: string;
   /** The user prompt (diff + instructions) to send to the agent */
   prompt: string;
+  /** Files the prompt references, written to {@link REVIEW_ATTACHMENT_DIR} in the repository. */
+  attachments?: ReviewAttachment[] | undefined;
   /** System prompt passed as SYSTEM_PROMPT env var to the review container */
   systemPrompt: string;
   /** Immutable integration-owned JSON Schema for the structured review result. */
