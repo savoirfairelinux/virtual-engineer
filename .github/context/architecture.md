@@ -134,9 +134,11 @@ the backup still counts as created, and the next run can retry pruning.
 
 The standard Docker launcher passes the invoking host user's primary GID as
 `BACKUP_ACCESS_GID`. When set, the backup directory stays root-owned with mode
-`2750`, and archive files are root-owned with mode `0640`; this lets members of
-that group list and read archives without granting group write/delete access.
-Existing archives are updated to the configured group when the inventory is
+`2750`, and encrypted archive files are root-owned with mode `0640`; this lets
+members of that group read ciphertext without group write/delete access.
+Legacy plaintext archives stay `0600`, and any existing group-readable ones are
+tightened before access is granted to the configured group. Existing encrypted
+archives are updated to the configured group when the inventory is
 listed or a backup is created. Direct runs without this setting retain private
 `0700` directory and `0600` archive modes.
 
@@ -165,7 +167,12 @@ never written in that format.
 
 Each archive contains an online SQLite snapshot with active admin sessions
 removed, a checksum/compatibility manifest, and allowlisted prompt override
-Markdown files. It excludes `ADMIN_AUTH_SECRET`, the backup keyring, local OIDC
+Markdown files. Session removal and compaction run in a dedicated worker thread
+on the snapshot only; creation awaits completion without blocking the
+orchestrator event loop. Creation and restore share a 16 GiB database limit and
+a 64 KiB UTF-8 serialized-manifest limit (including its trailing newline).
+Oversized snapshots or manifests fail before archive publication or retention.
+The archive excludes `ADMIN_AUTH_SECRET`, the backup keyring, local OIDC
 and OpenShell state, and ephemeral workspaces. Manifest format v2 uses
 HMAC-SHA256 with `ADMIN_AUTH_SECRET` to authenticate the SQLite checksum and
 deterministically code-unit-sorted prompt filename/hash inventory without

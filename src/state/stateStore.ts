@@ -53,6 +53,7 @@ import { createTaskStore } from "./stores/taskStore.js";
 import type { UserStoreApi } from "./stores/userStore.js";
 import { createUserStore } from "./stores/userStore.js";
 import { runDatabaseMigrations } from "./databaseMigrations.js";
+import { sanitizeBackupSnapshot } from "./backupSnapshot.js";
 import * as schema from "./schema.js";
 import type { LogEntityKind } from "../logger.js";
 
@@ -257,15 +258,7 @@ export class SqliteStateStore {
 
   async backupDatabaseTo(destinationPath: string): Promise<void> {
     await this.raw.backup(destinationPath);
-    const snapshot = new Database(destinationPath);
-    try {
-      snapshot.prepare("DELETE FROM user_sessions").run();
-      snapshot.exec("VACUUM");
-      snapshot.pragma("wal_checkpoint(TRUNCATE)");
-      snapshot.pragma("journal_mode = DELETE");
-    } finally {
-      snapshot.close();
-    }
+    await sanitizeBackupSnapshot(destinationPath);
   }
 
   /** Convenience helper: fetch the ProjectRecord bound to a task via its projectId. */

@@ -22,8 +22,11 @@ import { getLogger } from "../logger.js";
 import { encryptBackupFile, loadBackupKeyring, type BackupKeyringFileContent } from "./backupCrypto.js";
 import {
   createBackupManifest,
+  isBackupEncryptedFilename,
   isBackupFilename,
   MAX_BACKUP_ARCHIVE_ENTRIES,
+  MAX_BACKUP_DATABASE_BYTES,
+  MAX_BACKUP_MANIFEST_BYTES,
   MAX_BACKUP_PROMPT_FILES,
   MAX_BACKUP_PROMPT_OVERRIDE_BYTES,
   parseBackupCreatedAt,
@@ -159,17 +162,19 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       return;
     }
 
-    if (info.gid !== accessGid) await chown(backupDir, info.uid, accessGid);
-    await chmod(backupDir, 0o2750);
     const entries = await readdir(backupDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !isBackupFilename(entry.name)) continue;
       const filePath = join(backupDir, entry.name);
       const fileInfo = await lstat(filePath);
       if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) continue;
-      if (fileInfo.gid !== accessGid) await chown(filePath, fileInfo.uid, accessGid);
-      if ((fileInfo.mode & 0o777) !== 0o640) await chmod(filePath, 0o640);
+      const encrypted = isBackupEncryptedFilename(entry.name);
+      const mode = encrypted ? 0o640 : 0o600;
+      if ((fileInfo.mode & 0o777) !== mode) await chmod(filePath, mode);
+      if (encrypted && fileInfo.gid !== accessGid) await chown(filePath, fileInfo.uid, accessGid);
     }
+    if (info.gid !== accessGid) await chown(backupDir, info.uid, accessGid);
+    await chmod(backupDir, 0o2750);
   }
 
   async function cleanupStaleArtifacts(): Promise<void> {
@@ -239,11 +244,19 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       const databasePath = join(stagingDir, "database.sqlite");
       await deps.stateStore.backupDatabaseTo(databasePath);
       await chmod(databasePath, 0o600);
+      const databaseSize = (await stat(databasePath)).size;
+      if (databaseSize < 1 || databaseSize > MAX_BACKUP_DATABASE_BYTES) {
+        throw new Error("Backup database size is invalid.");
+      }
 
       const promptOverrides = await copyPromptOverrides(promptsDir, stagingDir);
       const databaseSha256 = await sha256File(databasePath);
       const manifest = createBackupManifest(createdAt, databaseSha256, promptOverrides, secret);
-      await writeFile(join(stagingDir, "manifest.json"), `${JSON.stringify(manifest)}\n`, {
+      const serializedManifest = `${JSON.stringify(manifest)}\n`;
+      if (Buffer.byteLength(serializedManifest, "utf8") > MAX_BACKUP_MANIFEST_BYTES) {
+        throw new Error("Backup manifest is too large.");
+      }
+      await writeFile(join(stagingDir, "manifest.json"), serializedManifest, {
         encoding: "utf8",
         flag: "wx",
         mode: 0o600,

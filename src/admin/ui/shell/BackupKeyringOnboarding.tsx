@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { api } from "../api.ts";
+import { useDialogFocus } from "../components/dialogFocus.ts";
 
 interface BackupKeyringFileContent {
   format: "virtual-engineer-backup-keyring";
@@ -37,6 +38,8 @@ export function SecuritySecretsOnboarding() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(status === "pending" || status === "revealed", dialogRef, () => undefined);
 
   useEffect(() => {
     let current = true;
@@ -154,6 +157,8 @@ export function SecuritySecretsOnboarding() {
   return (
     <div className="modal-scrim">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal"
         style={{ maxWidth: 720, maxHeight: "calc(100vh - 32px)", display: "flex", flexDirection: "column" }}
         role="dialog"

@@ -223,6 +223,46 @@ describe("App identity loading", () => {
     expect(screen.getByRole("dialog", { name: "Save your Virtual Engineer setup secrets" })).toBe(dialog);
   });
 
+  it("contains keyboard focus until acknowledgement and restores the previous focus", async () => {
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockReset();
+    let finishAcknowledgement: (() => void) | undefined;
+    apiMocks.post.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishAcknowledgement = resolve;
+    }));
+    const background = document.createElement("button");
+    background.textContent = "Background control";
+    document.body.append(background);
+    background.focus();
+
+    try {
+      render(<SecuritySecretsOnboarding />);
+      const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+      const reveal = within(dialog).getByRole("button", { name: "Reveal setup secrets" });
+      const acknowledge = within(dialog).getByRole("button", { name: "I've saved both secrets securely" });
+      expect(document.activeElement).toBe(reveal);
+
+      acknowledge.focus();
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(document.activeElement).toBe(reveal);
+      fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+      expect(document.activeElement).toBe(acknowledge);
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(apiMocks.post).not.toHaveBeenCalled();
+
+      fireEvent.click(acknowledge);
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(document.activeElement).toBe(dialog);
+      await act(async () => { finishAcknowledgement?.(); });
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(document.activeElement).toBe(background);
+    } finally {
+      background.remove();
+    }
+  });
+
   it("allows acknowledgement before revealing either secret", async () => {
     apiMocks.get.mockResolvedValueOnce({ pending: true });
     apiMocks.post.mockReset();

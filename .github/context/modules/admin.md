@@ -296,6 +296,9 @@ The Backups schedule participates in the same inline-form unsaved-changes guard.
 The policy editor exposes **Manage backups** as the global
 `system.backup.manage` permission; it grants backup management, not the
 superuser-only setup-secret reveal.
+The blocking setup-secret dialog uses the shared focus trap, including while
+all action buttons are disabled during a request. Escape does not dismiss it;
+acknowledgement closes it and restores the previously focused control.
 
 Prompt lists and all three agent prompt selectors disambiguate duplicate labels with a built-in marker or the custom prompt's full id. Unique labels remain unchanged; option values always remain prompt ids. The private-copy action uses the existing layers icon.
 

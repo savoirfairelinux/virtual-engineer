@@ -10,6 +10,8 @@ import {
   fingerprintAdminAuthSecret,
   isBackupEncryptedFilename,
   MAX_BACKUP_ARCHIVE_ENTRIES,
+  MAX_BACKUP_DATABASE_BYTES,
+  MAX_BACKUP_MANIFEST_BYTES,
   MAX_BACKUP_PROMPT_FILES,
   MAX_BACKUP_PROMPT_OVERRIDE_BYTES,
   verifyBackupManifest,
@@ -23,8 +25,6 @@ import {
 } from "./backupCrypto.js";
 
 const log = getLogger("backup-restore");
-const MAX_DATABASE_BYTES = 16 * 1024 * 1024 * 1024;
-const MAX_MANIFEST_BYTES = 64 * 1024;
 
 interface ArchiveEntry {
   path: string;
@@ -274,12 +274,12 @@ function validateArchiveEntries(entries: readonly ArchiveEntry[]): void {
     }
     if (path === "manifest.json") {
       manifestFound = true;
-      if (entry.size > MAX_MANIFEST_BYTES) throw new Error("Backup manifest is too large.");
+      if (entry.size > MAX_BACKUP_MANIFEST_BYTES) throw new Error("Backup manifest is too large.");
       continue;
     }
     if (path === "database.sqlite") {
       databaseFound = true;
-      if (entry.size < 1 || entry.size > MAX_DATABASE_BYTES) throw new Error("Backup database size is invalid.");
+      if (entry.size < 1 || entry.size > MAX_BACKUP_DATABASE_BYTES) throw new Error("Backup database size is invalid.");
       continue;
     }
     if (path.startsWith("prompts/")) {

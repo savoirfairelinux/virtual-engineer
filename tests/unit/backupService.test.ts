@@ -4,6 +4,8 @@ import Database from "better-sqlite3";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { extract as extractTar } from "tar";
 import { decryptBackupFile, loadBackupKeyring } from "../../src/backup/backupCrypto.js";
+import { createBackupManifest } from "../../src/backup/backupArchive.js";
+import { restoreBackupIfRequested } from "../../src/backup/backupRestore.js";
 import { createBackupService, type BackupServiceDeps } from "../../src/backup/backupService.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
@@ -31,6 +33,7 @@ describe("backup service", () => {
 
   afterEach(() => {
     store.close();
+    vi.restoreAllMocks();
     vi.resetAllMocks();
   });
 
@@ -67,6 +70,71 @@ describe("backup service", () => {
     expect(newStat.mode & 0o777).toBe(0o640);
   });
 
+  it.each([0o600, 0o640])("keeps legacy plaintext archives private with initial mode %i", async (mode) => {
+    const encryptedBackup = await buildBackupService().createBackup();
+    const accessGid = process.getgid?.();
+    if (accessGid === undefined) return;
+    const plaintextPath = join(backupDir, "ve-backup-20260924T030000000Z-12345678.tar.gz");
+    await writeFile(plaintextPath, "legacy plaintext archive", { mode });
+    const service = buildBackupService({ backupAccessGid: accessGid });
+
+    await service.listBackups();
+
+    expect((await stat(plaintextPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(backupDir, encryptedBackup.filename))).mode & 0o777).toBe(0o640);
+  });
+
+  it.each([0, 1])("enforces the 16 GiB snapshot limit with %i extra bytes", async (extraBytes) => {
+    const service = buildBackupService();
+    const previous = await service.createBackup();
+    const snapshotStat = { ...await stat(promptsDir), size: 16 * 1024 * 1024 * 1024 + extraBytes };
+    vi.mocked(stat).mockResolvedValueOnce(snapshotStat);
+
+    if (extraBytes === 0) {
+      await expect(service.createBackup()).resolves.toMatchObject({ filename: expect.stringMatching(/\.enc$/) });
+      expect(await service.listBackups()).toHaveLength(2);
+    } else {
+      await expect(service.createBackup()).rejects.toThrow("database size");
+      await expect(service.listBackups()).resolves.toEqual([previous]);
+      expect(await readdir(backupDir)).toEqual([previous.filename]);
+    }
+  });
+
+  it.each([64 * 1024, 64 * 1024 + 1])("enforces the serialized manifest limit at %i bytes", async (sizeBytes) => {
+    const service = buildBackupService();
+    const previous = await service.createBackup();
+    const filenames = Array.from({ length: 256 }, (_, index) => `${String(index).padStart(3, "0")}.md`);
+    const baseline = createBackupManifest(
+      new Date(0).toISOString(),
+      "0".repeat(64),
+      filenames.map((filename) => ({ filename, sha256: "0".repeat(64) })),
+      ADMIN_AUTH_SECRET,
+    );
+    const extraBytes = sizeBytes - Buffer.byteLength(`${JSON.stringify(baseline)}\n`, "utf8");
+    await Promise.all(filenames.map((filename, index) => {
+      const padding = Math.floor(extraBytes / filenames.length) + Number(index < extraBytes % filenames.length);
+      return writeFile(join(promptsDir, `${"x".repeat(padding)}${filename}`), "prompt override");
+    }));
+
+    if (sizeBytes === 64 * 1024) {
+      const backup = await service.createBackup();
+      const extractedDir = join(dirname(backupDir), "manifest-limit-inspection");
+      await extractBackupArchive(backup.filename, extractedDir);
+      expect((await readFile(join(extractedDir, "manifest.json"))).byteLength).toBe(sizeBytes);
+      await expect(restoreBackupIfRequested({
+        databasePath: join(dirname(backupDir), "manifest-limit-restore", "state.db"),
+        restoreFrom: join(backupDir, backup.filename),
+        backupKeyringFile,
+        adminAuthSecret: ADMIN_AUTH_SECRET,
+        force: false,
+      })).resolves.toMatchObject({ status: "restored" });
+    } else {
+      await expect(service.createBackup()).rejects.toThrow("manifest is too large");
+      await expect(service.listBackups()).resolves.toEqual([previous]);
+      expect(await readdir(backupDir)).toEqual([previous.filename]);
+    }
+  });
+
   it("excludes active admin sessions from the archived SQLite snapshot", async () => {
     const user = await store.createUser({
       id: "backup-session-user",
@@ -81,9 +149,12 @@ describe("backup service", () => {
       expiresAt: new Date(Date.now() + 60_000),
     });
     await expect(store.getSessionByTokenHash(tokenHash)).resolves.not.toBeNull();
+    const mainThreadExec = vi.spyOn(Database.prototype, "exec");
 
     const service = buildBackupService();
     const backup = await service.createBackup();
+    expect(mainThreadExec).not.toHaveBeenCalledWith("VACUUM");
+    await expect(store.getSessionByTokenHash(tokenHash)).resolves.not.toBeNull();
     const extractedDir = join(dirname(backupDir), "session-scrubbing-inspection");
     await extractBackupArchive(backup.filename, extractedDir);
     const snapshot = new Database(join(extractedDir, "database.sqlite"), { readonly: true });

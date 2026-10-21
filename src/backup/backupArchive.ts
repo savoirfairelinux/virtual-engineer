@@ -6,6 +6,8 @@ export const BACKUP_FILENAME_PATTERN = /^ve-backup-(\d{8}T\d{9}Z)-([a-f\d]{8})\.
 export const MAX_BACKUP_PROMPT_FILES = 256;
 export const MAX_BACKUP_PROMPT_OVERRIDE_BYTES = 2 * 1024 * 1024;
 export const MAX_BACKUP_ARCHIVE_ENTRIES = MAX_BACKUP_PROMPT_FILES + 3;
+export const MAX_BACKUP_DATABASE_BYTES = 16 * 1024 * 1024 * 1024;
+export const MAX_BACKUP_MANIFEST_BYTES = 64 * 1024;
 
 export interface BackupPromptOverride {
   filename: string;
