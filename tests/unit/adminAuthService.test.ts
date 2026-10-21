@@ -49,6 +49,7 @@ function makeStore(users: AdminUser[] = []): MockStore {
         createdAt: new Date(),
         expiresAt: input.expiresAt,
         lastSeenAt: new Date(),
+        validatedAt: input.validatedAt ?? null,
       };
       store.sessions.set(input.tokenHash, session);
       return session;

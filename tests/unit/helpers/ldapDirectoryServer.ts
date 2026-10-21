@@ -117,6 +117,8 @@ export interface LdapDirectoryServer {
   addUser(uid: string, password: string, attributes?: Record<string, string | string[]>): Promise<string>;
   /** Add a groupOfNames under ou=groups whose members are the given uids; returns its DN. */
   addGroup(cn: string, memberUids: string[]): Promise<string>;
+  /** Add many groups with the same members over one connection. */
+  addGroups(cns: readonly string[], memberUids: string[]): Promise<void>;
   replaceAttribute(dn: string, attribute: string, values: string[]): Promise<void>;
   /** Rename an entry in place (the old RDN value is removed) and return its new DN. */
   renameEntry(dn: string, newRdn: string): Promise<string>;
@@ -301,6 +303,17 @@ export async function startLdapDirectoryServer(): Promise<LdapDirectoryServer> {
         member: memberUids.map((uid) => `uid=${uid},${LDAP_PEOPLE_DN}`),
       }));
       return dn;
+    },
+    async addGroups(cns, memberUids) {
+      await asDirectoryAdmin(async (client) => {
+        for (const cn of cns) {
+          await client.add(`cn=${cn},${LDAP_GROUPS_DN}`, {
+            objectClass: "groupOfNames",
+            cn,
+            member: memberUids.map((uid) => `uid=${uid},${LDAP_PEOPLE_DN}`),
+          });
+        }
+      });
     },
     async replaceAttribute(dn, attribute, values) {
       await asDirectoryAdmin((client) => client.modify(dn, new Change({

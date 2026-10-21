@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole } from "../../interfaces.js";
 import { userIdentities, userSessions, users } from "../schema.js";
@@ -71,6 +71,8 @@ export interface UserIdentityStoreApi {
   /** Remove the link, set a local password hash, and revoke sessions. False when not linked. */
   unlinkUserIdentity(userId: string, passwordHash: string): Promise<boolean>;
   recordIdentityLogin(identityId: string, update: { externalUsername: string; at: Date }): Promise<void>;
+  /** Revoke every session of users linked to the source; returns the number removed. */
+  deleteSessionsForAuthSource(authSourceId: string): Promise<number>;
 }
 
 interface UserIdentityStoreContext {
@@ -225,6 +227,13 @@ export function createUserIdentityStore(context: UserIdentityStoreContext): User
       .where(eq(userIdentities.id, identityId));
   }
 
+  async function deleteSessionsForAuthSource(authSourceId: string): Promise<number> {
+    const linkedUsers = db.select({ userId: userIdentities.userId }).from(userIdentities)
+      .where(eq(userIdentities.authSourceId, authSourceId));
+    const result = await db.delete(userSessions).where(inArray(userSessions.userId, linkedUsers));
+    return result.changes;
+  }
+
   return {
     getUserIdentityByUserId,
     getUserIdentityBySubject,
@@ -235,5 +244,6 @@ export function createUserIdentityStore(context: UserIdentityStoreContext): User
     linkUserIdentity,
     unlinkUserIdentity,
     recordIdentityLogin,
+    deleteSessionsForAuthSource,
   };
 }

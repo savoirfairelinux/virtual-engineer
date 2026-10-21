@@ -2,7 +2,7 @@ import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole, UserSession } from "../../interfaces.js";
-import { users, userSessions, userIdentities, policyBindings, policies } from "../schema.js";
+import { users, userSessions, userIdentities, authSources, policyBindings, policies } from "../schema.js";
 import * as schema from "../schema.js";
 import { countEnabledLocalAdminsIn } from "./userIdentityStore.js";
 
@@ -86,12 +86,14 @@ export interface UserStoreApi {
   /**
    * When `identityId` is given, the session is created only while it is still the
    * user's directory link (`null` = no link); otherwise rejects with `IDENTITY_CHANGED`.
+   * A directory session is also refused with `SOURCE_DISABLED` while that link's source is disabled.
    */
-  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null }): Promise<UserSession>;
+  createSession(input: { tokenHash: string; userId: string; expiresAt: Date; identityId?: string | null; validatedAt?: Date | undefined }): Promise<UserSession>;
   /** Resolve a live session: null when unknown, expired, or the user is disabled/missing. */
   getSessionByTokenHash(tokenHash: string): Promise<(UserSession & { user: AdminUser }) | null>;
   /** Sliding-expiry update of an existing session. */
   touchSession(tokenHash: string, update: { lastSeenAt: Date; expiresAt: Date }): Promise<void>;
+  markSessionValidated(tokenHash: string, at: Date): Promise<void>;
   deleteSessionByTokenHash(tokenHash: string): Promise<boolean>;
   /** Delete every session of a user; returns the number of sessions removed. */
   deleteSessionsForUser(userId: string): Promise<number>;
@@ -126,6 +128,7 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
       createdAt: row.createdAt,
       expiresAt: row.expiresAt,
       lastSeenAt: row.lastSeenAt,
+      validatedAt: row.validatedAt ?? null,
     };
   }
 
@@ -298,14 +301,20 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     userId: string;
     expiresAt: Date;
     identityId?: string | null;
+    validatedAt?: Date | undefined;
   }): Promise<UserSession> {
     try {
       const row = db.transaction((tx) => {
         if (input.identityId !== undefined) {
-          const current = tx.select({ id: userIdentities.id }).from(userIdentities)
+          const current = tx.select({ id: userIdentities.id, sourceEnabled: authSources.enabled })
+            .from(userIdentities)
+            .innerJoin(authSources, eq(authSources.id, userIdentities.authSourceId))
             .where(eq(userIdentities.userId, input.userId)).get();
           if ((current?.id ?? null) !== input.identityId) {
             throw codedError("IDENTITY_CHANGED", "The account's sign-in method changed during login");
+          }
+          if (current && current.sourceEnabled !== 1) {
+            throw codedError("SOURCE_DISABLED", "The account's authentication source was disabled during login");
           }
         }
         const now = new Date();
@@ -315,6 +324,7 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
           createdAt: now,
           expiresAt: input.expiresAt,
           lastSeenAt: now,
+          validatedAt: input.validatedAt ?? null,
         }).returning().get();
       }, { behavior: "immediate" });
       return Promise.resolve(rowToSession(row));
@@ -346,6 +356,10 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
       .where(eq(userSessions.tokenHash, tokenHash));
   }
 
+  async function markSessionValidated(tokenHash: string, at: Date): Promise<void> {
+    await db.update(userSessions).set({ validatedAt: at }).where(eq(userSessions.tokenHash, tokenHash));
+  }
+
   async function deleteSessionByTokenHash(tokenHash: string): Promise<boolean> {
     const result = await db.delete(userSessions).where(eq(userSessions.tokenHash, tokenHash));
     return result.changes > 0;
@@ -375,6 +389,7 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     createSession,
     getSessionByTokenHash,
     touchSession,
+    markSessionValidated,
     deleteSessionByTokenHash,
     deleteSessionsForUser,
     purgeExpiredSessions,

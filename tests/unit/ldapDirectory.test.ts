@@ -6,6 +6,7 @@ import {
   authenticateLdapSubject,
   escapeLdapFilterValue,
   lookupLdapAccount,
+  lookupLdapSubject,
   normalizeLdapDn,
   testLdapConnection,
 } from "../../src/admin/authentication/ldapDirectory.js";
@@ -150,7 +151,7 @@ describe.skipIf(!ldapAvailable)("directory accounts (live slapd)", () => {
 
   it("is unavailable when the subject attribute is missing or the service bind fails", async () => {
     await expect(lookupLdapAccount(config({ uniqueIdAttribute: "employeeNumber" }), "alice"))
-      .resolves.toEqual({ status: "unavailable", error: "Directory entry has no employeeNumber value" });
+      .resolves.toEqual({ status: "unavailable", error: "Directory entry has no employeeNumber value", accountSpecific: true });
     await expect(lookupLdapAccount(config({ bindPassword: "wrong-Secret-9" }), "alice"))
       .resolves.toEqual({ status: "unavailable", error: "The directory rejected the bind credentials" });
   });
@@ -181,6 +182,10 @@ describe.skipIf(!ldapAvailable)("directory accounts (live slapd)", () => {
 
     await expect(authenticateLdapSubject(config(), subject, "carol", "carol-Pass-1"))
       .resolves.toMatchObject({ status: "authenticated", account: { dn: renamed, subject, username: "caroline" } });
+    await expect(lookupLdapSubject(config(), subject, "carol"))
+      .resolves.toMatchObject({ status: "found", account: { dn: renamed, subject, username: "caroline" } });
+    await expect(lookupLdapSubject(config({ userSearchFilter: "(&(sn=twin)(uid={username}))" }), subject, "carol"))
+      .resolves.toEqual({ status: "not_found" });
     await expect(authenticateLdapSubject(config(), subject, "carol", "wrong-Pass-1")).resolves.toEqual({ status: "invalid_password" });
     await expect(authenticateLdapSubject(config(), subject, "carol", "")).resolves.toEqual({ status: "rejected" });
     await expect(authenticateLdapSubject(config(), "00000000-0000-4000-8000-000000000000", "carol", "carol-Pass-1"))
