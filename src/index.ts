@@ -25,7 +25,7 @@ import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
 import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { AgentEngineStateStore, initializeAgentEngineState } from "./agents/agentEngines.js";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
 import { buildAdminProviderSummaries } from "./admin/providerSummary.js";
@@ -39,7 +39,6 @@ import type { Integration, ProjectId, ProjectRecord, ProjectReviewConfig, Task }
 import { makeTaskId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
-import { dirname, join, resolve } from "node:path";
 import { createBackupService } from "./backup/backupService.js";
 import { restoreBackupIfRequested } from "./backup/backupRestore.js";
 import { resolveBackupSettings } from "./backup/backupSettings.js";

@@ -325,8 +325,10 @@ kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
 ```
 
 After the restore pod is ready, immediately remove both one-shot variables. This
-updates the Deployment and starts a normal pod against the restored database;
-leaving `VE_RESTORE_FORCE=true` set would reapply the archive on later restarts.
+updates the Deployment and starts a normal pod against the restored database.
+A matching restore marker prevents reapplying the same archive while both
+installed targets remain present, even with force enabled. Clearing the
+variables avoids a later forced restore if the marker or targets change.
 Remove the staged archive only after that normal rollout succeeds, and retain
 the `.pre-restore-*` quarantine until the instance has been verified:
 

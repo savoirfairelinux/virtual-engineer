@@ -293,6 +293,9 @@ The dashboard includes a portal-rendered spotlight tutorial for the top-level Ov
 Configuration forms, including private prompt copies and edited runtime-policy YAML, register unsaved state with the parent app. Internal section navigation, top-level navigation, logout, browser Back/Forward, reload, and tab close warn before discarding changes. Accepted navigation clears the guard; successful saves return to the relevant detail/list page. The history controller uses indexed `pushState`/`popstate` entries so rejecting Back/Forward restores the current entry without overwriting history. System Settings participates in the same guard despite remaining an inline section form; a background refresh does not replace fields being edited. Changing the selected agent while editing loads the new agent instead of silently retaining the old edit target. Project-access lookup, enable/disable actions, audit pages, and statistics show errors or discard stale responses instead of silently showing outdated results.
 
 The Backups schedule participates in the same inline-form unsaved-changes guard.
+The policy editor exposes **Manage backups** as the global
+`system.backup.manage` permission; it grants backup management, not the
+superuser-only setup-secret reveal.
 
 Prompt lists and all three agent prompt selectors disambiguate duplicate labels with a built-in marker or the custom prompt's full id. Unique labels remain unchanged; option values always remain prompt ids. The private-copy action uses the existing layers icon.
 

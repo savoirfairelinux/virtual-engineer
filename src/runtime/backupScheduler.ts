@@ -57,7 +57,11 @@ export function createBackupScheduler(deps: BackupSchedulerDeps): BackupSchedule
     if (stopped) return;
     const runCountBeforeCheck = completedRuns;
     const settings = resolveBackupSettings(await deps.getSettings());
-    await deps.backupService.cleanupStaleArtifacts();
+    try {
+      await deps.backupService.cleanupStaleArtifacts();
+    } catch (error) {
+      log.warn({ err: error }, "backup artifact cleanup failed; continuing scheduled backup check");
+    }
     if (!settings.enabled || stopped) return;
     const backups = await deps.backupService.listBackups();
     if (stopped || backupInFlight || completedRuns !== runCountBeforeCheck) return;

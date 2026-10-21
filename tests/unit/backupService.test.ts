@@ -1,7 +1,7 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { extract as extractTar } from "tar";
 import { decryptBackupFile, loadBackupKeyring } from "../../src/backup/backupCrypto.js";
 import { createBackupService, type BackupServiceDeps } from "../../src/backup/backupService.js";
@@ -10,6 +10,8 @@ import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import { TEST_BACKUP_KEY_HEX, TEST_BACKUP_KEY_ID, writeTestBackupKeyring } from "./helpers/backupKeyring.js";
 
 const ADMIN_AUTH_SECRET = "a".repeat(32);
+
+vi.mock("node:fs/promises", { spy: true });
 
 describe("backup service", () => {
   let store: SqliteStateStore;
@@ -29,6 +31,7 @@ describe("backup service", () => {
 
   afterEach(() => {
     store.close();
+    vi.resetAllMocks();
   });
 
   it("creates a private, timestamped archive and lists it", async () => {
@@ -167,6 +170,59 @@ describe("backup service", () => {
     await service.createBackup();
 
     expect(await readdir(backupDir)).not.toContain(basename(staleStage));
+  });
+
+  it.each(["lstat", "rm"] as const)("continues the sweep after a stale artifact %s failure", async (operation) => {
+    const service = buildBackupService();
+    await mkdir(backupDir, { recursive: true });
+    const staleStages = [
+      await mkdtemp(join(backupDir, ".ve-backup-")),
+      await mkdtemp(join(backupDir, ".ve-backup-")),
+    ];
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const stage of staleStages) await utimes(stage, oldTime, oldTime);
+    const entries = await readdir(backupDir);
+    const blockedStage = join(backupDir, entries[0]!);
+    const remainingStage = join(backupDir, entries[1]!);
+    const failure = Object.assign(new Error("artifact access denied"), { code: "EACCES" });
+    if (operation === "lstat") {
+      vi.mocked(lstat).mockResolvedValueOnce(await lstat(backupDir)).mockRejectedValueOnce(failure);
+    } else {
+      vi.mocked(rm).mockRejectedValueOnce(failure);
+    }
+
+    await expect(service.cleanupStaleArtifacts()).resolves.toBeUndefined();
+
+    expect((await lstat(blockedStage)).isDirectory()).toBe(true);
+    await expect(lstat(remainingStage)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("creates a backup even when stale artifact enumeration fails", async () => {
+    const service = buildBackupService();
+    vi.mocked(readdir).mockRejectedValueOnce(new Error("cleanup unavailable"));
+
+    const backup = await service.createBackup();
+
+    await expect(service.listBackups()).resolves.toEqual([backup]);
+  });
+
+  it("reports a committed backup as successful when staging cleanup fails", async () => {
+    const service = buildBackupService();
+    vi.mocked(rm).mockRejectedValueOnce(new Error("staging cleanup unavailable"));
+
+    const backup = await service.createBackup();
+
+    await expect(service.listBackups()).resolves.toEqual([backup]);
+    expect((await readdir(backupDir)).some((name) => name.startsWith(".ve-backup-"))).toBe(true);
+  });
+
+  it("still rejects an unsafe backup directory when cleanup cannot run", async () => {
+    const outsideDir = join(dirname(backupDir), "outside-backups");
+    await mkdir(outsideDir);
+    await symlink(outsideDir, backupDir);
+
+    await expect(buildBackupService().createBackup()).rejects.toThrow("real directory");
+    expect(await readdir(outsideDir)).toEqual([]);
   });
 
   it("rejects backup creation when the encryption secret is unavailable", async () => {

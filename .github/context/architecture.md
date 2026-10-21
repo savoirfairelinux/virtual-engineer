@@ -124,6 +124,10 @@ archive `.partial` files once they are at least 24 hours old. It skips fresh
 entries, unexpected names or file types, and symlinks to avoid racing active
 work or deleting unrelated data. Interrupted plaintext staging can remain
 until that age threshold, so backup storage must remain encrypted.
+Cleanup failures are logged per artifact and do not stop the remaining sweep.
+A failed sweep does not block manual or scheduled creation; backup directory
+validation still fails closed. Post-creation staging cleanup is also best-effort,
+so it cannot turn a committed archive into a failed request.
 
 After the archive is committed, a retention-pruning failure is logged separately;
 the backup still counts as created, and the next run can retry pruning.

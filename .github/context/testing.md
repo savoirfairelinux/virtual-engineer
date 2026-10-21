@@ -20,7 +20,7 @@ tests/
 
 | Area | Families (file-name stems) |
 |---|---|
-| Backups / recovery | `backupService`, `backupRestore`, `backupScheduler`, `backupDownloadTokenStore`, `adminBackupRoutes`, `backupSection` |
+| Backups / recovery | `backupCrypto`, `backupService`, `backupRestore`, `backupScheduler`, `backupDownloadTokenStore`, `adminBackupRoutes`, `backupSection` |
 | Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminUiSse`, `adminImageProxy`, `imageProxyTokenStore`, `adminHealthEndpoint`, `adminOverviewRoutes`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminProjectStatisticsRoutes`, `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminAgentEngineRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminModelUsageRoutes`, `adminAuthService`, `localPasswordAuthenticator`, `adminAuthRoutes`, `adminAuthSourceRoutes`, `authSourcesSection`, `adminServerRbac`, `adminPoliciesRoutes`, `adminRuntimePolicyRoutes`, `adminRuntimeStatusRoute`, `runtimePolicyValidation`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `toolAuthorizationSection`, `toolUsageSummary`, `projectFormModal`, `projectStatisticsView`, `apiIdentityBoundary`, `appIdentityHandoff`, `configDirtyRace`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `configListFilters`, `configListSearch`, `guidedTour`, `topBar`, `identityReset`, `auditSection`, `auditExportSection`, `policyRuleModel`, `policiesSection`, `agentEnginesPanel`, `integrationTypePicker`, `providerSummary`, `taskFiltersFromHash`, `statusCategories` |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `projectConnectorResolver`, `agentRuntimeResolver`, `projectPushService`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `taskLifecycleCoordinator`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
 | State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`, `.reviewDedup`, `.modelUsage`), `projectStatisticsStore`, `settingsStore`, `databaseMigrations`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
@@ -51,7 +51,7 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 
 ## Conventions
 
-- Backup tests cover online SQLite snapshot/session scrubbing, v2 HMAC authentication of database and prompt hashes, tampering rejection, bounded archive parsing, forced replacement quarantine and restart idempotency, scheduler due-time/coalescing/retention behavior, PBAC-protected single-use native-streaming downloads, independent schedule/inventory loading, unsaved-navigation state, and launcher confirmation/force/read-only-mount contracts.
+- Backup cleanup regressions cover per-artifact inspection/removal failures, failed stale-artifact enumeration, committed archives surviving staging cleanup errors, due checks continuing after housekeeping failure, and unsafe backup directories still failing closed.
 
 - Dashboard shell tests mock the Vite manifest to verify the hashed brand-logo favicon URL and graceful omission when the logo is absent.
 

@@ -57,6 +57,21 @@ describe("backup scheduler", () => {
     expect(backupService.prune).toHaveBeenCalledWith(7);
   });
 
+  it("runs a due backup even when stale artifact cleanup fails", async () => {
+    const backupService = makeService();
+    backupService.cleanupStaleArtifacts = vi.fn(async () => { throw new Error("cleanup unavailable"); });
+    const scheduler = createBackupScheduler({
+      backupService,
+      getSettings: async () => makeSettings(),
+      now: () => new Date("2026-09-24T03:01:00.000Z"),
+    });
+
+    await expect(scheduler.checkDue()).resolves.toBeUndefined();
+
+    expect(backupService.createBackup).toHaveBeenCalledTimes(1);
+    expect(backupService.prune).toHaveBeenCalledWith(7);
+  });
+
   it("waits until the configured UTC time when no backup exists", async () => {
     const backupService = makeService();
     const scheduler = createBackupScheduler({

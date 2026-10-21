@@ -182,18 +182,17 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       if (!isStagingDirectory && !isPartialArchive) continue;
 
       const artifactPath = join(backupDir, entry.name);
-      let info;
       try {
-        info = await lstat(artifactPath);
+        const info = await lstat(artifactPath);
+        if (info.isSymbolicLink() || info.mtimeMs >= cutoff
+          || (isStagingDirectory && !info.isDirectory()) || (isPartialArchive && !info.isFile())) continue;
+
+        await rm(artifactPath, { recursive: isStagingDirectory, force: true });
+        log.warn({ filename: entry.name }, "stale backup artifact removed");
       } catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") continue;
-        throw error;
+        log.warn({ err: error, filename: entry.name }, "stale backup artifact cleanup failed");
       }
-      if (info.isSymbolicLink() || info.mtimeMs >= cutoff
-        || (isStagingDirectory && !info.isDirectory()) || (isPartialArchive && !info.isFile())) continue;
-
-      await rm(artifactPath, { recursive: isStagingDirectory, force: true });
-      log.warn({ filename: entry.name }, "stale backup artifact removed");
     }
   }
 
@@ -219,7 +218,12 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
     }
     const keyring = await loadBackupKeyring(deps.backupKeyringFile);
 
-    await cleanupStaleArtifacts();
+    await ensureBackupDirectory();
+    try {
+      await cleanupStaleArtifacts();
+    } catch (error) {
+      log.warn({ err: error }, "backup artifact cleanup failed; continuing backup creation");
+    }
     const timestampMs = Math.max(Date.now(), lastCreatedAtMs + 1);
     lastCreatedAtMs = timestampMs;
     const createdAtDate = new Date(timestampMs);
@@ -269,8 +273,13 @@ export function createBackupService(deps: BackupServiceDeps): BackupService {
       log.error({ err: error, filename }, "backup archive creation failed");
       throw error;
     } finally {
-      await rm(stagingDir, { recursive: true, force: true });
-      await rm(partialPath, { force: true });
+      for (const [path, recursive] of [[stagingDir, true], [partialPath, false]] as const) {
+        try {
+          await rm(path, { recursive, force: true });
+        } catch (error) {
+          log.warn({ err: error, path }, "backup artifact cleanup failed");
+        }
+      }
     }
   }
 
