@@ -384,13 +384,96 @@ describe("buildReviewPrompt — diffs over the inline budget", () => {
         toPatchset: 3,
         diff: { changeId: CHANGE_ID, patchset: 3, files: [file("src/delta.ts", 100)] },
       },
-      maxInlineDiffChars: 400,
+      maxInlineDiffChars: 800,
     });
 
     expect(attachments.map((a) => a.fileName)).toEqual(["since-last-review.diff", "change.diff"]);
     expect(prompt).toContain("`.git/ve-review/since-last-review.diff`");
     expect(prompt).toContain("`.git/ve-review/change.diff`");
     expect(prompt).toContain("0 of 1 files are inlined below");
+  });
+
+  it.each([
+    { count: 6_000, padding: 0, attached: false },
+    { count: 10_000, padding: 0, attached: true },
+    { count: 1_200, padding: 400, attached: true },
+  ])("bounds notices and the file listing for $count small patches with $padding-character path padding", ({ count, padding, attached }) => {
+    const files = Array.from({ length: count }, (_, i) => ({
+      path: `src/${"x".repeat(padding)}file-${i}.ts`,
+      status: "modified" as const,
+      patch: "+x",
+    }));
+    const { prompt, attachments } = buildReviewRequest({
+      details,
+      diff: { ...diff, files },
+      instructionsPrompt: "Review this.",
+    });
+    const { prompt: emptyPrompt } = buildReviewRequest({
+      details,
+      diff: { ...diff, files: [] },
+      instructionsPrompt: "Review this.",
+    });
+
+    expect(prompt.length).toBeLessThanOrEqual(emptyPrompt.length + DEFAULT_MAX_INLINE_DIFF_CHARS);
+    const fileListing = prompt.split("## Files in this patchset\n")[1]!
+      .split("\n\n## Unified diffs\n")[0]!;
+    const fullContent = prompt.split("## Unified diffs\n")[1]!;
+    expect(fileListing.length + fullContent.length).toBeLessThanOrEqual(DEFAULT_MAX_INLINE_DIFF_CHARS);
+    expect(attachments).toHaveLength(attached ? 1 : 0);
+    if (attached) expect(prompt).toContain("`.git/ve-review/change.diff`");
+    const completeDiff = attached ? attachments[0]!.content : fullContent;
+    for (const changedFile of files) {
+      expect(completeDiff).toContain(`### ${changedFile.path} (modified)\n\`\`\`diff\n+x\n`);
+    }
+  });
+
+  it("keeps a fitting delta inline when the full diff needs an attachment", () => {
+    const delta = file("src/delta.ts", 10);
+    const { prompt, attachments } = buildReviewRequest({
+      details,
+      diff: { ...diff, files: [file("src/full.ts", 200_000)] },
+      instructionsPrompt: "Review this.",
+      sinceLastReview: {
+        fromPatchset: 2,
+        toPatchset: 3,
+        diff: { ...diff, files: [delta] },
+      },
+    });
+
+    expect(prompt).toContain(delta.patch);
+    expect(prompt).not.toContain("since-last-review.diff");
+    expect(attachments.map((attachment) => attachment.fileName)).toEqual(["change.diff"]);
+  });
+
+  it("shares the complete rendered diff budget between many-file deltas and full diffs", () => {
+    const files = Array.from({ length: 100 }, (_, i) => file(`src/file-${i}.ts`, 1));
+    const budget = 2_000;
+    const { prompt, attachments } = buildReviewRequest({
+      details,
+      diff: { ...diff, files },
+      instructionsPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: { ...diff, files } },
+      maxInlineDiffChars: budget,
+    });
+    const deltaContent = prompt.split("## Changes since last reviewed patchset (PS 2 → 3)\n")[1]!
+      .split("\n\n## Files in this patchset\n")[0]!;
+    const fileListing = prompt.split("## Files in this patchset\n")[1]!
+      .split("\n\n## Unified diffs\n")[0]!;
+    const fullContent = prompt.split("## Unified diffs\n")[1]!;
+
+    expect(deltaContent.length + fileListing.length + fullContent.length).toBeLessThanOrEqual(budget);
+    expect(attachments.map((attachment) => attachment.fileName)).toEqual(["since-last-review.diff", "change.diff"]);
+    expect(deltaContent).toContain("`.git/ve-review/since-last-review.diff`");
+    expect(fullContent).toContain("`.git/ve-review/change.diff`");
+  });
+
+  it("fails explicitly when the budget cannot even hold the attachment notice", () => {
+    expect(() => buildReviewRequest({
+      details,
+      diff,
+      instructionsPrompt: "Review this.",
+      maxInlineDiffChars: 1,
+    })).toThrow("Inline diff budget is too small");
   });
 });
 

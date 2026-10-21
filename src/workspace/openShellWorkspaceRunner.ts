@@ -495,6 +495,12 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     if (!adapter || !hasReviewSpec(adapter)) {
       throw new Error("OpenShellWorkspaceRunner.runReviewInDocker requires a review-capable agent adapter");
     }
+    if (input.attachments !== undefined && input.attachments.length > 0 &&
+        (adapter.name === "goose" || adapter.name === "aider")) {
+      throw new Error(
+        `${adapter.name} cannot read review diff attachments; use a review engine with file-read tools for oversized diffs`
+      );
+    }
     const spec = adapter.buildReviewContainerSpec(input);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 

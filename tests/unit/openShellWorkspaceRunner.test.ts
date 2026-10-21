@@ -950,6 +950,38 @@ describe("OpenShellWorkspaceRunner", () => {
     }
   });
 
+  it.each(["goose", "aider"])("rejects attachment-dependent %s reviews before starting a sandbox", async (name) => {
+    const repoDir = await mkdtemp(join(tmpdir(), "ve-review-unreadable-"));
+    const client = fakeClient();
+    const adapter = { ...fakeReviewAdapter(), name };
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
+
+    try {
+      await expect(runner.runReviewInDocker({ ...handle, hostWorkspacePath: repoDir }, reviewInput(adapter, {
+        attachments: [{ fileName: "change.diff", content: "complete diff" }],
+      }))).rejects.toThrow(`${name} cannot read review diff attachments`);
+
+      expect(client.createProvider).not.toHaveBeenCalled();
+      expect(client.createSandbox).not.toHaveBeenCalled();
+      expect(client.uploadToSandbox).not.toHaveBeenCalled();
+      expect(client.execInSandbox).not.toHaveBeenCalled();
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["goose", "aider"])("keeps fully inlined %s reviews working", async (name) => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: reviewWorkerStdout("ok"), stderr: "" }),
+    });
+    const adapter = { ...fakeReviewAdapter(), name };
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
+
+    await expect(runner.runReviewInDocker(handle, reviewInput(adapter, { attachments: [] })))
+      .resolves.toEqual({ rawOutput: "ok" });
+    expect(client.execInSandbox).toHaveBeenCalled();
+  });
+
   it("runAgent delegates to adapter.execute and returns its result", async () => {
     const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient() });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;

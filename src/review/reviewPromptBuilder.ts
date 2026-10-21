@@ -15,9 +15,9 @@ import {
 
 const DEFAULT_MAX_COMMIT_MESSAGE_CHARS = 8_000;
 /**
- * Upper bound on diff text inlined in the prompt (~100k tokens). Larger diffs are
- * attached in full as repository files and only partially inlined, so the agent
- * keeps access to every file without overflowing the model context window.
+ * Upper bound on inline diff content, including file listings, delta guidance,
+ * notices, and separators (~100k tokens). Larger diffs are attached in full as
+ * repository files so the agent keeps access to every file.
  */
 export const DEFAULT_MAX_INLINE_DIFF_CHARS = 400_000;
 export const FULL_DIFF_ATTACHMENT = "change.diff";
@@ -101,23 +101,30 @@ export function buildReviewPrompt(input: ReviewPromptInput): ReviewPrompt {
     `URL:     ${details.url}`,
   ].join("\n");
 
-  const fileListing = diff.files
+  let fileListing = diff.files
     .map((f) => `- ${f.status.toUpperCase().padEnd(8)} ${f.path}`)
-    .join("\n");
+    .join("\n") || "(no files reported)";
 
   const hasDelta = sinceLastReview !== undefined && sinceLastReview.diff.files.length > 0;
   const attachments: ReviewAttachment[] = [];
   const fullDiffText = renderDiffSections(diff.files);
   const deltaDiffText = hasDelta ? renderDiffSections(sinceLastReview.diff.files) : "";
-  const fitsInline = fullDiffText.length + deltaDiffText.length <= maxInlineDiffChars;
+  const deltaGuidanceLength = hasDelta ? renderSinceLastReview("").length : 0;
+  const fitsInline =
+    fileListing.length + fullDiffText.length + deltaDiffText.length + deltaGuidanceLength <= maxInlineDiffChars;
+  if (!fitsInline) {
+    fileListing = `See the diffs and their attachments for all ${diff.files.length} files.`;
+  }
+  const diffBudget = maxInlineDiffChars - fileListing.length - deltaGuidanceLength;
   // Over budget, the delta gets at most half the budget and the full diff the rest.
-  const deltaBudget = hasDelta ? Math.floor(maxInlineDiffChars / 2) : 0;
-  const deltaSections = fitsInline || !hasDelta
+  const deltaBudget = hasDelta ? Math.floor(diffBudget / 2) : 0;
+  const deltaSections = fitsInline || !hasDelta || deltaDiffText.length <= deltaBudget
     ? deltaDiffText
     : renderBudgetedDiff(sinceLastReview.diff, deltaBudget, DELTA_DIFF_ATTACHMENT, attachments);
-  const diffSections = fitsInline
+  const fullBudget = diffBudget - deltaSections.length;
+  const diffSections = fitsInline || fullDiffText.length <= fullBudget
     ? fullDiffText
-    : renderBudgetedDiff(diff, maxInlineDiffChars - deltaSections.length, FULL_DIFF_ATTACHMENT, attachments);
+    : renderBudgetedDiff(diff, fullBudget, FULL_DIFF_ATTACHMENT, attachments);
 
   const sections = [
     header,
@@ -167,7 +174,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): ReviewPrompt {
   sections.push(
     ``,
     `## Files in this patchset`,
-    fileListing || "(no files reported)",
+    fileListing,
     ``,
     `## Unified diffs`,
     diffSections,
@@ -251,8 +258,8 @@ function renderDiffSections(files: readonly ReviewDiffFile[]): string {
 
 /**
  * Render an oversized diff: the complete diff is attached as a repository file and
- * files are inlined while they fit the budget. Every file not inlined is explicitly
- * listed with a pointer to the attachment, so nothing is silently omitted.
+ * files and omission notices are inlined while they fit the budget. The compact
+ * notice always points to the complete attachment, including overflowing listings.
  */
 function renderBudgetedDiff(
   diff: ReviewChangeDiff,
@@ -261,26 +268,32 @@ function renderBudgetedDiff(
   attachments: ReviewAttachment[],
 ): string {
   const attachmentPath = `${REVIEW_ATTACHMENT_DIR}/${attachmentName}`;
+  const renderNote = (count: number): string =>
+    `> ${count} of ${diff.files.length} files are inlined below. Read every omitted file in ` +
+    `\`${attachmentPath}\` (review tooling, not part of the change).`;
+  let remaining = budget - renderNote(diff.files.length).length;
+  if (remaining < 0) {
+    throw new RangeError("Inline diff budget is too small to reference the complete review diff");
+  }
   attachments.push({ fileName: attachmentName, content: renderDiffSections(diff.files) + "\n" });
-  let remaining = budget;
   let inlinedCount = 0;
-  const sections = diff.files.map((file) => {
+  const sections: string[] = [];
+  for (const file of diff.files) {
     const rendered = renderFileDiff(file);
-    if (rendered.length <= remaining) {
-      remaining -= rendered.length;
+    if (rendered.length + 2 <= remaining) {
+      remaining -= rendered.length + 2;
       inlinedCount += 1;
-      return rendered;
+      sections.push(rendered);
+      continue;
     }
     const lineCount = file.patch.length === 0 ? 0 : file.patch.split("\n").length;
-    return `### ${file.path} (${file.status})\n(diff not inlined: ${lineCount} lines — read the \`### ${file.path}\` section of \`${attachmentPath}\`)`;
-  });
-  const note = [
-    `> This diff is too large to inline in full: ${inlinedCount} of ${diff.files.length} files are inlined below.`,
-    `> The complete diff of every file is in \`${attachmentPath}\` (relative to the repository root).`,
-    "> Read the sections of the files that are not inlined from it before reviewing them. The",
-    `> \`${REVIEW_ATTACHMENT_DIR}\` files are provided by the reviewer tooling and are not part of the change.`,
-  ].join("\n");
-  return [note, ...sections].join("\n\n");
+    const notice = `### ${file.path} (${file.status})\n(diff not inlined: ${lineCount} lines — read the \`### ${file.path}\` section of \`${attachmentPath}\`)`;
+    if (notice.length + 2 <= remaining) {
+      remaining -= notice.length + 2;
+      sections.push(notice);
+    }
+  }
+  return [renderNote(inlinedCount), ...sections].join("\n\n");
 }
 
 function truncateCommitMessage(description: string): string {
