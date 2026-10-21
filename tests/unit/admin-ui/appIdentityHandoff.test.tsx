@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiMe } from "../../../src/admin/ui/types.js";
 
 const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
   getMe: vi.fn(),
 }));
 
@@ -14,7 +15,7 @@ vi.mock("../../../src/admin/ui/api.js", () => ({
       super(message);
     }
   },
-  api: { get: apiMocks.get },
+  api: { get: apiMocks.get, post: apiMocks.post },
   clearStoredToken: vi.fn(),
   connectSse: vi.fn(() => vi.fn()),
   fetchSetupStatus: vi.fn(async () => ({ needsSetup: false })),
@@ -51,9 +52,11 @@ vi.mock("../../../src/admin/ui/views/ConfigView/index.js", () => ({ ConfigView: 
 
 import { App, shouldEnableConfigWorkflow } from "../../../src/admin/ui/App.js";
 import { ApiError } from "../../../src/admin/ui/api.js";
+import { SecuritySecretsOnboarding } from "../../../src/admin/ui/shell/BackupKeyringOnboarding.js";
 
 describe("App identity loading", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     window.history.replaceState({}, "", "/");
     apiMocks.get.mockImplementation(async (path: string) => {
       if (path === "/api/admin/tasks") {
@@ -83,6 +86,7 @@ describe("App identity loading", () => {
       if (path === "/api/admin/config") return { config: {} };
       if (path === "/api/admin/overview") return null;
       if (path === "/api/admin/providers") return { providers: [] };
+      if (path === "/api/admin/security/secrets-onboarding") return { pending: false };
       throw new Error(`Unexpected path: ${path}`);
     });
   });
@@ -108,6 +112,249 @@ describe("App identity loading", () => {
       expect(state.getAttribute("data-user")).toBe("task-reader");
       expect(state.textContent).toBe("1");
     });
+    expect(apiMocks.get).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding");
+  });
+
+  it("checks for setup secrets only after a superuser identity loads", async () => {
+    apiMocks.getMe.mockResolvedValue({
+      id: "admin-1",
+      username: "root",
+      role: "admin",
+      capabilities: { superuser: true, grants: {} },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("app-state").getAttribute("data-user")).toBe("root"));
+    await waitFor(() => expect(apiMocks.get).toHaveBeenCalledWith("/api/admin/security/secrets-onboarding"));
+  });
+
+  it("reveals and copies both setup secrets before acknowledgement", async () => {
+    const keyring = {
+      format: "virtual-engineer-backup-keyring" as const,
+      version: 1 as const,
+      activeKeyId: "key-20260928-test",
+      keys: { "key-20260928-test": "a".repeat(64) },
+    };
+    const adminAuthSecret = "c".repeat(64);
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post
+      .mockResolvedValueOnce({ pending: true, secrets: { adminAuthSecret, backupKeyring: keyring } })
+      .mockResolvedValueOnce(undefined);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(<SecuritySecretsOnboarding />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    const adminSecretExplanation = within(dialog).getByRole("region", { name: "ADMIN_AUTH_SECRET" });
+    const backupKeyExplanation = within(dialog).getByRole("region", { name: "Backup keyring" });
+    expect(adminSecretExplanation.textContent).toContain("encrypts saved provider credentials and private SSH keys");
+    expect(backupKeyExplanation.textContent).toContain("The file contains the keys that encrypt backups");
+    expect(dialog.textContent).toContain("Save both values somewhere safe.");
+    expect(dialog.textContent).toContain("Stored in the project .env.");
+    expect(dialog.textContent).toContain("encrypts saved provider credentials and private SSH keys");
+    expect(dialog.textContent).toContain("checks that backups have not been changed");
+    expect(dialog.textContent).toContain("not your Admin login password");
+    expect(dialog.textContent).toContain("Change it only on a new instance, before saving credentials or creating backups");
+    expect(dialog.textContent).toContain("BACKUP_KEYRING_FILE in .env sets the file location");
+    expect(dialog.textContent).toContain("The file contains the keys that encrypt backups");
+    expect(dialog.textContent).toContain("activeKeyId picks the key for new backups");
+    expect(dialog.textContent).toContain("keep old keys to restore older backups");
+    expect(dialog.textContent).toContain("the server sends these values to your browser in plain text");
+    expect(dialog.textContent).toContain("The Admin server uses HTTP, so the connection is not encrypted");
+    expect(dialog.textContent).toContain("Reveal only on a trusted local connection or over trusted HTTPS");
+    expect(dialog.textContent).toContain("no-store stops caching; it does not encrypt");
+    expect(dialog.textContent).not.toContain(adminAuthSecret);
+    expect(screen.queryByRole("textbox", { name: "ADMIN_AUTH_SECRET" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reveal setup secrets" }));
+    const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const keyringField = screen.getByRole("textbox", { name: "Backup keyring JSON" });
+    expect(adminSecretField.tagName).toBe("DIV");
+    expect(keyringField.tagName).toBe("DIV");
+    expect(adminSecretField.getAttribute("aria-readonly")).toBe("true");
+    expect(keyringField.getAttribute("aria-readonly")).toBe("true");
+    expect(adminSecretField.getAttribute("contenteditable")).toBeNull();
+    expect(keyringField.getAttribute("contenteditable")).toBeNull();
+    expect(adminSecretField.textContent).toBe(adminAuthSecret);
+    expect(keyringField.textContent).toContain("a".repeat(64));
+
+    const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
+    expect(acknowledge.disabled).toBe(false);
+    expect(within(dialog).getByText(
+      "Copying is recommended but not required. Acknowledging closes this one-time reveal; recover unsaved values from the host .env and keyring file.",
+    )).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy ADMIN_AUTH_SECRET" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy keyring JSON" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(acknowledge.disabled).toBe(false);
+    expect(within(dialog).queryByText("Copy or download each pending value above to enable acknowledgement.")).toBeNull();
+
+    fireEvent.click(acknowledge);
+    await waitFor(() => expect(apiMocks.post).toHaveBeenNthCalledWith(
+      1,
+      "/api/admin/security/secrets-onboarding/reveal",
+    ));
+    expect(apiMocks.post).toHaveBeenNthCalledWith(
+      2,
+      "/api/admin/security/secrets-onboarding/acknowledge",
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Save your Virtual Engineer setup secrets" })).toBeNull());
+  });
+
+  it("shows direct acknowledgement failures without revealing secrets", async () => {
+    apiMocks.post.mockReset();
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockRejectedValueOnce(new Error("Marker removal failed."));
+
+    render(<SecuritySecretsOnboarding />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    fireEvent.click(screen.getByRole("button", { name: "I've saved both secrets securely" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Marker removal failed.");
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    expect(apiMocks.post).toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/acknowledge");
+    expect(apiMocks.post).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/reveal");
+    expect(screen.getByRole("dialog", { name: "Save your Virtual Engineer setup secrets" })).toBe(dialog);
+  });
+
+  it("contains keyboard focus until acknowledgement and restores the previous focus", async () => {
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockReset();
+    let finishAcknowledgement: (() => void) | undefined;
+    apiMocks.post.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishAcknowledgement = resolve;
+    }));
+    const background = document.createElement("button");
+    background.textContent = "Background control";
+    document.body.append(background);
+    background.focus();
+
+    try {
+      render(<SecuritySecretsOnboarding />);
+      const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+      const reveal = within(dialog).getByRole("button", { name: "Reveal setup secrets" });
+      const acknowledge = within(dialog).getByRole("button", { name: "I've saved both secrets securely" });
+      expect(document.activeElement).toBe(reveal);
+
+      acknowledge.focus();
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(document.activeElement).toBe(reveal);
+      fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+      expect(document.activeElement).toBe(acknowledge);
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(apiMocks.post).not.toHaveBeenCalled();
+
+      fireEvent.click(acknowledge);
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(document.activeElement).toBe(dialog);
+      await act(async () => { finishAcknowledgement?.(); });
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(document.activeElement).toBe(background);
+    } finally {
+      background.remove();
+    }
+  });
+
+  it("allows acknowledgement before revealing either secret", async () => {
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockReset();
+    apiMocks.post.mockResolvedValueOnce(undefined);
+
+    render(<SecuritySecretsOnboarding />);
+
+    await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    const reveal = screen.getByRole("button", { name: "Reveal setup secrets" });
+    const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" });
+
+    expect(reveal.parentElement).toBe(acknowledge.parentElement);
+    expect(screen.queryByRole("textbox", { name: "ADMIN_AUTH_SECRET" })).toBeNull();
+
+    fireEvent.click(acknowledge);
+
+    await waitFor(() => expect(apiMocks.post).toHaveBeenCalledWith(
+      "/api/admin/security/secrets-onboarding/acknowledge",
+    ));
+    expect(apiMocks.post).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding/reveal");
+    await waitFor(() => expect(screen.queryByRole("dialog", {
+      name: "Save your Virtual Engineer setup secrets",
+    })).toBeNull());
+  });
+
+  it("allows acknowledgement without copying or downloading either secret", async () => {
+    const keyring = {
+      format: "virtual-engineer-backup-keyring" as const,
+      version: 1 as const,
+      activeKeyId: "key-20260928-test",
+      keys: { "key-20260928-test": "a".repeat(64) },
+    };
+    apiMocks.post.mockReset();
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post
+      .mockResolvedValueOnce({ pending: true, secrets: { adminAuthSecret: "c".repeat(64), backupKeyring: keyring } })
+      .mockResolvedValueOnce(undefined);
+
+    render(<SecuritySecretsOnboarding />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reveal setup secrets" }));
+    const dialog = await screen.findByRole("dialog", { name: "Save your Virtual Engineer setup secrets" });
+    await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const acknowledge = screen.getByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
+
+    expect(acknowledge.disabled).toBe(false);
+    expect(dialog.textContent).toContain(
+      "Copying is recommended but not required. Acknowledging closes this one-time reveal; recover unsaved values from the host .env and keyring file.",
+    );
+
+    fireEvent.click(acknowledge);
+
+    await waitFor(() => expect(apiMocks.post).toHaveBeenLastCalledWith(
+      "/api/admin/security/secrets-onboarding/acknowledge",
+    ));
+    await waitFor(() => expect(screen.queryByRole("dialog", {
+      name: "Save your Virtual Engineer setup secrets",
+    })).toBeNull());
+  });
+
+  it("allows manual copying of both values when clipboard access is unavailable", async () => {
+    const keyring = {
+      format: "virtual-engineer-backup-keyring" as const,
+      version: 1 as const,
+      activeKeyId: "key-20260928-test",
+      keys: { "key-20260928-test": "a".repeat(64) },
+    };
+    apiMocks.get.mockResolvedValueOnce({ pending: true });
+    apiMocks.post.mockResolvedValueOnce({
+      pending: true,
+      secrets: { adminAuthSecret: "c".repeat(64), backupKeyring: keyring },
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("clipboard denied"); }) },
+    });
+
+    render(<SecuritySecretsOnboarding />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reveal setup secrets" }));
+    const adminSecretField = await screen.findByRole("textbox", { name: "ADMIN_AUTH_SECRET" });
+    const keyringField = screen.getByRole("textbox", { name: "Backup keyring JSON" });
+    const acknowledge = await screen.findByRole("button", { name: "I've saved both secrets securely" }) as HTMLButtonElement;
+    fireEvent.click(screen.getByRole("button", { name: "Copy ADMIN_AUTH_SECRET" }));
+    await screen.findByText("Clipboard access failed. Select and copy the ADMIN_AUTH_SECRET text or try copying again.");
+    fireEvent.click(screen.getByRole("button", { name: "Copy keyring JSON" }));
+    await screen.findByText("Clipboard access failed. Select and copy the keyring text or download the file instead.");
+    expect(acknowledge.disabled).toBe(false);
+
+    fireEvent.copy(adminSecretField);
+    fireEvent.copy(keyringField);
+    expect(acknowledge.disabled).toBe(false);
   });
 
   it("reports failed initial data loads and lets the user retry", async () => {
@@ -156,6 +403,7 @@ describe("App identity loading", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByTestId("app-state").getAttribute("data-user")).toBe(role));
+    expect(apiMocks.get).not.toHaveBeenCalledWith("/api/admin/security/secrets-onboarding");
     fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
 
     expect(await screen.findByTestId("tasks-view")).toBeTruthy();

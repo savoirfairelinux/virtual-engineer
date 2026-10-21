@@ -4,7 +4,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
 
 export function useDialogFocus(
   enabled: boolean,
-  dialogRef: RefObject<HTMLDivElement | null>,
+  dialogRef: RefObject<HTMLElement | null>,
   onClose: () => void,
 ): void {
   const closeRef = useRef(onClose);
@@ -14,7 +14,7 @@ export function useDialogFocus(
     if (!enabled || !dialogRef.current) return;
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    (dialog.querySelector<HTMLElement>(FOCUSABLE) ?? dialog).focus();
 
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
@@ -27,7 +27,11 @@ export function useDialogFocus(
         .filter((control) => window.getComputedStyle(control).visibility !== "hidden");
       const first = controls[0];
       const last = controls.at(-1);
-      if (!first || !last) return;
+      if (!first || !last) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
       if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
         event.preventDefault();
         last.focus();

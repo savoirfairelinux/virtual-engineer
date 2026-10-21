@@ -10,6 +10,7 @@ spec:
   # Single replica: VE owns business admission (ConcurrencyTracker) and the
   # SQLite store is RWO. Kubernetes bin-packs the OpenShell sandbox pods, not VE.
   replicas: 1
+  progressDeadlineSeconds: 3900
   strategy:
     type: Recreate
   selector:
@@ -88,6 +89,13 @@ spec:
           ports:
             - name: admin
               containerPort: 3100
+          # Restore must finish before /health becomes available.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 360
           readinessProbe:
             httpGet:
               path: /ready
@@ -115,6 +123,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            - name: backup-keyring
+              mountPath: /app/backup-keyring.json
+              subPath: backup-keyring.json
+              readOnly: true
             - name: workspaces
               mountPath: /workspaces
             - name: tmp
@@ -124,7 +136,14 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: virtual-engineer-data
+            claimName: REPLACE_WITH_VE_DATA_PVC_NAME
+        - name: backup-keyring
+          secret:
+            secretName: virtual-engineer-backup-keyring
+            defaultMode: 0440
+            items:
+              - key: backup-keyring.json
+                path: backup-keyring.json
         # Ephemeral git working directory (HostGitExecutor). Push credentials
         # live only in this pod — never in the agent sandbox.
         - name: workspaces
