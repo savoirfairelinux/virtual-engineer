@@ -38,6 +38,7 @@ import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore }
 import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
 import type { AuthSourceStoreApi } from "../state/stores/authSourceStore.js";
 import type { UserIdentityStoreApi } from "../state/stores/userIdentityStore.js";
+import { createDirectorySessionGuard, type DirectorySessionGuardStore } from "./authentication/directorySessionGuard.js";
 import type { DirectoryGroupStoreApi } from "../state/stores/directoryGroupStore.js";
 import {
   createDirectoryAccountResolver,
@@ -279,7 +280,7 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
 type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 
 /** Directory-link surface shared by the authenticator and the user routes. */
-type AdminIdentityStore = DirectoryAuthenticatorStore & UserIdentityStoreApi & AuthSourceStoreApi & DirectoryGroupStoreApi & {
+type AdminIdentityStore = DirectoryAuthenticatorStore & DirectorySessionGuardStore & UserIdentityStoreApi & AuthSourceStoreApi & DirectoryGroupStoreApi & {
   getGroupById(id: string): Promise<Group | null>;
 };
 
@@ -356,7 +357,8 @@ function extractUserIdentityStore(stateStore: unknown): AdminIdentityStore | nul
     typeof candidate.linkUserIdentity === "function" &&
     typeof candidate.replaceIdentityGroups === "function" &&
     typeof candidate.listGroupMappings === "function" &&
-    typeof candidate.getGroupById === "function"
+    typeof candidate.getGroupById === "function" &&
+    typeof candidate.markSessionValidated === "function"
     ? (candidate as AdminIdentityStore)
     : null;
 }
@@ -422,7 +424,13 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
       })
     : undefined);
   const authService = userStore && !dependencies.allowUnauthenticatedAdmin
-    ? createAdminAuthService({ stateStore: userStore, authenticator })
+    ? createAdminAuthService({
+        stateStore: userStore,
+        authenticator,
+        sessionGuard: identityStore
+          ? createDirectorySessionGuard({ store: identityStore, adminAuthSecret: dependencies.config.adminAuthSecret })
+          : undefined,
+      })
     : null;
   let usersExistCache: boolean | null = null;
   return {

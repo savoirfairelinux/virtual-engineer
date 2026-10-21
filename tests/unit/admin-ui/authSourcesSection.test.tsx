@@ -131,8 +131,13 @@ describe.skipIf(!ldapAvailable)("AuthSourcesSection against the admin API and sl
     const editor = await screen.findByRole("dialog");
     await user.click(within(editor).getByLabelText("Create a user on first sign-in"));
     fireEvent.change(within(editor).getByLabelText(/^Role for new users/), { target: { value: "operator" } });
+    fireEvent.change(within(editor).getByLabelText(/^Maximum session age/), { target: { value: "6" } });
+    fireEvent.change(within(editor).getByLabelText(/^Revalidation interval/), { target: { value: "0" } });
     await user.click(within(editor).getByRole("button", { name: "Save" }));
     expect(await screen.findByText("auto-provision · operator")).toBeDefined();
+    await expect(store.listAuthSources()).resolves.toEqual([
+      expect.objectContaining({ sessionMaxAgeHours: 6, revalidateIntervalMinutes: 0 }),
+    ]);
 
     await user.click(screen.getByRole("button", { name: "Look up a user in QA" }));
     const lookup = await screen.findByRole("dialog");

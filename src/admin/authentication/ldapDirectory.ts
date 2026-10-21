@@ -26,7 +26,8 @@ export type LdapAccountLookup =
   | { status: "found"; account: LdapAccount }
   | { status: "not_found" }
   | { status: "ambiguous" }
-  | { status: "unavailable"; error: string };
+  /** `accountSpecific`: the directory answered, but this one entry cannot be used (e.g. too many groups). */
+  | { status: "unavailable"; error: string; accountSpecific?: true };
 
 /** `invalid_password`: the account exists and the directory refused the password. */
 export type LdapAuthentication =
@@ -242,7 +243,7 @@ async function findAccount(client: Client, config: LdapConfig, filter: string, f
   if (entries.length > 1 || entry === undefined) return { status: "ambiguous" };
   const subject = subjectValue(entry, config.uniqueIdAttribute);
   if (subject === null) {
-    return { status: "unavailable", error: `Directory entry has no ${config.uniqueIdAttribute} value` };
+    return { status: "unavailable", error: `Directory entry has no ${config.uniqueIdAttribute} value`, accountSpecific: true };
   }
   const accountUsername = textValue(entry, config.usernameAttribute) ?? fallbackUsername;
   let searched: string[];
@@ -250,14 +251,14 @@ async function findAccount(client: Client, config: LdapConfig, filter: string, f
     searched = await searchGroupDns(client, config, entry.dn, accountUsername);
   } catch (err) {
     if (err instanceof SizeLimitExceededError) {
-      return { status: "unavailable", error: `The group search returned more than ${MAX_LDAP_GROUPS} groups` };
+      return { status: "unavailable", error: `The group search returned more than ${MAX_LDAP_GROUPS} groups`, accountSpecific: true };
     }
     throw err;
   }
   const memberOf = config.groupMembershipAttribute === "" ? [] : textValues(entry, config.groupMembershipAttribute);
   const groups = [...new Set([...memberOf, ...searched].map(normalizeLdapDn))].sort();
   if (groups.length > MAX_LDAP_GROUPS) {
-    return { status: "unavailable", error: `The account belongs to more than ${MAX_LDAP_GROUPS} groups` };
+    return { status: "unavailable", error: `The account belongs to more than ${MAX_LDAP_GROUPS} groups`, accountSpecific: true };
   }
   return {
     status: "found",
@@ -289,6 +290,16 @@ export async function lookupLdapAccount(config: LdapConfig, username: string): P
   if (username.trim() === "") return { status: "not_found" };
   try {
     return await withLdapConnection(config, (client) => findAccount(client, config, usernameFilter(config, username), username));
+  } catch (err) {
+    return { status: "unavailable", error: describeLdapError(err, config) };
+  }
+}
+
+/** Like `lookupLdapAccount`, but finds a linked account by its stored subject so renames still resolve. */
+export async function lookupLdapSubject(config: LdapConfig, subject: string, knownUsername: string): Promise<LdapAccountLookup> {
+  if (subject === "") return { status: "not_found" };
+  try {
+    return await withLdapConnection(config, (client) => findAccount(client, config, subjectFilter(config, subject), knownUsername));
   } catch (err) {
     return { status: "unavailable", error: describeLdapError(err, config) };
   }
