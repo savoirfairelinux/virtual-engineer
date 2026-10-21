@@ -10,6 +10,7 @@ spec:
   # Single replica: VE owns business admission (ConcurrencyTracker) and the
   # SQLite store is RWO. Kubernetes bin-packs the OpenShell sandbox pods, not VE.
   replicas: 1
+  progressDeadlineSeconds: 3900
   strategy:
     type: Recreate
   selector:
@@ -88,6 +89,13 @@ spec:
           ports:
             - name: admin
               containerPort: 3100
+          # Restore must finish before /health becomes available.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 360
           readinessProbe:
             httpGet:
               path: /ready

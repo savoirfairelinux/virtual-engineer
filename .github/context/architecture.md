@@ -185,6 +185,11 @@ before creating `SqliteStateStore` or opening SQLite. Encrypted archives are
 authenticated and decrypted before tar inspection; restore then checks archive
 paths, manifest authentication, database and prompt hashes/inventory, tracked
 migrations, and SQLite integrity.
+The Kubernetes Deployment gates normal liveness/readiness probes behind a
+`/health` startup probe with a one-hour budget, so a slow restore is not
+interrupted by the normal liveness deadline. Deployment progress and rollout
+waits allow 65 minutes; slower storage requires increasing all three budgets
+together before restore (see the Kubernetes recovery guide).
 Existing database/prompt targets are refused unless `VE_RESTORE_FORCE` is true;
 forced replacement quarantines them under the database directory. A v2 restore
 marker binds idempotency to the source path, full archive SHA-256, archive

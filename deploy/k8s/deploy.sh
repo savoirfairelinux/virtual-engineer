@@ -108,4 +108,4 @@ sed "s/REPLACE_WITH_VE_DATA_PVC_NAME/${VE_DATA_PVC_NAME}/g" \
   -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/virtual-engineer-orchestrator -n virtual-engineer
 kubectl rollout status deployment/virtual-engineer-orchestrator \
-  -n virtual-engineer --timeout=180s
+  -n virtual-engineer --timeout=3900s

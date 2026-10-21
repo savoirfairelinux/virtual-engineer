@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadBackupKeyring } from "../../src/backup/backupCrypto.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 const tempDirs: string[] = [];
 
@@ -1457,6 +1458,44 @@ describe("OpenShell deployment contract", () => {
     expect(deployScript).toContain("VE_DATA_PVC_NAME");
     expect(deployScript).toContain("Use a new PVC name for encrypted storage");
     expect(deployScript).not.toContain("REPLACE_ME");
+  });
+
+  it("protects long Kubernetes restores with a startup budget and matching rollout deadlines", () => {
+    const deployment = parseYaml(readFileSync("deploy/k8s/40-orchestrator-deployment.yaml", "utf8")) as {
+      spec: {
+        progressDeadlineSeconds: number;
+        template: {
+          spec: {
+            containers: {
+              name: string;
+              startupProbe?: {
+                httpGet: { path: string; port: string };
+                periodSeconds: number;
+                failureThreshold: number;
+              };
+              livenessProbe: { httpGet: { path: string; port: string }; periodSeconds: number };
+              readinessProbe: { httpGet: { path: string; port: string } };
+            }[];
+          };
+        };
+      };
+    };
+    const orchestrator = deployment.spec.template.spec.containers.find(({ name }) => name === "orchestrator");
+    if (!orchestrator?.startupProbe) throw new Error("The orchestrator needs a startup probe for restore.");
+    const startup = orchestrator.startupProbe;
+    const startupBudgetSeconds = startup.periodSeconds * startup.failureThreshold;
+
+    expect(startup.httpGet).toEqual({ path: "/health", port: "admin" });
+    expect(startupBudgetSeconds).toBeGreaterThanOrEqual(60 * 60);
+    expect(deployment.spec.progressDeadlineSeconds).toBeGreaterThan(startupBudgetSeconds);
+    expect(orchestrator.livenessProbe.httpGet).toEqual(startup.httpGet);
+    expect(orchestrator.livenessProbe.periodSeconds).toBeLessThanOrEqual(20);
+    expect(orchestrator.readinessProbe.httpGet).toEqual({ path: "/ready", port: "admin" });
+
+    const deployScript = readFileSync("deploy/k8s/deploy.sh", "utf8");
+    const rolloutTimeout = deployScript.match(/kubectl rollout status[\s\S]*?--timeout=(\d+)s/);
+    expect(rolloutTimeout).not.toBeNull();
+    expect(Number(rolloutTimeout?.[1])).toBeGreaterThanOrEqual(deployment.spec.progressDeadlineSeconds);
   });
 
   it("allows OpenShell sandbox capabilities while auditing restricted violations", () => {

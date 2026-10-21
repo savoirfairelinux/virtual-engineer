@@ -295,6 +295,16 @@ separately, and copy the archive off-cluster before restoring. A populated PVC
 requires an explicit forced restore; the existing database and prompt overrides
 are quarantined on that PVC as `.pre-restore-*`.
 
+Restore runs before the admin HTTP server starts. The shipped Deployment uses
+a `/health` startup probe every 10 seconds with a 360-failure budget (one hour),
+which gates liveness and readiness until startup succeeds. Normal liveness
+checks retain their shorter interval after startup. The Deployment progress
+deadline and rollout waits allow 3900 seconds (65 minutes), including a
+five-minute margin beyond the startup window. Actual restore duration depends
+on PVC throughput and database validation/migrations; for slower restores,
+increase the startup probe budget, progress deadline, and rollout timeouts
+together before starting the restore.
+
 For an existing deployment, stage the archive on the data PVC through the
 running orchestrator pod, then stop that pod before enabling the one-shot
 restore. Replace the local archive path below with the downloaded archive:
@@ -321,7 +331,7 @@ one restore rollout and wait for readiness:
 kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
   VE_RESTORE_FROM=/app/data/restore.tar.gz.enc VE_RESTORE_FORCE=true
 kubectl scale deployment/"$DEPLOYMENT" -n "$NAMESPACE" --replicas=1
-kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=3900s
 ```
 
 After the restore pod is ready, immediately remove both one-shot variables. This
@@ -335,7 +345,7 @@ the `.pre-restore-*` quarantine until the instance has been verified:
 ```bash
 kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" \
   VE_RESTORE_FROM- VE_RESTORE_FORCE-
-kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=180s
+kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=3900s
 kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -c orchestrator -- \
   rm -f /app/data/restore.tar.gz.enc
 ```
