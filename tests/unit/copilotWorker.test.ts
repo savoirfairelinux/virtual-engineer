@@ -389,6 +389,42 @@ describe("runCopilotAgent", () => {
     expect(mocks.createSession).toHaveBeenCalledOnce();
   });
 
+  it.each(["codegen", "review"] as const)("continues the %s fallback when disconnect fails", async (mode) => {
+    const fallbackSession = makeFakeSession();
+    session.sendAndWait.mockRejectedValue(new Error("Model 'gpt-4.1' is not available"));
+    session.disconnect.mockRejectedValueOnce(new Error("Disconnect failed"));
+    mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+
+    const run = await runCopilotAgent("Run", makeOptions({ mode }));
+
+    expect(run.model).toBe("auto");
+    expect(mocks.createSession.mock.calls.map(([config]) => config.model)).toEqual(["gpt-4.1", "auto"]);
+    expect(session.disconnect).toHaveBeenCalledOnce();
+    expect(fallbackSession.sendAndWait).toHaveBeenCalledOnce();
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.warning", {
+      message: "Could not disconnect the rejected Copilot session; continuing with automatic model selection.",
+    });
+    await run.cleanup();
+    expect(fallbackSession.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("preserves a fallback error instead of a prior disconnect failure", async () => {
+    const fallbackSession = makeFakeSession();
+    session.sendAndWait.mockRejectedValue(new Error("Model 'gpt-4.1' is not available"));
+    session.disconnect.mockRejectedValueOnce(new Error("Disconnect failed"));
+    fallbackSession.sendAndWait.mockRejectedValue(new Error("Quota exhausted"));
+    mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("Quota exhausted");
+
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(fallbackSession.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
   it.each([
     "HTTP 403", "HTTP 404", "Quota exceeded", "Authentication failed",
     "Connection unavailable", "context_length_exceeded", "Model service unavailable",

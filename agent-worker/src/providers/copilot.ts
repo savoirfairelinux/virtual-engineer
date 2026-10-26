@@ -672,7 +672,11 @@ export async function runCopilotAgent(
             !isUnavailableModel(handlerState.sessionError ?? error, options.model)) {
           throw error;
         }
-        await session.disconnect();
+        await session.disconnect().catch(() => {
+          emitEvent('session.warning', {
+            message: 'Could not disconnect the rejected Copilot session; continuing with automatic model selection.',
+          });
+        });
         config = useAutomaticModel(config, options.model, 'model_rejected');
         model = 'auto';
         session = await client.createSession(config);
