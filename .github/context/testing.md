@@ -4,6 +4,11 @@
 
 - **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`. Tests use the Node environment by default; targeted React behavior specs opt into jsdom with `@vitest-environment jsdom` and use Testing Library. Vitest is the **only** test runner — there is no Playwright setup and no `tests/e2e/` directory.
 
+## Dependency validation
+
+- Runtime schemas use Zod 4.6.7 or newer. Root and agent-worker overrides keep transitive Zod copies on the patched release line; both lockfiles must be updated together. Schema migrations preserve custom admin validation messages, explicit string-keyed records, LDAP parse results, and provider defaults.
+- CI treats `npm audit --omit=dev` in the root and in `agent-worker/` as blocking checks. Development-tooling audits are informational. Validate both production dependency trees when updating lockfiles; do not bypass these audit gates.
+
 ## Layout
 
 Copilot unavailable-model regressions in `copilotWorker.test.ts` cover explicit-model discovery, disabled policies, a single safe fallback to `auto`, remaining request budgets, cleanup, and unrelated-error/native-review exclusions. `agentEventTypes.test.ts` checks live warning normalization; `agentCyclePresentation.test.ts` checks persisted warnings for successful/failed cycles, and `admin-ui/workerDiagnostics.test.tsx` checks escaped warning rendering after collapse and reload. Existing stderr-pipeline/review-stderr tests cover their shared event transport.

@@ -25,10 +25,10 @@ const sourceFieldsSchema = z.object({
   defaultRole: z.enum(["viewer", "operator"]).optional(),
   sessionMaxAgeHours: z.number().int().min(1).max(720).optional(),
   revalidateIntervalMinutes: z.number().int().min(0).max(1440).optional(),
-  config: z.record(z.unknown()),
+  config: z.record(z.string(), z.unknown()),
 });
 const updateSchema = sourceFieldsSchema.omit({ kind: true }).partial();
-const testSchema = z.object({ id: z.string().min(1).optional(), kind: z.literal("ldap"), config: z.record(z.unknown()) });
+const testSchema = z.object({ id: z.string().min(1).optional(), kind: z.literal("ldap"), config: z.record(z.string(), z.unknown()) });
 const mappingSchema = z.object({
   externalGroup: z.string().trim().min(1, "is required").max(1024).refine((value) => value.includes("="), "must be a group DN"),
   groupId: z.string().min(1, "is required"),
@@ -103,7 +103,7 @@ async function readParsed<T extends z.ZodTypeAny>(
     writeJson(res, 400, zodErrorBody(parsed.error, "Invalid authentication source"));
     return null;
   }
-  return parsed.data as z.output<T>;
+  return parsed.data;
 }
 
 /** Register `/api/admin/auth-sources` CRUD and connection-test routes (all `user.manage`). */

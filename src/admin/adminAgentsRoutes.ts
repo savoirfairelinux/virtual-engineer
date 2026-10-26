@@ -288,28 +288,28 @@ const createSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1, "Agent name is required"),
   type: z.enum(["coding", "review"], {
-    errorMap: () => ({ message: "Agent type must be either 'coding' or 'review'" }),
+    error: "Agent type must be either 'coding' or 'review'",
   }),
-  modelConfig: z.record(z.unknown()).default({}),
+  modelConfig: z.record(z.string(), z.unknown()).default({}),
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().trim().min(1, "System Prompt is required"),
   instructionsPromptId: z.string().trim().min(1, "Instructions Prompt is required"),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
-  maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
+  maxConcurrent: z.number({ error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
   name: z.string().min(1, "Agent name cannot be empty").optional(),
   type: z.enum(["coding", "review"], {
-    errorMap: () => ({ message: "Agent type must be either 'coding' or 'review'" }),
+    error: "Agent type must be either 'coding' or 'review'",
   }).optional(),
-  modelConfig: z.record(z.unknown()).optional(),
+  modelConfig: z.record(z.string(), z.unknown()).optional(),
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().trim().min(1, "System Prompt cannot be empty").optional(),
   instructionsPromptId: z.string().trim().min(1, "Instructions Prompt cannot be empty").optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
-  maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
+  maxConcurrent: z.number({ error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
 

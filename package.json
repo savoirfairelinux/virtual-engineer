@@ -39,7 +39,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "yaml": "^2.9.0",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
@@ -64,6 +64,7 @@
     "vitest": "^4.1.11"
   },
   "overrides": {
+    "zod": "$zod",
     "@esbuild-kit/core-utils": {
       "esbuild": "0.25.12"
     }
