@@ -5,7 +5,7 @@ import { TONE } from "../../states.ts";
 import type { ApiCycle, CycleCost } from "../../types.ts";
 import { totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { formatUsd, formatCredits } from "./costFormat.ts";
-import { getCyclePresentation } from "./agentCyclePresentation.ts";
+import { getCyclePresentation, getModelFallbackWarning } from "./agentCyclePresentation.ts";
 import { summarizeToolUsage } from "./toolUsageSummary.ts";
 import { WorkerDiagnostics } from "./WorkerDiagnostics.tsx";
 
@@ -174,6 +174,7 @@ interface CycleCardProps {
 
 function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
   const presentation = getCyclePresentation(cycle);
+  const modelFallbackWarning = getModelFallbackWarning(cycle);
   const reviewComments = extractReviewComments(cycle);
   const reviewSummary = extractReviewSummary(cycle, reviewComments.length);
   const costBadge = cycle.cost ? cycleCostBadge(cycle.cost) : null;
@@ -220,6 +221,14 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
         </div>
       </button>
 
+      {modelFallbackWarning && (
+        <div role="status" style={{
+          padding: "10px 16px", color: "var(--warn)", background: "var(--warn-soft)",
+          fontSize: "12.5px", lineHeight: 1.6, overflowWrap: "anywhere",
+        }}>
+          {modelFallbackWarning}
+        </div>
+      )}
       {open && (
         <div className="fade-up" style={{ padding: "0 16px 18px 42px" }}>
           <>

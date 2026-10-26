@@ -55,7 +55,7 @@ if (!isAgentProvider(AGENT_PROVIDER)) {
 }
 const ACTIVE_PROVIDER = resolveProvider(AGENT_PROVIDER);
 const ACTIVE_MODEL = ACTIVE_PROVIDER.resolveModel();
-const ACTIVE_MODEL_LABEL = ACTIVE_MODEL || ACTIVE_PROVIDER.defaultModelLabel;
+let ACTIVE_MODEL_LABEL = ACTIVE_MODEL || ACTIVE_PROVIDER.defaultModelLabel;
 const ADAPTER_LABEL = ACTIVE_PROVIDER.adapterLabel;
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
@@ -203,7 +203,7 @@ async function runAgent(
   timeoutMs: number,
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
-  return ACTIVE_PROVIDER.runner(prompt, {
+  const run = await ACTIVE_PROVIDER.runner(prompt, {
     model: ACTIVE_MODEL,
     agentInstructions: PROMPTS.systemPrompt,
     cwd: REPO_PATH,
@@ -216,6 +216,8 @@ async function runAgent(
     ...(BLOCKED_TOOLS.length > 0 ? { blockedTools: BLOCKED_TOOLS } : {}),
     ...(TOOL_AUTHORIZATION !== undefined ? { toolAuthorization: TOOL_AUTHORIZATION } : {}),
   });
+  ACTIVE_MODEL_LABEL = run.model ?? ACTIVE_MODEL_LABEL;
+  return run;
 }
 
 // ── Review mode entry point ────────────────────────────────────────────────────

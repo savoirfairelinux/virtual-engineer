@@ -99,6 +99,15 @@ Every git invocation inside the worker goes through `agent-worker/src/gitHardene
 - Copilot `assistant.usage` events normalize `inputTokens` to uncached input by subtracting `cacheReadTokens`; the SDK reports cache reads as a subset of total input, while the admin metrics expose the two values separately.
 - Usage events retain the actual model reported by the CLI when available. Strategy/delegation events contain only sanitized names/status; delegated prompt and diff content are not copied into summary metadata.
 
+## Copilot unavailable-model fallback
+
+- Coding and direct-review sessions check an explicit configured model against the worker SDK's `listModels()` using the execution's own credentials. Available models remain selected. A missing model or a listed model with a disabled policy switches the session to Copilot's native `auto` selection without updating the stored agent/project configuration.
+- Discovery failures emit a warning and still try the explicit model, with provider-default reasoning when capabilities cannot be verified. `auto` and native review skip this availability lookup.
+- A narrowly identified model rejection during session creation or the initial request also permits one fallback to `auto`, covering catalog changes between discovery and execution. The SDK forwards `session.error` through `sendAndWait`; category-aware handling preserves authentication, quota, rate-limit, and context-limit failures. Generic HTTP, network, or service failures do not trigger fallback.
+- The fallback never replays a session after any tool execution has started, including submission tools. A fresh session preserves prompts, permissions and output contracts, drops model-specific reasoning effort, and uses the remaining request time budget. Failure of `auto` remains a real failure; there is no retry loop or guarantee against service outages.
+- `session.model_fallback` records the requested model, selected policy (`auto`), reason and operator message. Existing coding/review event persistence keeps the warning visible in live logs and cycle history, including failures after fallback. Successful worker results use the selected policy in model metadata; usage events retain the actual model reported by Copilot rather than treating `auto` as a concrete model.
+- The cycle card warns that automatic selection was used and asks the operator to update the configured agent/project model, even when the cycle succeeded or its details are collapsed. Native `copilot_native` review and other engines retain their provider-managed behavior.
+
 ## Agent engine images
 
 - `Dockerfile.agent` is multi-stage. Target `workspace` (the default final stage) is the Copilot-only base image (`AGENT_CONTAINER_IMAGE`, ~0.75 GB). Each other engine has its own target (`claude`, `aider`, `goose`, `codex`, `gemini`, `opencode`, `cursor`) built `FROM base`, tagged `<name>-<engine>:<tag>` (e.g. `virtual-engineer-workspace-aider:latest`), so engines share the base layers.

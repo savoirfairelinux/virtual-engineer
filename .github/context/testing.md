@@ -6,6 +6,8 @@
 
 ## Layout
 
+Copilot unavailable-model regressions in `copilotWorker.test.ts` cover explicit-model discovery, disabled policies, a single safe fallback to `auto`, remaining request budgets, cleanup, and unrelated-error/native-review exclusions. `agentEventTypes.test.ts` checks live warning normalization; `agentCyclePresentation.test.ts` checks persisted warnings for successful/failed cycles, and `admin-ui/workerDiagnostics.test.tsx` checks escaped warning rendering after collapse and reload. Existing stderr-pipeline/review-stderr tests cover their shared event transport.
+
 ```text
 tests/
   unit/

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ApiCycle } from "../../src/admin/ui/types.ts";
-import { getCyclePresentation } from "../../src/admin/ui/views/TasksView/agentCyclePresentation.js";
+import { getCyclePresentation, getModelFallbackWarning } from "../../src/admin/ui/views/TasksView/agentCyclePresentation.js";
 import {
   isCurrentTaskRequest,
   isSameTaskRequest,
@@ -30,6 +30,25 @@ function makeCycle(overrides: Partial<ApiCycle["result"]> = {}): ApiCycle {
 }
 
 describe("getCyclePresentation", () => {
+  it.each(["success", "failed"] as const)("retains a fallback warning for persisted %s cycles", (status) => {
+    const cycle = makeCycle({
+      status,
+      agentEvents: [{
+        type: "session.model_fallback", timestamp: "2026-10-26T18:00:00Z",
+        taskId: "review-33847", cycleNumber: 1,
+        data: { requestedModel: "retired-model", selectedModel: "auto", reason: "not_listed" },
+      }],
+    });
+    const persisted: ApiCycle = JSON.parse(JSON.stringify(cycle));
+    expect(getModelFallbackWarning(persisted)).toContain("retired-model");
+    expect(getModelFallbackWarning(persisted)).toContain("Update the configured model");
+    expect(getCyclePresentation(persisted).status).toBe(status);
+  });
+
+  it("does not warn about models on old cycles", () => {
+    expect(getModelFallbackWarning(makeCycle())).toBeNull();
+  });
+
   it("rejects stale and cross-task detail responses", () => {
     expect(isCurrentTaskRequest("task-a", 2, "task-a", 2)).toBe(true);
     expect(isCurrentTaskRequest("task-a", 1, "task-a", 2)).toBe(false);

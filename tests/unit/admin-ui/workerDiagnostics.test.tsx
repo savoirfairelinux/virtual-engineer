@@ -22,6 +22,28 @@ function cycle(workerOutput: unknown = diagnostic): ApiCycle {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("worker diagnostics in agent cycles", () => {
+  it("keeps an escaped model fallback warning visible after collapse and reload", () => {
+    const fallback = cycle();
+    fallback.result = {
+      ...fallback.result, status: "success", metadata: {},
+      agentEvents: [{
+        type: "session.model_fallback", timestamp: "2026-10-26T18:00:00Z",
+        taskId: fallback.taskId, cycleNumber: 1,
+        data: { requestedModel: "<script>retired-model</script>", selectedModel: "auto" },
+      }],
+    };
+    const persisted: ApiCycle = JSON.parse(JSON.stringify(fallback));
+    const view = render(<AgentCycles cycles={[persisted]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Cycle 1/ }));
+    expect(screen.getByRole("status").textContent).toContain("<script>retired-model</script>");
+    expect(screen.getByRole("status").textContent).toContain("Update the configured model");
+    expect(screen.getByText("success")).toBeTruthy();
+    expect(view.container.querySelector("script")).toBeNull();
+    view.unmount();
+    render(<AgentCycles cycles={[persisted]} />);
+    expect(screen.getByRole("status").textContent).toContain("automatic model selection");
+  });
+
   it("renders escaped output, byte counts, truncation and parser details", () => {
     const { container } = render(<AgentCycles cycles={[cycle()]} />);
     expect(screen.getByText("Worker diagnostics")).toBeTruthy();
