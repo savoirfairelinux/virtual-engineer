@@ -331,6 +331,51 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.provider.isReviewer).not.toHaveBeenCalled();
   });
 
+  describe("providers whose assignment emits a reviewer-added event", () => {
+    beforeEach(() => {
+      mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+        integrationId: "gerrit-1",
+        repos: ["p"],
+        assignmentMode: "automatic" as const,
+      }));
+      mocks.provider.assignmentEmitsReviewerEvent = true;
+      mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
+    });
+
+    it("assigns VE without creating a review when VE was not yet a reviewer", async () => {
+      mocks.provider.isReviewer = vi.fn(async () => false);
+
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+      const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, triggerCause: "revision" });
+
+      expect(mocks.provider.ensureReviewerAssignment).toHaveBeenCalledTimes(1);
+      expect(tasks).toHaveLength(0);
+      expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+    });
+
+    it("reviews directly when VE was already a reviewer", async () => {
+      mocks.provider.isReviewer = vi.fn(async () => true);
+
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+      const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, triggerCause: "revision" });
+
+      expect(tasks).toHaveLength(1);
+    });
+
+    it("reviews on the reviewer-added trigger itself", async () => {
+      mocks.provider.isReviewer = vi.fn(async () => false);
+
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+      const tasks = await orch.startReviewTask({
+        changeId: CHANGE_ID,
+        force: true,
+        triggerCause: "reviewer-assigned",
+      });
+
+      expect(tasks).toHaveLength(1);
+    });
+  });
+
   it("skips automatic review when the provider cannot ensure assignment", async () => {
     mocks.store.getProjectReviewConfig = vi.fn(async () => ({
       integrationId: "gerrit-1",

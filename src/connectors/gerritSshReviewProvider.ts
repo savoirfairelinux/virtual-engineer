@@ -132,6 +132,7 @@ export interface GerritSshReviewProviderConfig {
  */
 export class GerritSshReviewProvider implements ReviewProvider {
   public readonly kind = "gerrit";
+  public readonly assignmentEmitsReviewerEvent = true;
   private readonly sshClient: GerritSshClient;
 
   constructor(private readonly config: GerritSshReviewProviderConfig) {
