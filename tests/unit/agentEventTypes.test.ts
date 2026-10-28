@@ -5,6 +5,17 @@ import {
   normalizeAgentEvent,
 } from "../../src/agents/agentEventTypes.js";
 
+it("shows model fallback as a session warning in live logs", () => {
+  const event = normalizeAgentEvent({
+    type: "session.model_fallback", timestamp: "2026-10-26T18:00:00Z",
+    taskId: "task-1", cycleNumber: 1,
+    data: { requestedModel: "retired-model", selectedModel: "auto", message: "Update the configured model" },
+  });
+  expect(event.level).toBe("warn");
+  expect(event.category).toBe("session");
+  expect(event.message).toContain("Update the configured model");
+});
+
 // ── sanitizeValue ───────────────────────────────────────────────────────────
 
 describe("sanitizeValue", () => {
