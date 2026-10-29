@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { isAbsolute, normalize, sep } from "node:path";
 import { getLogger } from "../logger.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";

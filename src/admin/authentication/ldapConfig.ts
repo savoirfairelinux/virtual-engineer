@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { SECRET_MASK, asRecord } from "../adminRouteUtils.js";
 import { decryptRequiredManagedCredential, encryptToken } from "../../utils/encryption.js";
 

@@ -2,7 +2,7 @@
  * GitLab Merge Request connector — implements `ReviewConnector` via the GitLab REST API.
  * DB columns named `gerrit_change_id` store the MR IID when this connector is active.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import type {
   DiscoveredRepository,
   ReviewConnector,

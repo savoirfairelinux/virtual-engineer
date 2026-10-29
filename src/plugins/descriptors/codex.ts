@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { ProviderDescriptor } from "../registry.js";
 import { ModelDiscoveryConfigError } from "../registry.js";
 import { CodexAdapter } from "../../agents/codexAdapter.js";

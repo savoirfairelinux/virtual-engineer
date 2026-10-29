@@ -5,7 +5,7 @@
  * provider. They are registered once at startup via
  * `registerBuiltinPlugins()` and queried by the admin UI and `PluginManager`.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import type {
   AgentAdapter,
   DiscoveredResources,

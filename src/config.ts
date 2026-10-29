@@ -6,7 +6,7 @@
  * optional unless a provider-specific env-backed setup is partially configured
  * (completed via `superRefine`).
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 

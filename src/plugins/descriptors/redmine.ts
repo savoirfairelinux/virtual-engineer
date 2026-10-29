@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { ProviderDescriptor } from "../registry.js";
 import { HttpRedmineConnector } from "../../connectors/redmineConnector.js";
 import { getLogger } from "../../logger.js";

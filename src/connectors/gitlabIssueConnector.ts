@@ -1,7 +1,7 @@
 /**
  * GitLab Issues connector — implements `TicketConnector` using the GitLab REST API.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import type {
   AssignedTicketQueryOptions,
   DiscoveredTicketProject,

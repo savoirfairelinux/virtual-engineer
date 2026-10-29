@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { Group, Policy, PolicyBinding, PolicyRule, PrincipalType, UserRole } from "../interfaces.js";
 import type { PolicyRuleInput } from "../state/stores/policyStore.js";
 import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
