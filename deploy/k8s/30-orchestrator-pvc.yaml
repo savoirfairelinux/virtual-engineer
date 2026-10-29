@@ -4,9 +4,12 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: virtual-engineer-data
+  name: REPLACE_WITH_VE_DATA_PVC_NAME
   namespace: virtual-engineer
 spec:
+  # deploy.sh substitutes this with VE_ENCRYPTED_STORAGE_CLASS. Verify that
+  # the selected CSI StorageClass encrypts this volume at rest.
+  storageClassName: REPLACE_WITH_VERIFIED_ENCRYPTED_STORAGE_CLASS
   accessModes:
     - ReadWriteOnce
   resources:

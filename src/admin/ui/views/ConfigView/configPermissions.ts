@@ -18,6 +18,7 @@ export const CONFIG_SECTION_PERMISSIONS: Record<ConfigSectionId, string> = {
   policies: "policy.manage",
   audit: "audit.read",
   exports: "audit.read",
+  backups: "system.backup.manage",
   system: "system.read",
 };
 

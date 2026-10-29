@@ -13,12 +13,13 @@ export const CONFIG_SECTIONS = [
   "policies",
   "audit",
   "exports",
+  "backups",
   "system",
 ] as const;
 
 export type ConfigSectionId = typeof CONFIG_SECTIONS[number];
 
-type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "exports" | "system" | "denials" | "auth-sources">;
+type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "exports" | "system" | "denials" | "auth-sources" | "backups">;
 type ConfigStandardEntitySection = Exclude<ConfigEntitySection, "oauth">;
 
 export type ConfigRoute =

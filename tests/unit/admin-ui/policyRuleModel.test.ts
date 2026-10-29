@@ -48,11 +48,12 @@ describe("policyRuleModel", () => {
       { permission: "integration.write", resourceId: "int-2" },
       { permission: "overview.read", resourceId: null },
       { permission: "prompt.create", resourceId: null },
+      { permission: "system.backup.manage", resourceId: null },
     ];
     const draft = rulesToDraft(rules);
     expect(draft.nonUniform).toBe(false);
     expect(draft.groups.integration).toEqual({ actions: ["integration.read", "integration.write"], resourceIds: ["int-1", "int-2"] });
-    expect(draft.globalPermissions).toEqual(["overview.read", "prompt.create"]);
+    expect(draft.globalPermissions).toEqual(["overview.read", "prompt.create", "system.backup.manage"]);
     expect(draftToRules(draft)).toEqual(rules);
   });
 
