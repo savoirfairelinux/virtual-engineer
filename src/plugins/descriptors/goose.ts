@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { ProviderDescriptor } from "../registry.js";
 import { ModelDiscoveryConfigError } from "../registry.js";
 import { GooseAdapter } from "../../agents/gooseAdapter.js";

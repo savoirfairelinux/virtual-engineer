@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { IncomingMessage } from "node:http";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody, requireStore } from "./adminRouteUtils.js";

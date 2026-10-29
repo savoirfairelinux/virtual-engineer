@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { Integration } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { getProviderDescriptor, registerPlugin, type ProviderDescriptor } from "../../src/plugins/registry.js";

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { DeviceProviderAuthHandler, ProviderAuthDeviceCompleteInput, ProviderAuthDeviceStartResult, ProviderAuthHandlerCompleteResult, RedirectProviderAuthHandler } from "../../agents/providerAuthService.js";
 import {
   getGitLabBaseUrl,

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { Integration, IntegrationBindingContext } from "../../interfaces.js";
 import type { ProviderDescriptor } from "../registry.js";
 import { GitHubIssueConnector } from "../../connectors/githubIssueConnector.js";

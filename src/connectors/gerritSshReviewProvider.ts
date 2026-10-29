@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   type ExternalChangeId,
   type InlineReviewComment,
