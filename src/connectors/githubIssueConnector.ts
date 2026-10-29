@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { TicketConnector, Ticket, TicketId, AssignedTicketQueryOptions } from "../interfaces.js";
 import { makeTicketId } from "../interfaces.js";
 import { AbstractTicketConnector } from "./baseTicketConnector.js";

@@ -4,7 +4,7 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { registerPlugin } from "../../src/plugins/registry.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {

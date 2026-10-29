@@ -16,7 +16,7 @@
  * Providers set provider-specific defaults (e.g. `sshPort`) by overriding the
  * relevant field inside their own `.extend({})` call.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export const sshConnectionConfigSchema = z.object({
   sshHost: z.string().min(1),

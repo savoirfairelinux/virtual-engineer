@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { ProviderDescriptor } from "../registry.js";
 import { GeminiAdapter } from "../../agents/geminiAdapter.js";
 import {

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { promises as fs, constants as fsConstants } from "node:fs";
 import type { ProviderDescriptor } from "../registry.js";
 import {

@@ -8,7 +8,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { ReviewComment } from "../interfaces.js";
 import { sshHostKeyArgs } from "../utils/sshHostKeys.js";
 import { toRejectionError } from "../utils/rejection.js";

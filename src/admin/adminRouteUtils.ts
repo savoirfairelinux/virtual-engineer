@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 
 export const SECRET_MASK = "********";
 

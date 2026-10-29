@@ -1,7 +1,7 @@
 /**
  * Redmine REST API connector — implements `TicketConnector` using Redmine's JSON REST API.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import type {
   AssignedTicketQueryOptions,
   DiscoveredTicketProject,
