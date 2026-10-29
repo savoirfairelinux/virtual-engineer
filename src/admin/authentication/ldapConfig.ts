@@ -117,7 +117,7 @@ export function parseLdapConfigInput(
   input: unknown,
   storedConfigJson: string | null,
   adminAuthSecret: string | undefined
-): z.SafeParseReturnType<unknown, LdapConfig> {
+): z.ZodSafeParseResult<LdapConfig> {
   const candidate = asRecord(input);
   if (isUnsetSecret(candidate["bindPassword"])) {
     const stored = storedConfigJson !== null ? asRecord(JSON.parse(storedConfigJson)) : {};

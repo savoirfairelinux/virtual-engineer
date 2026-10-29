@@ -137,6 +137,23 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       body: { name: "Bad", type: "wrong", modelConfig: {} },
     });
     expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toContain("Agent type must be either 'coding' or 'review'");
+  });
+
+  it.each([
+    ["many", "Max concurrent must be a number"],
+    [1.5, "Max concurrent must be an integer"],
+    [0, "Max concurrent must be at least 1"],
+  ])("preserves actionable concurrency validation for %s", async (value, message) => {
+    const response = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Invalid concurrency", type: "coding", maxConcurrent: value,
+        systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+      },
+    });
+    expect(response.status).toBe(400);
+    expect(response.body?.["error"]).toContain(message);
   });
 
   it("POST / returns 400 when name missing", async () => {

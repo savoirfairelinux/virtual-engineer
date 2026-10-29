@@ -26,7 +26,7 @@ const GerritProjectInfoSchema = z.object({
   HEAD: z.string().optional(),
 });
 
-const GerritProjectsResponseSchema = z.record(GerritProjectInfoSchema);
+const GerritProjectsResponseSchema = z.record(z.string(), GerritProjectInfoSchema);
 
 export interface GerritSshDiscoveryConfig {
   host: string;

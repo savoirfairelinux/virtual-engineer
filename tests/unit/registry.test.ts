@@ -424,13 +424,13 @@ describe("Plugin Registry", () => {
         sessionToken: "tok",
       });
       // model should be transformed to undefined
-      expect(parsed.model).toBeUndefined();
+      expect(parsed).toHaveProperty("model", undefined);
     });
 
     it("defaults authMode to oauth when not specified", () => {
       const copilotDescriptor = createCopilotDescriptor();
       const parsed = copilotDescriptor.configSchema.parse({});
-      expect(parsed.authMode).toBe("oauth");
+      expect(parsed).toHaveProperty("authMode", "oauth");
     });
 
     it("accepts authMode pat with a token", () => {
@@ -439,8 +439,7 @@ describe("Plugin Registry", () => {
         authMode: "pat",
         token: "ghp_my_pat_token",
       });
-      expect(parsed.authMode).toBe("pat");
-      expect(parsed.token).toBe("ghp_my_pat_token");
+      expect(parsed).toMatchObject({ authMode: "pat", token: "ghp_my_pat_token" });
     });
 
     it("exposes authMode select field and token password field with dependsOn", () => {

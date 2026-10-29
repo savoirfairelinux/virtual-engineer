@@ -22,7 +22,7 @@ export function parseCalendarDate(value: string, endExclusive: boolean): Date | 
  *   "ticketSource.integrationId" -> "Ticket source › Integration"
  *   "pushTargets.0.repoKey"  -> "Push target #1 › Repository"
  */
-function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
+function humanizeFieldPath(path: ReadonlyArray<PropertyKey>): string {
   if (path.length === 0) return "";
   const friendly: Record<string, string> = {
     agentId: "Agent",
@@ -67,7 +67,8 @@ function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
       continue;
     }
     if (segment === undefined) continue;
-    parts.push(friendly[segment] ?? segment);
+    const name = String(segment);
+    parts.push(friendly[name] ?? name);
   }
   return parts.join(" › ");
 }

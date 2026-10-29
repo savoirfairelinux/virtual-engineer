@@ -64,6 +64,7 @@
     "vitest": "^4.1.11"
   },
   "overrides": {
+    "zod": "$zod",
     "@esbuild-kit/core-utils": {
       "esbuild": "0.25.12"
     }

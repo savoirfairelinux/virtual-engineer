@@ -19,6 +19,7 @@
     "esbuild": "^0.28.1"
   },
   "overrides": {
+    "zod": "^4.6.7",
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.11"
     }

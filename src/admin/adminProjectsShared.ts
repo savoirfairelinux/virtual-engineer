@@ -203,7 +203,7 @@ export interface ProjectsRouteDeps {
   validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;
 }
 
-export function optionalSshFilePath(label: string): z.ZodOptional<z.ZodEffects<z.ZodString, string, string>> {
+export function optionalSshFilePath(label: string): z.ZodOptional<z.ZodString> {
   return z.string()
     .trim()
     .min(1, `${label} must not be empty`)
@@ -431,9 +431,7 @@ export function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
 
 function removedProjectField(fieldName: string): z.ZodOptional<z.ZodNever> {
   return z.never({
-    errorMap: () => ({
-      message: `${fieldName} has been removed; omit it from project payloads`,
-    }),
+    error: `${fieldName} has been removed; omit it from project payloads`,
   }).optional();
 }
 

@@ -99,6 +99,7 @@ describe("runCopilotAgent", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.createSession.mockReset();
     child = makeFakeChild();
     session = makeFakeSession();
     mocks.spawn.mockReturnValue(child);
@@ -239,10 +240,11 @@ describe("runCopilotAgent", () => {
       mode: "review",
     }));
 
-    expect(session.sendAndWait).toHaveBeenCalledWith({ prompt: "Review the patch" }, 1_000);
+    expect(session.sendAndWait).toHaveBeenCalledWith({ prompt: "Review the patch" }, expect.any(Number));
+    expect(session.sendAndWait.mock.calls[0]?.[1]).toBeLessThanOrEqual(1_000);
     const sessionOptions = mocks.createSession.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(sessionOptions["reasoningEffort"]).toBeUndefined();
-    expect(mocks.listModels).not.toHaveBeenCalled();
+    expect(mocks.listModels).toHaveBeenCalledOnce();
     expect(sessionOptions["skillDirectories"]).toBeUndefined();
     expect(sessionOptions["enableConfigDiscovery"]).toBe(true);
     expect(mocks.emitEvent).toHaveBeenCalledWith("session.start", expect.objectContaining({
@@ -303,6 +305,191 @@ describe("runCopilotAgent", () => {
     expect(session.disconnect).toHaveBeenCalledOnce();
     expect(mocks.clientStop).toHaveBeenCalledOnce();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it.each(["codegen", "review"] as const)("falls back to auto when the %s model disappears", async (mode) => {
+    mocks.listModels.mockResolvedValue([{ id: "another-model" }]);
+    process.env["COPILOT_REASONING_EFFORT"] = "high";
+
+    const run = await runCopilotAgent("Run", makeOptions({ mode }));
+
+    expect(mocks.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: "auto" }));
+    expect(mocks.createSession.mock.calls[0]?.[0]).not.toHaveProperty("reasoningEffort");
+    expect(run.model).toBe("auto");
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.model_fallback", expect.objectContaining({
+      requestedModel: "gpt-4.1", selectedModel: "auto", reason: "not_listed",
+    }));
+    await run.cleanup();
+  });
+
+  it("keeps the explicit model when discovery fails", async () => {
+    mocks.listModels.mockRejectedValue(new Error("Network unavailable"));
+    const run = await runCopilotAgent("Run", makeOptions());
+    expect(mocks.createSession).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4.1" }));
+    expect(mocks.emitEvent).not.toHaveBeenCalledWith("session.model_fallback", expect.anything());
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.warning", expect.objectContaining({
+      message: expect.stringContaining("discover"),
+    }));
+    await run.cleanup();
+  });
+
+  it("falls back when policy disables a model that remains listed", async () => {
+    mocks.listModels.mockResolvedValue([{ id: "gpt-4.1", policy: { state: "disabled" } }]);
+    const run = await runCopilotAgent("Run", makeOptions());
+    expect(mocks.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: "auto" }));
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.model_fallback", expect.objectContaining({
+      reason: "disabled",
+    }));
+    await run.cleanup();
+  });
+
+  it("does not discover or retry auto", async () => {
+    session.sendAndWait.mockRejectedValue(new Error("Model is not available"));
+    await expect(runCopilotAgent("Run", makeOptions({ model: "auto" }))).rejects.toThrow("Model is not available");
+    expect(mocks.listModels).not.toHaveBeenCalled();
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "Model 'gpt-4.1' is not available",
+    "Model gpt-4.1 is unavailable",
+    "The requested model is no longer supported",
+    "Unknown model: gpt-4.1",
+  ])("falls back once when session creation rejects a listed model: %s", async (message) => {
+    mocks.createSession.mockRejectedValueOnce(new Error(message));
+    const run = await runCopilotAgent("Run", makeOptions());
+    expect(mocks.createSession.mock.calls.map(([config]) => config.model)).toEqual(["gpt-4.1", "auto"]);
+    expect(run.model).toBe("auto");
+    await run.cleanup();
+  });
+
+  it("retries a model rejection before tools using a fresh session", async () => {
+    const fallbackSession = makeFakeSession();
+    session.sendAndWait.mockImplementation(() => {
+      session.handlers.get("session.error")?.({
+        data: { errorType: "query", message: "Model 'gpt-4.1' is disabled" },
+      });
+      return Promise.reject(new Error("Model 'gpt-4.1' is disabled"));
+    });
+    mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+    const run = await runCopilotAgent("Run", makeOptions());
+    expect(session.disconnect).toHaveBeenCalledOnce();
+    expect(fallbackSession.sendAndWait).toHaveBeenCalledOnce();
+    expect(mocks.emitEvent.mock.calls.filter(([type]) => type === "session.model_fallback")).toHaveLength(1);
+    expect(run.model).toBe("auto");
+    await run.cleanup();
+  });
+
+  it("does not replay a session after any tool execution", async () => {
+    session.sendAndWait.mockImplementation(() => {
+      session.handlers.get("tool.execution_start")?.({ data: { toolName: "edit", toolCallId: "1" } });
+      return Promise.reject(new Error("Model 'gpt-4.1' is not available"));
+    });
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("not available");
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+  });
+
+  it.each(["codegen", "review"] as const)("continues the %s fallback when disconnect fails", async (mode) => {
+    const fallbackSession = makeFakeSession();
+    session.sendAndWait.mockRejectedValue(new Error("Model 'gpt-4.1' is not available"));
+    session.disconnect.mockRejectedValueOnce(new Error("Disconnect failed"));
+    mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+
+    const run = await runCopilotAgent("Run", makeOptions({ mode }));
+
+    expect(run.model).toBe("auto");
+    expect(mocks.createSession.mock.calls.map(([config]) => config.model)).toEqual(["gpt-4.1", "auto"]);
+    expect(session.disconnect).toHaveBeenCalledOnce();
+    expect(fallbackSession.sendAndWait).toHaveBeenCalledOnce();
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.warning", {
+      message: "Could not disconnect the rejected Copilot session; continuing with automatic model selection.",
+    });
+    await run.cleanup();
+    expect(fallbackSession.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("preserves a fallback error instead of a prior disconnect failure", async () => {
+    const fallbackSession = makeFakeSession();
+    session.sendAndWait.mockRejectedValue(new Error("Model 'gpt-4.1' is not available"));
+    session.disconnect.mockRejectedValueOnce(new Error("Disconnect failed"));
+    fallbackSession.sendAndWait.mockRejectedValue(new Error("Quota exhausted"));
+    mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("Quota exhausted");
+
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(fallbackSession.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it.each([
+    "HTTP 403", "HTTP 404", "Quota exceeded", "Authentication failed",
+    "Connection unavailable", "context_length_exceeded", "Model service unavailable",
+  ])("does not fallback for unrelated errors: %s", async (message) => {
+    session.sendAndWait.mockRejectedValue(new Error(message));
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow(message);
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the auto failure without another retry", async () => {
+    mocks.listModels.mockResolvedValue([]);
+    session.sendAndWait.mockRejectedValue(new Error("Quota exceeded"));
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("Quota exceeded");
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("cleans up when creation of the fallback session fails", async () => {
+    mocks.createSession
+      .mockRejectedValueOnce(new Error("Model 'gpt-4.1' is not available"))
+      .mockRejectedValueOnce(new Error("Copilot unavailable"));
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("Copilot unavailable");
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(mocks.clientStop).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("preserves quota errors identified by session.error", async () => {
+    session.sendAndWait.mockImplementation(() => {
+      session.handlers.get("session.error")?.({
+        data: { errorType: "quota", message: "Model 'gpt-4.1' is not available" },
+      });
+      return Promise.reject(new Error("Quota exhausted"));
+    });
+    await expect(runCopilotAgent("Run", makeOptions())).rejects.toThrow("Quota exhausted");
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+  });
+
+  it("shares the remaining timeout with the fallback attempt", async () => {
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const fallbackSession = makeFakeSession();
+      session.sendAndWait.mockImplementation(() => {
+        now = 700;
+        return Promise.reject(new Error("Model 'gpt-4.1' is not available"));
+      });
+      mocks.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce(fallbackSession);
+      const run = await runCopilotAgent("Run", makeOptions());
+      expect(session.sendAndWait).toHaveBeenCalledWith({ prompt: "Run" }, 1_000);
+      expect(fallbackSession.sendAndWait).toHaveBeenCalledWith({ prompt: "Run" }, 300);
+      await run.cleanup();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("leaves native review model selection to Copilot", async () => {
+    const run = await runCopilotAgent("Review", makeOptions({
+      model: "auto", mode: "review", reviewStrategy: "copilot_native",
+    }));
+    expect(mocks.listModels).not.toHaveBeenCalled();
+    expect(mocks.emitEvent).not.toHaveBeenCalledWith("session.model_fallback", expect.anything());
+    await run.cleanup();
   });
 
   it("retains the error from a failed MCP tool execution", async () => {

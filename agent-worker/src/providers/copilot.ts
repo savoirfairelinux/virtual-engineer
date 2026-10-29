@@ -36,6 +36,37 @@ import {
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
+function isUnavailableModel(error: unknown, requestedModel: string): boolean {
+  const record = asRecord(error);
+  const category = record?.['errorType'];
+  if (typeof category === 'string' &&
+      ['authentication', 'authorization', 'quota', 'rate_limit', 'context_limit'].includes(category)) {
+    // Authorization failures only justify a fallback when explicitly about the model.
+    if (category !== 'authorization') return false;
+  }
+  const message = error instanceof Error ? error.message : record?.['message'];
+  if (typeof message !== 'string') return false;
+  const model = requestedModel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rejection = new RegExp(
+    `\\bmodel(?:\\s+['"\`]?${model}['"\`]?)?\\s+(?:is\\s+|was\\s+|has been\\s+)?(?:not (?:available|found|supported|enabled)|no longer (?:available|supported)|unavailable|disabled|retired|does not exist)\\b`,
+    'i',
+  );
+  return /\b(?:unknown|unsupported|disabled|retired) model\b/i.test(message) ||
+    rejection.test(message);
+}
+
+function useAutomaticModel(config: SessionConfig, requestedModel: string, reason: string): SessionConfig {
+  const automaticConfig = { ...config, model: 'auto' };
+  delete automaticConfig.reasoningEffort;
+  emitEvent('session.model_fallback', {
+    requestedModel,
+    selectedModel: 'auto',
+    reason,
+    message: `Configured model ${requestedModel} is unavailable. Copilot automatic model selection was used. Update the configured model for this agent/project.`,
+  });
+  return automaticConfig;
+}
+
 export function buildCopilotSystemMessage(agentInstructions: string): {
   mode: 'append';
   content: string;
@@ -224,25 +255,34 @@ export function buildCopilotSessionConfig(
 
 async function runSession(
   options: AgentRunOptions,
-): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
+): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer; config: SessionConfig }> {
   const { cwd } = options;
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
   try {
     await initializeCopilotClient(client);
-    const config = buildCopilotSessionConfig(options);
-    if (config.reasoningEffort !== undefined) {
-      const requestedEffort = config.reasoningEffort;
-      let supportedEfforts: readonly string[] | undefined;
+    let config = buildCopilotSessionConfig(options);
+    const explicitModel = options.model !== '' && options.model !== 'auto' &&
+      options.reviewStrategy !== 'copilot_native';
+    let supportedEfforts: readonly string[] | undefined;
+    if (explicitModel) {
       try {
         const models = await client.listModels();
-        supportedEfforts = models.find((model) => model.id === config.model)?.supportedReasoningEfforts ?? [];
+        const selected = models.find((model) => model.id === options.model);
+        if (selected === undefined || selected.policy?.state === 'disabled') {
+          config = useAutomaticModel(config, options.model, selected === undefined ? 'not_listed' : 'disabled');
+        } else {
+          supportedEfforts = selected.supportedReasoningEfforts ?? [];
+        }
       } catch {
         emitEvent('session.warning', {
-          message: 'Could not discover model reasoning capabilities; using provider default.',
+          message: 'Could not discover model availability or reasoning capabilities; trying the configured model with provider default reasoning.',
         });
       }
+    }
+    if (config.reasoningEffort !== undefined) {
+      const requestedEffort = config.reasoningEffort;
       if (supportedEfforts === undefined || !supportedEfforts.includes(requestedEffort)) {
         if (supportedEfforts !== undefined) {
           emitEvent('session.warning', {
@@ -254,8 +294,15 @@ async function runSession(
         delete config.reasoningEffort;
       }
     }
-    const session = await client.createSession(config);
-    return { session, client, localCliServer };
+    let session: CopilotSession;
+    try {
+      session = await client.createSession(config);
+    } catch (error) {
+      if (!explicitModel || config.model === 'auto' || !isUnavailableModel(error, options.model)) throw error;
+      config = useAutomaticModel(config, options.model, 'model_rejected');
+      session = await client.createSession(config);
+    }
+    return { session, client, localCliServer, config };
   } catch (err) {
     await client.stop().catch(() => { /* ignore */ });
     localCliServer.child.kill('SIGTERM');
@@ -436,20 +483,21 @@ function formatToolLabel(toolName: string, toolInput: Record<string, unknown>): 
 function registerSessionEventHandlers(
   session: CopilotSession,
   model: string,
-): { toolCallCount: number; toolsByKind: Record<string, number>; toolCalls: ObservedToolCall[] } {
+): { toolCallCount: number; toolsByKind: Record<string, number>; toolCalls: ObservedToolCall[]; sessionError: unknown } {
   const state = {
     toolCallCount: 0,
     toolsByKind: {} as Record<string, number>,
     toolCalls: [] as ObservedToolCall[],
+    sessionError: undefined as unknown,
   };
   const toolTimers = new Map<string, number>();
   const toolCallsById = new Map<string, ObservedToolCall>();
 
   session.on('tool.execution_start', (e) => {
     const event = e as unknown;
+    state.toolCallCount++;
     const toolName = extractToolName(event);
     if (toolName === null) return;
-    state.toolCallCount++;
     const toolInput = extractToolInput(event);
     const callId = deepFindStr(event, ['toolCallId']) ?? `${toolName}_${state.toolCallCount}`;
     const toolCall: ObservedToolCall = { callId, name: toolName, input: toolInput };
@@ -568,6 +616,7 @@ function registerSessionEventHandlers(
   });
 
   session.on('session.error', (e) => {
+    state.sessionError = e.data;
     const event = e as unknown;
     const msg = deepFindStr(event, ['message', 'error', 'reason'])
       ?? (typeof event === 'string' ? event : String(event));
@@ -586,15 +635,20 @@ export async function runCopilotAgent(
   prompt: string,
   options: AgentRunOptions,
 ): Promise<AgentRun> {
-  const { model, cwd, timeoutMs, mode } = options;
-  const { session, client, localCliServer } = await runSession(options);
+  const { cwd, timeoutMs, mode } = options;
+  const deadline = Date.now() + timeoutMs;
+  const started = await runSession(options);
+  const { client, localCliServer } = started;
+  let config = started.config;
+  let session = started.session;
+  let model = config.model ?? options.model;
   emitEvent('session.start', {
     model,
     mode,
     workingDirectory: cwd,
     ...(mode === 'review' ? { reviewStrategy: options.reviewStrategy ?? 've_direct' } : {}),
   });
-  const handlerState = registerSessionEventHandlers(session, model);
+  let handlerState = registerSessionEventHandlers(session, model);
   process.stderr.write(`sending ${mode} prompt\n`);
 
   const heartbeat = setInterval(() => {
@@ -606,7 +660,29 @@ export async function runCopilotAgent(
     const sessionPrompt = mode === 'review' && options.reviewStrategy === 'copilot_native'
       ? buildNativeReviewPrompt(prompt, cwd)
       : prompt;
-    response = await session.sendAndWait({ prompt: sessionPrompt }, timeoutMs);
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Copilot session timeout exceeded');
+      try {
+        response = await session.sendAndWait({ prompt: sessionPrompt }, remaining);
+        break;
+      } catch (error) {
+        if (model === '' || model === 'auto' || options.reviewStrategy === 'copilot_native' ||
+            handlerState.toolCallCount !== 0 || Date.now() >= deadline ||
+            !isUnavailableModel(handlerState.sessionError ?? error, options.model)) {
+          throw error;
+        }
+        await session.disconnect().catch(() => {
+          emitEvent('session.warning', {
+            message: 'Could not disconnect the rejected Copilot session; continuing with automatic model selection.',
+          });
+        });
+        config = useAutomaticModel(config, options.model, 'model_rejected');
+        model = 'auto';
+        session = await client.createSession(config);
+        handlerState = registerSessionEventHandlers(session, model);
+      }
+    }
   } catch (err) {
     if (mode === 'review' && options.reviewStrategy === 'copilot_native') {
       emitEvent('review.native_delegation_failed', {
@@ -636,6 +712,7 @@ export async function runCopilotAgent(
   });
 
   return {
+    model,
     content,
     toolCallCount: handlerState.toolCallCount,
     toolsByKind: handlerState.toolsByKind,

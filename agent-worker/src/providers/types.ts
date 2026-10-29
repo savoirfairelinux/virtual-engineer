@@ -47,6 +47,8 @@ export interface ObservedToolCall {
 
 /** Result of running one agent session, independent of the provider. */
 export interface AgentRun {
+  /** Selected model or provider selection policy (e.g. Copilot auto). */
+  model?: string | undefined;
   content: string;
   toolCallCount: number;
   toolsByKind: Record<string, number>;

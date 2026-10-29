@@ -213,6 +213,8 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
   if (type === "session.error") return "errors";
   if (
     type === "session.start" ||
+    type === "session.model_fallback" ||
+    type === "session.warning" ||
     type === "session.end" ||
     type === "permission.requested" ||
     type === "permission.denied" ||
@@ -226,6 +228,7 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
 
 /** Map an event type string to its display log level. */
 function eventLevel(type: string): "info" | "warn" | "error" | "debug" {
+  if (type === "session.model_fallback" || type === "session.warning") return "warn";
   if (type === "session.error" || type === "review.failed") return "error";
   if (type === "permission.requested" || type === "permission.denied") return "warn";
   if (type === "permission.approved") return "info";
@@ -436,6 +439,11 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       return "🟢 Session started";
     case "session.end":
       return "🔴 Session ended";
+    case "session.model_fallback":
+    case "session.warning": {
+      const msg = readStr(data, ["message"]);
+      return msg ? `⚠️ ${msg}` : "⚠️ Session warning";
+    }
     case "session.error": {
       const msg = readStr(data, ["message", "error", "reason"]);
       return msg ? `❌ ${msg}` : "❌ Error occurred";
