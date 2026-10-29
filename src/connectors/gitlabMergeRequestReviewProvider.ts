@@ -10,7 +10,7 @@
  *  - `"123#42"`            numeric project id + MR IID
  *  - `"42"`               legacy bare MR IID (falls back to the configured project)
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import type {
   ReviewProvider,
   ReviewChangeDetails,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { oauthAppResourceId } from "../domain/accessControl.js";
 import type { Integration, IntegrationReferenceDetails, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { Router } from "./router.js";
 import { readBody, requireStore, toIsoTimestamp, writeJson, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";

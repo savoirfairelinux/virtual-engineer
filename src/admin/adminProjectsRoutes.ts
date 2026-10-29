@@ -2,7 +2,7 @@ import { getLogger } from "../logger.js";
 import { ActiveProjectTasksConfirmationRequiredError } from "../domain/projectConfiguration.js";
 import { BUILT_IN_PROMPT_IDS } from "../domain/prompts.js";
 import type { IncomingMessage } from "node:http";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { makeAgentId, makeProjectId, type AgentRecord, type Permission, type PolicyRule, type ProjectRecord } from "../interfaces.js";
 import type { Router } from "./router.js";
