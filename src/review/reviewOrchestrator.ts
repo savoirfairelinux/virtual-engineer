@@ -303,7 +303,6 @@ export class ReviewOrchestrator {
     }
     let automaticAssignmentChecked = false;
     let automaticAssignment = false;
-    let automaticAssignmentDeferred = false;
 
     for (const { project, reviewConfig } of configuredProjects) {
 
@@ -330,18 +329,7 @@ export class ReviewOrchestrator {
         if (!automaticAssignmentChecked) {
           automaticAssignmentChecked = true;
           try {
-            // Providers whose assignment emits a reviewer-added event (Gerrit)
-            // start the review from that event; starting it here as well would
-            // run the review twice for the same patchset.
-            const deferToAssignmentEvent =
-              this.deps.reviewProvider.assignmentEmitsReviewerEvent === true &&
-              triggerCause !== "reviewer-assigned" &&
-              typeof this.deps.reviewProvider.isReviewer === "function";
-            const wasReviewer = deferToAssignmentEvent
-              ? await this.deps.reviewProvider.isReviewer?.(input.changeId)
-              : undefined;
             automaticAssignment = await this.deps.reviewProvider.ensureReviewerAssignment(input.changeId);
-            automaticAssignmentDeferred = automaticAssignment && wasReviewer === false;
           } catch (err) {
             log.warn(
               { projectId: project.id, changeId: input.changeId, branch: details.targetBranch, triggerCause, err },
@@ -354,13 +342,6 @@ export class ReviewOrchestrator {
           log.debug(
             { projectId: project.id, changeId: input.changeId },
             "provider could not ensure reviewer assignment — skipping automatic review",
-          );
-          continue;
-        }
-        if (automaticAssignmentDeferred) {
-          log.info(
-            { projectId: project.id, changeId: input.changeId, patchset: details.currentPatchset },
-            "VE was just assigned as reviewer — review will start from the reviewer-added event",
           );
           continue;
         }

@@ -675,11 +675,14 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         if (reviewTriggerOnAdded) {
           const addedUsername = extractReviewerUsername(payload);
           if (addedUsername === handle.config.sshUser) {
-            // Manual trigger: a human (re)added VE as a reviewer. Force a fresh
-            // review even if VE already reviewed the current patchset — this is
-            // how a reviewer intentionally relaunches VE's review.
+            // VE adding itself (automatic assignment) already started the review
+            // from the revision trigger: a non-forced trigger lets the
+            // duplicate-review guards skip it while still covering a missed start.
+            // Otherwise a human (re)added VE: force a fresh review even if VE
+            // already reviewed the current patchset.
+            const selfAssigned = extractAdderUsername(payload) === handle.config.sshUser;
             await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, reviewChangeId, {
-              force: true,
+              ...(selfAssigned ? {} : { force: true }),
               triggerCause: "reviewer-assigned",
             });
           } else {
@@ -835,13 +838,23 @@ function extractEventType(payload: unknown): GerritEventType | null {
   }
 }
 
+/** Extract an account's username from a `reviewer-added` event payload field. */
+function extractAccountUsername(payload: unknown, field: "reviewer" | "adder"): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const account = (payload as Record<string, unknown>)[field];
+  if (typeof account !== "object" || account === null) return null;
+  const username = (account as Record<string, unknown>)["username"];
+  return typeof username === "string" && username.length > 0 ? username : null;
+}
+
 /** Extract the reviewer's username from a `reviewer-added` event payload. */
 function extractReviewerUsername(payload: unknown): string | null {
-  if (typeof payload !== "object" || payload === null) return null;
-  const reviewer = (payload as Record<string, unknown>)["reviewer"];
-  if (typeof reviewer !== "object" || reviewer === null) return null;
-  const username = (reviewer as Record<string, unknown>)["username"];
-  return typeof username === "string" && username.length > 0 ? username : null;
+  return extractAccountUsername(payload, "reviewer");
+}
+
+/** Extract the username of the account that added the reviewer. */
+function extractAdderUsername(payload: unknown): string | null {
+  return extractAccountUsername(payload, "adder");
 }
 
 /** Extract the patchset kind (e.g. TRIVIAL_REBASE) from a `patchset-created` event payload. */

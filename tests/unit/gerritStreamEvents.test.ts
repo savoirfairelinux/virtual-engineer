@@ -557,6 +557,54 @@ describe("GerritStreamEventsManager", () => {
     });
   });
 
+  it("reviewer-added: does NOT force the review when VE added itself (automatic assignment)", async () => {
+    const child = new FakeChildProcess();
+    const { manager, reviewTrigger } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "reviewer-added",
+        change: { id: "Ichange" },
+        reviewer: { username: VE_SSH_USER, name: "Virtual Engineer" },
+        adder: { username: VE_SSH_USER, name: "Virtual Engineer" },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // VE's own assignment already started the review from the revision trigger;
+    // a non-forced trigger lets the duplicate-review guards skip it.
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange", {
+      triggerCause: "reviewer-assigned",
+    });
+  });
+
+  it("reviewer-added: forces the review when a human added VE", async () => {
+    const child = new FakeChildProcess();
+    const { manager, reviewTrigger } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "reviewer-added",
+        change: { id: "Ichange" },
+        reviewer: { username: VE_SSH_USER, name: "Virtual Engineer" },
+        adder: { username: "alice", name: "Alice" },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange", {
+      force: true,
+      triggerCause: "reviewer-assigned",
+    });
+  });
+
   it("reviewer-added: does NOT trigger review when a different user is added", async () => {
     const child = new FakeChildProcess();
     const { manager, orchestrator, reviewTrigger } = createManager([child]);
