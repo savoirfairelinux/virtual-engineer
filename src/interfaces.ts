@@ -1155,12 +1155,6 @@ export interface ReviewProvider {
   ensureReviewerAssignment?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<boolean>;
 
   /**
-   * True when a successful `ensureReviewerAssignment` makes the provider emit a
-   * reviewer-added event that already triggers the review (Gerrit stream-events).
-   */
-  assignmentEmitsReviewerEvent?: boolean;
-
-  /**
    * Returns true when the VE reviewer account has already posted a review
    * (vote and/or summary/comments) against the CURRENT patchset/revision of
    * this change on the review server.

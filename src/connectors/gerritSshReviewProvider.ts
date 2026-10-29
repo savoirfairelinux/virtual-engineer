@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 import {
   type ExternalChangeId,
   type InlineReviewComment,
@@ -132,7 +132,6 @@ export interface GerritSshReviewProviderConfig {
  */
 export class GerritSshReviewProvider implements ReviewProvider {
   public readonly kind = "gerrit";
-  public readonly assignmentEmitsReviewerEvent = true;
   private readonly sshClient: GerritSshClient;
 
   constructor(private readonly config: GerritSshReviewProviderConfig) {
