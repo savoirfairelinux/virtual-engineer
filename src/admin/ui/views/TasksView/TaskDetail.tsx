@@ -1,7 +1,9 @@
 import {
   isCurrentTaskRequest,
   isSameTaskRequest,
+  nextLogsPanelAccess,
   shouldStartTaskRequest,
+  type LogsPanelAccess,
   type TaskRequestIdentity,
 } from "./taskDetailRequests.js";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,6 +34,9 @@ type TabId = "cycles" | "timeline" | "logs";
 export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const { can } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("cycles");
+  const [logsAccess, setLogsAccess] = useState<LogsPanelAccess>(() => ({ taskId: task.taskId, opened: false }));
+  const currentLogsAccess = nextLogsPanelAccess(logsAccess, task.taskId, tab === "logs");
+  if (currentLogsAccess !== logsAccess) setLogsAccess(currentLogsAccess);
   const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
@@ -358,9 +363,11 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
           )}
-          <div hidden={tab !== "logs"} aria-hidden={tab !== "logs"}>
-            <LiveLogs taskId={task.taskId} running={running} />
-          </div>
+          {currentLogsAccess.opened && (
+            <div hidden={tab !== "logs"} aria-hidden={tab !== "logs"}>
+              <LiveLogs taskId={task.taskId} running={running} />
+            </div>
+          )}
         </TabPanel>
 
         <Tag tone="info" mono={false}>
