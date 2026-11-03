@@ -1,7 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -376,9 +375,10 @@ describe("start.sh helpers", () => {
     const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
     tempDirs.push(dir);
     const kubectlPath = join(dir, "kubectl");
-    copyFileSync("/bin/sleep", kubectlPath);
+    // A script keeps comm=kubectl; copying /bin/sleep breaks on multicall coreutils (uutils) that dispatch on argv[0].
+    writeFileSync(kubectlPath, "#!/bin/sh\nsleep \"$1\" &\nwait\n");
     chmodSync(kubectlPath, 0o755);
-    const process = spawn(kubectlPath, ["10"], { cwd: dir, stdio: "ignore" });
+    const process = spawn(kubectlPath, ["10"], { cwd: dir, stdio: "ignore", detached: true });
     await new Promise<void>((resolve, reject) => {
       process.once("spawn", resolve);
       process.once("error", reject);
@@ -394,7 +394,7 @@ describe("start.sh helpers", () => {
         [String(process.pid), `${dir}-other`],
       )).toBe("no");
     } finally {
-      process.kill();
+      if (process.pid !== undefined) globalThis.process.kill(-process.pid);
     }
   });
 
