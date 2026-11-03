@@ -41,6 +41,17 @@ function trackedEvent(index: number, touched: Set<number>, content = `event-${in
   });
 }
 
+const REPEATED_AT = "2026-04-07T09:00:00.000Z";
+
+/** 5,000 identical persisted events that record every payload read. */
+function repeatedHistory(touched: Set<number>): AgentLogEvent[] {
+  return Array.from({ length: 5_000 }, (_, index) => {
+    const repeated = trackedEvent(index, touched, "same");
+    repeated.timestamp = REPEATED_AT;
+    return repeated;
+  });
+}
+
 function cycle(cycleNumber: number, agentEvents: AgentLogEvent[], agentLogs = ""): AgentCycle {
   return {
     id: cycleNumber,
@@ -175,15 +186,30 @@ describe("selectLogStreamReplay", () => {
     expect(unknown.summary).toEqual(stale.summary);
   });
 
+  it("replays afresh when the cursor matches more than one buffered record", () => {
+    // Identical records share an id, so the cursor cannot say which one the client received.
+    const cursor = selectLogStreamReplay([], [stderrLine("----")], undefined).entries[0]?.id;
+
+    const replay = selectLogStreamReplay([], [stderrLine("----"), stderrLine("unseen"), stderrLine("----")], cursor);
+
+    expect(labels(replay)).toEqual(["unseen", "----"]);
+    expect(replay.summary).toEqual({ resumed: false, replayed: 2, omitted: 0, limit: 500 });
+  });
+
   it("bounds the work spent skipping duplicate history", () => {
     const touched = new Set<number>();
-    const duplicates = Array.from({ length: 5_000 }, (_, index) => {
-      const duplicate = trackedEvent(index, touched, "same");
-      duplicate.timestamp = "2026-04-07T09:00:00.000Z";
-      return duplicate;
-    });
 
-    const replay = selectLogStreamReplay([cycle(1, duplicates)], [], undefined);
+    const replay = selectLogStreamReplay([cycle(1, repeatedHistory(touched))], [], undefined);
+
+    expect(labels(replay)).toEqual(["same"]);
+    expect(touched.size).toBeLessThanOrEqual(2 * LOG_STREAM_REPLAY_LIMIT);
+  });
+
+  it("bounds the payloads read to recognize persisted copies of a buffered event", () => {
+    const touched = new Set<number>();
+    const buffered: AgentLogEvent = { ...event(0), timestamp: REPEATED_AT, data: { content: "same" } };
+
+    const replay = selectLogStreamReplay([cycle(1, repeatedHistory(touched))], [buffered], undefined);
 
     expect(labels(replay)).toEqual(["same"]);
     expect(touched.size).toBeLessThanOrEqual(2 * LOG_STREAM_REPLAY_LIMIT);
