@@ -1,8 +1,16 @@
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task, TaskId } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
-import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
-import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
+import { writeJson } from "./adminRouteUtils.js";
+import {
+  readLastEventId,
+  selectLogStreamReplay,
+  serializeAgentEventEntry,
+  streamEntryId,
+  streamEntryKey,
+  type LogStreamEntry,
+  type LogStreamReplay,
+} from "./logStreamReplay.js";
 import { createTaskPermissionResolver, createTaskProjectNameResolver, deduplicateByTicket, filterTasksByReadAccess, filterTasksByReadScope } from "./adminTaskRoutes.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { requestCanAccessResource } from "./authContext.js";
@@ -41,7 +49,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
   router.add("GET", "/api/admin/logs/stream", async (req, res, _params) => {
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const taskIdParam = requestUrl.searchParams.get("taskId");
-    let streamEntries: Array<Record<string, unknown>> = [];
+    let replay: LogStreamReplay | null = null;
     const pendingLiveEvents: AgentLogEvent[] = [];
     let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
     let authorizationQueue = Promise.resolve();
@@ -106,12 +114,13 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         throw err;
       }
       if (closed) return;
-      streamEntries = cycles.flatMap((cycle) => serializeAgentLogEntries(cycle));
-    } else {
-      streamEntries = [
-        { timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Admin API stream started", source: "admin" },
-        { timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Listening for live logs...", source: "admin" },
-      ];
+      // Bounded newest-first replay, read synchronously with the live buffer so
+      // no event can slip between the replay and the live listener below.
+      replay = selectLogStreamReplay(
+        cycles,
+        getTaskEventBuffer(taskIdParam),
+        readLastEventId(req.headers["last-event-id"]),
+      );
     }
 
     res.statusCode = 200;
@@ -126,15 +135,14 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     // stream retain every key it has ever emitted.
     const MAX_EMITTED_KEYS = 5_000;
     const emittedKeys = new Set<string>();
-    const writeEntry = (entry: Record<string, unknown>): void => {
-      const key = streamEntryKey(entry);
+    const writeEntry = (entry: LogStreamEntry, key = streamEntryKey(entry), id?: string): void => {
       if (emittedKeys.has(key)) return;
       if (emittedKeys.size >= MAX_EMITTED_KEYS) {
         const oldest = emittedKeys.values().next().value;
         if (oldest !== undefined) emittedKeys.delete(oldest);
       }
       emittedKeys.add(key);
-      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+      res.write(`${id === undefined ? "" : `id: ${id}\n`}data: ${JSON.stringify(entry)}\n\n`);
     };
 
     writeEntry({
@@ -144,24 +152,22 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       message: "Live log stream connected",
       source: "admin",
       type: "stream.connected",
+      ...(replay ? { data: replay.summary } : {}),
     });
 
-    for (const entry of streamEntries) {
-      writeEntry(entry);
-    }
-
-    if (taskIdParam) {
-      const buffered = getTaskEventBuffer(taskIdParam);
-      for (const event of buffered) {
-        if (res.writable) {
-          writeEntry(serializeAgentEventEntry(event));
-        }
-      }
+    if (replay) {
+      for (const { entry, key, id } of replay.entries) writeEntry(entry, key, id);
+    } else {
+      writeEntry({ timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Admin API stream started", source: "admin" });
+      writeEntry({ timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Listening for live logs...", source: "admin" });
     }
 
     writeLiveEvent = (event: AgentLogEvent): void => {
       if (!res.writable) return;
-      writeEntry(serializeAgentEventEntry(event));
+      const entry = serializeAgentEventEntry(event);
+      const key = streamEntryKey(entry);
+      // Task streams tag entries with ids so a reconnect can resume after them.
+      writeEntry(entry, key, taskIdParam ? streamEntryId(key) : undefined);
     };
     for (const event of pendingLiveEvents) {
       writeLiveEvent(event);
@@ -226,83 +232,4 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       res.write(": heartbeat\n\n");
     }, 15_000);
   }, { permission: "task.read", collection: true });
-}
-
-// ─── Serializers ────────────────────────────────────────────────────────────
-
-/** Serialize all log entries for an agent cycle into the admin log-stream shape. */
-function serializeAgentLogEntries(cycle: AgentCycle): Array<Record<string, unknown>> {
-  const entries: Array<Record<string, unknown>> = [];
-  const rawLogs = cycle.result.agentLogs.trim();
-
-  if (rawLogs.length > 0) {
-    entries.push(
-      ...rawLogs
-        .split(/\r?\n/)
-        .filter((line) => line.trim().length > 0)
-        .map((line) => ({
-          timestamp: toIsoTimestamp(cycle.createdAt),
-          taskId: cycle.taskId,
-          level: "info",
-          message: line,
-          source: "agent",
-        }))
-    );
-  }
-
-  if (cycle.result.agentEvents?.length) {
-    entries.push(...cycle.result.agentEvents.map((event) => serializeAgentEventEntry(event)));
-  }
-
-  return entries;
-}
-
-/** Serialize a single AgentLogEvent into the admin log-stream shape. */
-function serializeAgentEventEntry(event: AgentLogEvent): Record<string, unknown> {
-  const normalized = normalizeAgentEvent(event);
-  return {
-    timestamp: normalized.timestamp,
-    taskId: normalized.taskId,
-    level: normalized.level,
-    message: normalized.message,
-    source: "agent",
-    type: normalized.type,
-    category: normalized.category,
-    cycleNumber: normalized.cycleNumber,
-    data: normalized.data,
-  };
-}
-
-/** Stringify an unknown log-entry field without risking `[object Object]` output. */
-function toKeyPart(value: unknown): string {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
-  }
-}
-
-/** Build a deterministic key used to deduplicate SSE entries. */
-function streamEntryKey(entry: Record<string, unknown>): string {
-  const parts = [
-    toKeyPart(entry["timestamp"]),
-    toKeyPart(entry["taskId"]),
-    toKeyPart(entry["cycleNumber"]),
-    toKeyPart(entry["type"]),
-    toKeyPart(entry["level"]),
-    toKeyPart(entry["message"]),
-  ];
-  const data = entry["data"];
-  if (data !== undefined) {
-    try {
-      parts.push(typeof data === "string" ? data : JSON.stringify(data));
-    } catch {
-      parts.push(toKeyPart(data));
-    }
-  }
-  return parts.join("|");
 }

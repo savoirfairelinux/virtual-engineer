@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { AddressInfo } from "node:net";
 import { request as httpRequest } from "node:http";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
-import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
+import type { AgentCycle, AgentLogEvent, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
 import { createAdminServer as createAdminServerImpl } from "../../src/admin/adminServer.js";
 import type { AdminProviderSummary } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
@@ -202,6 +202,47 @@ async function readUntil(response: Response, expected: string): Promise<string> 
   }
   await reader.cancel();
   return text;
+}
+
+async function readStreamUntil(reader: ReadableStreamDefaultReader<Uint8Array>, expected: string): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  while (!text.includes(expected)) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text;
+}
+
+interface SseTestEvent {
+  id: string | undefined;
+  data: Record<string, unknown>;
+}
+
+function parseSseEvents(text: string): SseTestEvent[] {
+  return text.split("\n\n").flatMap((block) => {
+    const lines = block.split("\n");
+    const data = lines.find((line) => line.startsWith("data: "))?.slice(6);
+    if (data === undefined) return [];
+    const id = lines.find((line) => line.startsWith("id: "))?.slice(4);
+    return [{ id, data: JSON.parse(data) as Record<string, unknown> }];
+  });
+}
+
+function sseContent(event: SseTestEvent): unknown {
+  const data = event.data["data"];
+  return data && typeof data === "object" && "content" in data ? data.content : undefined;
+}
+
+function contentEvents(prefix: string, start: number, end: number): AgentLogEvent[] {
+  return Array.from({ length: end - start }, (_, offset) => ({
+    type: "assistant.message",
+    timestamp: new Date(Date.UTC(2026, 3, 7, 9) + start + offset).toISOString(),
+    data: { content: `${prefix}-${start + offset}` },
+    taskId: "task-1",
+    cycleNumber: 1,
+  }));
 }
 
 describe("createAdminServer", () => {
@@ -1895,6 +1936,109 @@ describe("SSE endpoints", () => {
       expect((text.match(/tool\.execution_start/g) ?? []).length).toBe(1);
     } finally {
       clearTaskEventBuffer(task.taskId);
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream replays at most 500 of 10,000 historical entries, then live events", async () => {
+    const { agentLogBus: bus } = await import("../../src/agents/agentEventBus.js");
+    const task = makeTask();
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getTask: async (taskId) => (taskId === task.taskId ? task : null),
+        getAgentCycles: async () => [makeCycle({
+          result: {
+            status: "success",
+            modifiedFiles: [],
+            summary: "Long-running cycle",
+            agentLogs: "",
+            agentEvents: contentEvents("history", 0, 10_000),
+            metadata: {},
+          },
+        })],
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    const ac = new AbortController();
+    try {
+      const response = await fetch(`${base}/api/admin/logs/stream?taskId=${encodeURIComponent(task.taskId)}`, { signal: ac.signal });
+      const reader = response.body!.getReader();
+      let text = await readStreamUntil(reader, '"history-9999"');
+      bus.emit("event", contentEvents("live", 0, 1)[0]);
+      text += await readStreamUntil(reader, '"live-0"');
+      await reader.cancel();
+
+      const [connected, ...entries] = parseSseEvents(text);
+      expect(connected?.data).toMatchObject({
+        type: "stream.connected",
+        data: { resumed: false, replayed: 500, omitted: 9_500, limit: 500 },
+      });
+      expect(connected?.id).toBeUndefined();
+      expect(entries.map(sseContent)).toEqual([
+        ...Array.from({ length: 500 }, (_, offset) => `history-${9_500 + offset}`),
+        "live-0",
+      ]);
+      for (const entry of entries) expect(entry.id).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    } finally {
+      ac.abort();
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream resumes after Last-Event-ID instead of replaying history again", async () => {
+    const task = makeTask();
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getTask: async (taskId) => (taskId === task.taskId ? task : null),
+        getAgentCycles: async () => [makeCycle({
+          result: {
+            status: "success",
+            modifiedFiles: [],
+            summary: "Short cycle",
+            agentLogs: "",
+            agentEvents: contentEvents("resume", 0, 20),
+            metadata: {},
+          },
+        })],
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    const url = `${base}/api/admin/logs/stream?taskId=${encodeURIComponent(task.taskId)}`;
+    try {
+      const first = (await fetch(url)).body!.getReader();
+      const firstEvents = parseSseEvents(await readStreamUntil(first, '"resume-19"'));
+      await first.cancel();
+      const cursor = firstEvents.find((event) => sseContent(event) === "resume-14")?.id;
+      expect(cursor).toMatch(/^[A-Za-z0-9_-]{16}$/);
+
+      const resumed = (await fetch(url, { headers: { "Last-Event-ID": cursor ?? "" } })).body!.getReader();
+      const [connected, ...entries] = parseSseEvents(await readStreamUntil(resumed, '"resume-19"'));
+      await resumed.cancel();
+
+      expect(connected?.data).toMatchObject({
+        type: "stream.connected",
+        data: { resumed: true, replayed: 5, omitted: 0, limit: 500 },
+      });
+      expect(entries.map(sseContent)).toEqual(["resume-15", "resume-16", "resume-17", "resume-18", "resume-19"]);
+    } finally {
       await closeServer(server);
     }
   });

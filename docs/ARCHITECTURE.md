@@ -80,6 +80,7 @@ src/
     adminTaskRoutes.ts    # /api/admin/tasks CRUD + actions
     adminPromptRoutes.ts  # /api/admin/prompts CRUD
     adminStreamRoutes.ts  # SSE endpoints (logs/stream, events/stream)
+    logStreamReplay.ts    # Bounded task log replay + Last-Event-ID resume
     adminIntegrationRoutes.ts # /api/admin/integrations + plugins + oauth-apps
     adminAgentsRoutes.ts  # /api/admin/agents CRUD + plugin OAuth
     adminProjectsRoutes.ts# /api/admin/projects CRUD
@@ -336,7 +337,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminOverviewRoutes.ts` | Dashboard overview aggregates + cost summary |
 | `adminTaskRoutes.ts` | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET .../cycles`, `GET .../transitions`, `PATCH .../pause`, `PATCH .../resume`, `POST .../retry`, `POST .../abandon` |
 | `adminPromptRoutes.ts` | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id`, `GET .../usage` |
-| `adminStreamRoutes.ts` | `GET /api/admin/logs/stream` (SSE), `GET /api/admin/events/stream` (SSE) |
+| `adminStreamRoutes.ts` | `GET /api/admin/logs/stream` (SSE; task streams replay at most 500 history entries and resume after `Last-Event-ID`), `GET /api/admin/events/stream` (SSE) |
 | `adminIntegrationRoutes.ts` | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE .../integrations/:id`, `POST .../test`, `PATCH .../{enable,disable}`, `POST .../discover`, `GET .../models`, `GET /api/admin/plugins`, `GET/POST/DELETE /api/admin/oauth-apps` |
 | `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
