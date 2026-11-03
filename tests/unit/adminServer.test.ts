@@ -1994,21 +1994,16 @@ describe("SSE endpoints", () => {
     }
   });
 
-  it("GET /api/admin/logs/stream resumes after Last-Event-ID instead of replaying history again", async () => {
+  it("GET /api/admin/logs/stream resumes only from the live buffer", async () => {
+    const { pushToTaskBuffer, clearTaskEventBuffer } = await import("../../src/agents/agentEventBus.js");
     const task = makeTask();
+    const live = contentEvents("resume", 0, 20);
+    let persisted: AgentCycle[] = [];
+    for (const event of live) pushToTaskBuffer(event);
     const server = createAdminServer({
       stateStore: makeStateStore({
         getTask: async (taskId) => (taskId === task.taskId ? task : null),
-        getAgentCycles: async () => [makeCycle({
-          result: {
-            status: "success",
-            modifiedFiles: [],
-            summary: "Short cycle",
-            agentLogs: "",
-            agentEvents: contentEvents("resume", 0, 20),
-            metadata: {},
-          },
-        })],
+        getAgentCycles: async () => persisted,
       }),
       config: {
         nodeEnv: "test",
@@ -2022,23 +2017,44 @@ describe("SSE endpoints", () => {
     });
     const base = await listen(server);
     const url = `${base}/api/admin/logs/stream?taskId=${encodeURIComponent(task.taskId)}`;
+    const connect = async (headers: Record<string, string>): Promise<SseTestEvent[]> => {
+      const abort = new AbortController();
+      try {
+        const reader = (await fetch(url, { headers, signal: abort.signal })).body!.getReader();
+        return parseSseEvents(await readStreamUntil(reader, '"resume-19"'));
+      } finally {
+        abort.abort();
+      }
+    };
     try {
-      const first = (await fetch(url)).body!.getReader();
-      const firstEvents = parseSseEvents(await readStreamUntil(first, '"resume-19"'));
-      await first.cancel();
-      const cursor = firstEvents.find((event) => sseContent(event) === "resume-14")?.id;
+      const cursor = (await connect({})).find((event) => sseContent(event) === "resume-14")?.id ?? "";
       expect(cursor).toMatch(/^[A-Za-z0-9_-]{16}$/);
 
-      const resumed = (await fetch(url, { headers: { "Last-Event-ID": cursor ?? "" } })).body!.getReader();
-      const [connected, ...entries] = parseSseEvents(await readStreamUntil(resumed, '"resume-19"'));
-      await resumed.cancel();
-
-      expect(connected?.data).toMatchObject({
+      const [resumed, ...missed] = await connect({ "Last-Event-ID": cursor });
+      expect(resumed?.data).toMatchObject({
         type: "stream.connected",
         data: { resumed: true, replayed: 5, omitted: 0, limit: 500 },
       });
-      expect(entries.map(sseContent)).toEqual(["resume-15", "resume-16", "resume-17", "resume-18", "resume-19"]);
+      expect(missed.map(sseContent)).toEqual(["resume-15", "resume-16", "resume-17", "resume-18", "resume-19"]);
+
+      // Completion persists plain output apart from events, then clears the buffer.
+      persisted = [makeCycle({
+        result: { status: "success", modifiedFiles: [], summary: "Done", agentLogs: "late diagnostic", agentEvents: live, metadata: {} },
+      })];
+      clearTaskEventBuffer(task.taskId);
+      const [fresh, ...replayed] = await connect({ "Last-Event-ID": cursor });
+      expect(fresh?.data).toMatchObject({
+        type: "stream.connected",
+        data: { resumed: false, replayed: 21, omitted: 0, limit: 500 },
+      });
+      expect(replayed.map((event) => sseContent(event) ?? event.data["message"])).toEqual([
+        "late diagnostic",
+        ...live.map((event) => (event.data as { content: string }).content),
+      ]);
     } finally {
+      clearTaskEventBuffer(task.taskId);
+      // fetch can leave an idle pooled socket open until its keep-alive expires.
+      server.closeAllConnections();
       await closeServer(server);
     }
   });

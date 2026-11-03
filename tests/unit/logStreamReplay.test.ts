@@ -20,6 +20,16 @@ function event(index: number): AgentLogEvent {
   };
 }
 
+function stderrLine(line: string): AgentLogEvent {
+  return {
+    type: "stderr.line",
+    timestamp: "2026-04-07T09:00:00.000Z",
+    data: { line },
+    taskId: TASK_ID,
+    cycleNumber: 1,
+  };
+}
+
 /** An event whose payload records every time the replay reads it. */
 function trackedEvent(index: number, touched: Set<number>, content = `event-${index}`): AgentLogEvent {
   return Object.defineProperty(event(index), "data", {
@@ -121,17 +131,30 @@ describe("selectLogStreamReplay", () => {
     for (const id of first) expect(id).toMatch(/^[A-Za-z0-9_-]{16}$/);
   });
 
-  it("resumes directly after the client's last event id", () => {
-    const cycles = [cycle(1, events(0, 20))];
-    const cursor = selectLogStreamReplay(cycles, [], undefined).entries[14]?.id;
+  it("resumes directly after a cursor that is still in the live buffer", () => {
+    const history = [cycle(1, events(0, 10))];
+    const cursor = selectLogStreamReplay(history, events(10, 20), undefined).entries.at(-6)?.id;
 
-    const replay = selectLogStreamReplay(cycles, [event(20)], cursor);
+    const replay = selectLogStreamReplay(history, events(10, 21), cursor);
 
     expect(labels(replay)).toEqual(eventLabels(15, 21));
     expect(replay.summary).toEqual({ resumed: true, replayed: 6, omitted: 0, limit: 500 });
   });
 
-  it("falls back to a bounded replay when the last event id is outside the window", () => {
+  it("replays afresh once the cursor's cycle completed and its live buffer was cleared", () => {
+    // A coding agent streams structured events and plain stderr lines in one
+    // order, but its completed cycle stores the plain lines apart from events.
+    const live = [event(0), stderrLine("diagnostic-1"), event(1)];
+    const cursor = selectLogStreamReplay([], live, undefined).entries.at(-1)?.id;
+    const completed = cycle(1, [event(0), event(1)], "diagnostic-1\ndiagnostic-2\ndiagnostic-3");
+
+    const replay = selectLogStreamReplay([completed], [], cursor);
+
+    expect(labels(replay)).toEqual(["diagnostic-1", "diagnostic-2", "diagnostic-3", "event-0", "event-1"]);
+    expect(replay.summary).toEqual({ resumed: false, replayed: 5, omitted: 0, limit: 500 });
+  });
+
+  it("falls back to a bounded replay when the cursor is not in the live buffer", () => {
     const history = [cycle(1, events(0, 600))];
     const staleCursor = selectLogStreamReplay([cycle(1, events(0, 51))], [], undefined).entries.at(-1)?.id;
 

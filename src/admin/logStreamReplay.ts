@@ -4,8 +4,8 @@
  * A task's persisted cycles can hold thousands of log lines and events. A
  * (re)connecting stream walks that history newest-first and normalizes only
  * the entries it replays, so older history is never sanitized or written.
- * Replayed entries carry compact SSE ids; a client that reconnects with
- * `Last-Event-ID` receives only what followed its last entry.
+ * Replayed entries carry compact SSE ids; a client that reconnects with a
+ * `Last-Event-ID` still in the live buffer receives only what followed it.
  */
 
 import { createHash } from "node:crypto";
@@ -31,7 +31,7 @@ export interface LogStreamReplayEntry {
 }
 
 export interface LogStreamReplaySummary {
-  /** True when the replay continues directly after the client's `Last-Event-ID`. */
+  /** True when the replay continues directly after a `Last-Event-ID` found in the live buffer. */
   readonly resumed: boolean;
   readonly replayed: number;
   /** Older history entries left out of this replay. */
@@ -50,6 +50,10 @@ export interface LogStreamReplay {
  * live buffer. History is ordered cycle by cycle (log lines, then events) and
  * followed by the buffer; when the buffer overlaps persisted events, the newest
  * copy keeps its position.
+ *
+ * Only the live buffer keeps the order in which entries were streamed: a
+ * completed cycle stores plain output apart from its events. A cursor is
+ * therefore resumed only from the buffer; any other cursor gets a fresh replay.
  */
 export function selectLogStreamReplay(
   cycles: readonly AgentCycle[],
@@ -70,15 +74,16 @@ export function selectLogStreamReplay(
       break;
     }
     examined += 1;
-    const key = streamEntryKey(candidate.value);
+    const { entry, live } = candidate.value;
+    const key = streamEntryKey(entry);
     if (keys.has(key)) continue;
     keys.add(key);
     const id = streamEntryId(key);
-    if (id === lastEventId) {
+    if (live && id === lastEventId) {
       resumed = true;
       break;
     }
-    newestFirst.push({ entry: candidate.value, key, id });
+    newestFirst.push({ entry, key, id });
   }
 
   const omitted = resumed || exhausted
@@ -137,17 +142,25 @@ export function streamEntryKey(entry: LogStreamEntry): string {
   return parts.join("|");
 }
 
+interface ReplayCandidate {
+  readonly entry: LogStreamEntry;
+  /** True for live-buffer entries, the only ones whose order matches the live stream. */
+  readonly live: boolean;
+}
+
 /** Lazily serialize history newest-first so unreplayed entries are never normalized. */
 function* replayCandidatesNewestFirst(
   cycles: readonly AgentCycle[],
   buffered: readonly AgentLogEvent[],
-): Generator<LogStreamEntry> {
-  for (const event of newestFirst(buffered)) yield serializeAgentEventEntry(event);
+): Generator<ReplayCandidate> {
+  for (const event of newestFirst(buffered)) yield { entry: serializeAgentEventEntry(event), live: true };
   for (const cycle of newestFirst(cycles)) {
-    for (const event of newestFirst(cycle.result.agentEvents ?? [])) yield serializeAgentEventEntry(event);
+    for (const event of newestFirst(cycle.result.agentEvents ?? [])) {
+      yield { entry: serializeAgentEventEntry(event), live: false };
+    }
     const timestamp = toIsoTimestamp(cycle.createdAt);
     for (const line of nonEmptyLinesNewestFirst(cycle.result.agentLogs)) {
-      yield { timestamp, taskId: cycle.taskId, level: "info", message: line, source: "agent" };
+      yield { entry: { timestamp, taskId: cycle.taskId, level: "info", message: line, source: "agent" }, live: false };
     }
   }
 }
