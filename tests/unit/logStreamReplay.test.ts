@@ -111,13 +111,22 @@ describe("selectLogStreamReplay", () => {
     expect(replay.summary).toEqual({ resumed: false, replayed: 6, omitted: 0, limit: 500 });
   });
 
-  it("does not report overlap with the live buffer as omitted history", () => {
-    const persisted = events(0, 400);
+  it("counts an event that a running review both persisted and buffered once", () => {
+    const replay = selectLogStreamReplay([cycle(1, events(0, 500))], events(0, 500), undefined);
 
-    const replay = selectLogStreamReplay([cycle(1, persisted)], persisted.slice(), undefined);
+    expect(labels(replay)).toEqual(eventLabels(0, 500));
+    expect(replay.summary).toEqual({ resumed: false, replayed: 500, omitted: 0, limit: 500 });
+  });
 
-    expect(labels(replay)).toEqual(eventLabels(0, 400));
-    expect(replay.summary.omitted).toBe(0);
+  it("counts only history older than the buffered copies and reads no other payload", () => {
+    const touched = new Set<number>();
+    const persisted = Array.from({ length: 10_000 }, (_, index) => trackedEvent(index, touched));
+
+    const replay = selectLogStreamReplay([cycle(1, persisted)], events(9_500, 10_000), undefined);
+
+    expect(labels(replay)).toEqual(eventLabels(9_500, 10_000));
+    expect(replay.summary).toEqual({ resumed: false, replayed: 500, omitted: 9_500, limit: 500 });
+    expect(Math.min(...touched)).toBeGreaterThanOrEqual(9_500);
   });
 
   it("gives every replayed entry a stable compact event id", () => {

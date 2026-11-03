@@ -34,7 +34,7 @@ export interface LogStreamReplaySummary {
   /** True when the replay continues directly after a `Last-Event-ID` found in the live buffer. */
   readonly resumed: boolean;
   readonly replayed: number;
-  /** Older history entries left out of this replay. */
+  /** Older history records left out of this replay; a record both persisted and buffered counts once. */
   readonly omitted: number;
   readonly limit: number;
 }
@@ -48,8 +48,9 @@ export interface LogStreamReplay {
 /**
  * Select the newest history entries to replay from persisted cycles and the
  * live buffer. History is ordered cycle by cycle (log lines, then events) and
- * followed by the buffer; when the buffer overlaps persisted events, the newest
- * copy keeps its position.
+ * followed by the buffer. A running review persists the same events it
+ * buffers; such a persisted copy is skipped, so the buffered copy keeps its
+ * position and the record is counted once.
  *
  * Only the live buffer keeps the order in which entries were streamed: a
  * completed cycle stores plain output apart from its events. A cursor is
@@ -60,9 +61,10 @@ export function selectLogStreamReplay(
   buffered: readonly AgentLogEvent[],
   lastEventId: string | undefined,
 ): LogStreamReplay {
+  const isBufferedCopy = bufferedCopyMatcher(buffered);
   const newestFirst: LogStreamReplayEntry[] = [];
   const keys = new Set<string>();
-  const candidates = replayCandidatesNewestFirst(cycles, buffered);
+  const candidates = replayCandidatesNewestFirst(cycles, buffered, isBufferedCopy);
   let examined = 0;
   let exhausted = false;
   let resumed = false;
@@ -88,7 +90,7 @@ export function selectLogStreamReplay(
 
   const omitted = resumed || exhausted
     ? 0
-    : Math.max(0, countReplayCandidates(cycles, buffered) - examined);
+    : Math.max(0, countReplayCandidates(cycles, buffered, isBufferedCopy) - examined);
   return {
     entries: newestFirst.reverse(),
     summary: { resumed, replayed: newestFirst.length, omitted, limit: LOG_STREAM_REPLAY_LIMIT },
@@ -152,11 +154,12 @@ interface ReplayCandidate {
 function* replayCandidatesNewestFirst(
   cycles: readonly AgentCycle[],
   buffered: readonly AgentLogEvent[],
+  isBufferedCopy: (event: AgentLogEvent) => boolean,
 ): Generator<ReplayCandidate> {
   for (const event of newestFirst(buffered)) yield { entry: serializeAgentEventEntry(event), live: true };
   for (const cycle of newestFirst(cycles)) {
     for (const event of newestFirst(cycle.result.agentEvents ?? [])) {
-      yield { entry: serializeAgentEventEntry(event), live: false };
+      if (!isBufferedCopy(event)) yield { entry: serializeAgentEventEntry(event), live: false };
     }
     const timestamp = toIsoTimestamp(cycle.createdAt);
     for (const line of nonEmptyLinesNewestFirst(cycle.result.agentLogs)) {
@@ -165,14 +168,56 @@ function* replayCandidatesNewestFirst(
   }
 }
 
-function countReplayCandidates(cycles: readonly AgentCycle[], buffered: readonly AgentLogEvent[]): number {
+function countReplayCandidates(
+  cycles: readonly AgentCycle[],
+  buffered: readonly AgentLogEvent[],
+  isBufferedCopy: (event: AgentLogEvent) => boolean,
+): number {
   let total = buffered.length;
   for (const cycle of cycles) {
-    total += cycle.result.agentEvents?.length ?? 0;
+    for (const event of cycle.result.agentEvents ?? []) {
+      if (!isBufferedCopy(event)) total += 1;
+    }
     const lines = nonEmptyLinesNewestFirst(cycle.result.agentLogs);
     while (!lines.next().done) total += 1;
   }
   return total;
+}
+
+/**
+ * Recognize persisted copies of buffered events by their raw content. A
+ * payload is serialized only when the event's cycle, timestamp, and type match
+ * a buffered event, so recognizing copies reads at most about one payload per
+ * buffered event.
+ */
+function bufferedCopyMatcher(buffered: readonly AgentLogEvent[]): (event: AgentLogEvent) => boolean {
+  const prefixes = new Set<string>();
+  const identities = new Set<string>();
+  for (const event of buffered) {
+    const identity = eventIdentity(event);
+    if (identity === undefined) continue;
+    prefixes.add(eventPrefix(event));
+    identities.add(identity);
+  }
+  if (identities.size === 0) return () => false;
+  return (event) => {
+    if (!prefixes.has(eventPrefix(event))) return false;
+    const identity = eventIdentity(event);
+    return identity !== undefined && identities.has(identity);
+  };
+}
+
+function eventPrefix(event: AgentLogEvent): string {
+  return `${event.cycleNumber}|${event.timestamp}|${event.type}`;
+}
+
+/** Raw identity of an event; undefined when its payload cannot be serialized, and so cannot have been persisted. */
+function eventIdentity(event: AgentLogEvent): string | undefined {
+  try {
+    return `${eventPrefix(event)}|${JSON.stringify(event.data) ?? ""}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function* newestFirst<T>(items: readonly T[]): Generator<T> {
