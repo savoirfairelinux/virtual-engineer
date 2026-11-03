@@ -8,8 +8,6 @@ EXPECTED_COMMIT="${VE_EXPECTED_COMMIT:-}"
 CHECKOUT_NAME="virtual-engineer"
 INSTALL_DIR=""
 START_ARGS=()
-TEMP_ENV_FILE=""
-TEMP_SECRET_FILE=""
 
 info() {
   printf '[INFO]  %s\n' "$*"
@@ -40,17 +38,6 @@ Pass start.sh options after --, for example:
   curl -fsSL https://virtual-engineer.dev/install.sh | bash -s -- --no-k3s-install
 EOF
 }
-
-cleanup() {
-  if [[ -n "$TEMP_ENV_FILE" ]]; then
-    rm -f "$TEMP_ENV_FILE"
-  fi
-  if [[ -n "$TEMP_SECRET_FILE" ]]; then
-    rm -f "$TEMP_SECRET_FILE"
-  fi
-}
-
-trap cleanup EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -212,76 +199,6 @@ verify_checkout() {
 
 verify_checkout
 
-ENV_FILE="${INSTALL_DIR}/.env"
-ENV_EXAMPLE="${INSTALL_DIR}/.env.example"
-[[ -f "$ENV_EXAMPLE" && ! -L "$ENV_EXAMPLE" ]] \
-  || error "Missing regular .env.example in ${INSTALL_DIR}."
-if [[ -L "$ENV_FILE" ]]; then
-  error "Refusing to write through symlink: ${ENV_FILE}"
-fi
-if [[ ! -e "$ENV_FILE" ]]; then
-  cp "$ENV_EXAMPLE" "$ENV_FILE" \
-    || error "Could not create ${ENV_FILE} from .env.example."
-elif [[ ! -f "$ENV_FILE" ]]; then
-  error "The .env path exists but is not a regular file: ${ENV_FILE}"
-fi
-
-has_admin_auth_secret() {
-  local line value
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?ADMIN_AUTH_SECRET[[:space:]]*=(.*)$ ]]; then
-      value="${BASH_REMATCH[2]}"
-      value="${value#${value%%[![:space:]]*}}"
-      value="${value%${value##*[![:space:]]}}"
-      if [[ ${#value} -ge 2 ]] \
-        && { [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]] \
-          || [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; }; then
-        value="${value:1:${#value}-2}"
-      fi
-      [[ -n "$value" && "$value" != \#* ]] && return 0
-    fi
-  done < "$ENV_FILE"
-  return 1
-}
-
-if ! has_admin_auth_secret; then
-  secret="$(openssl rand -hex 32 | tr -d '\r\n')" \
-    || error "Could not generate ADMIN_AUTH_SECRET with OpenSSL."
-  [[ "$secret" =~ ^[a-f0-9]{64}$ ]] \
-    || error "OpenSSL returned an invalid ADMIN_AUTH_SECRET."
-  TEMP_ENV_FILE="$(mktemp "${ENV_FILE}.install.XXXXXX")" \
-    || error "Could not prepare a temporary environment file."
-  TEMP_SECRET_FILE="$(mktemp "${ENV_FILE}.secret.XXXXXX")" \
-    || error "Could not prepare a temporary secret file."
-  chmod 600 "$TEMP_ENV_FILE"
-  chmod 600 "$TEMP_SECRET_FILE"
-  printf '%s\n' "$secret" > "$TEMP_SECRET_FILE"
-  awk -v secret_file="$TEMP_SECRET_FILE" '
-    BEGIN {
-      if ((getline secret < secret_file) <= 0) exit 1
-      close(secret_file)
-    }
-    /^[[:space:]]*(export[[:space:]]+)?ADMIN_AUTH_SECRET[[:space:]]*=/ {
-      if (!replaced) {
-        print "ADMIN_AUTH_SECRET=" secret
-        replaced = 1
-      }
-      next
-    }
-    { print }
-    END {
-      if (!replaced) print "ADMIN_AUTH_SECRET=" secret
-    }
-  ' "$ENV_FILE" > "$TEMP_ENV_FILE" \
-    || error "Could not update ${ENV_FILE}."
-  mv "$TEMP_ENV_FILE" "$ENV_FILE" \
-    || error "Could not install the generated environment file."
-  TEMP_ENV_FILE=""
-  rm -f "$TEMP_SECRET_FILE"
-  TEMP_SECRET_FILE=""
-  unset secret
-fi
-chmod 600 "$ENV_FILE" || error "Could not protect ${ENV_FILE} with mode 0600."
 assert_safe_directory "$INSTALL_DIR"
 
 cd "$INSTALL_DIR"

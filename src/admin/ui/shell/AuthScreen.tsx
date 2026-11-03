@@ -161,7 +161,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   integrations, OAuth, generated SSH keys, and related agent or review workflows are unavailable.
                 </div>
                 <div style={{ marginBottom: "8px" }}>
-                  For production, generate it with <code>openssl rand -hex 32</code>, add
+                  Before adding provider credentials or relying on backups, generate it with
+                  {" "}<code>openssl rand -hex 32</code>, add
                   {" "}<code>ADMIN_AUTH_SECRET=&lt;generated value&gt;</code> to <code>.env</code>, then run
                   {" "}<code>docker rm -f ve-orchestrator &amp;&amp; ./scripts/start.sh</code>.
                 </div>

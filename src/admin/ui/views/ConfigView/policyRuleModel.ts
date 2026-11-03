@@ -78,6 +78,7 @@ export const POLICY_GROUPS: readonly PolicyGroupDef[] = [
       { permission: "concurrency.read", label: "Concurrency", global: true },
       { permission: "system.read", label: "Read system settings", global: true },
       { permission: "system.write", label: "Edit system settings", global: true },
+      { permission: "system.backup.manage", label: "Manage backups", global: true },
       { permission: "user.manage", label: "Manage users", global: true },
       { permission: "audit.read", label: "Audit log", global: true },
       { permission: "policy.manage", label: "Manage groups & policies", global: true },

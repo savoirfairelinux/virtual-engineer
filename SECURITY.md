@@ -56,6 +56,35 @@ The admin dashboard is protected by account-based authentication (username/passw
 
 Provider credentials are stored encrypted in SQLite and masked on all admin API reads. New plaintext credential writes are rejected. Webhook secrets support per-integration rotation and are never returned in plaintext after initial creation.
 
+### Backup and Data-at-Rest Encryption
+
+New backup archives use a streaming AES-256-GCM envelope (`.tar.gz.enc`). The
+external JSON keyring contains an active key ID and 32-byte hexadecimal keys;
+it is distinct from `ADMIN_AUTH_SECRET`, is not stored in SQLite or an archive,
+and must live outside both the data and backup directories. Local keyring files
+must have private permissions (for example `0600`); Docker mounts the file
+read-only, and Kubernetes mounts a dedicated Secret key read-only with mode
+`0440`. Keep an independently protected/escrowed copy. During rotation, add a
+new active key but retain every old key needed by retained and off-site archives;
+remove a key only after its archives expire or are re-encrypted. A restore needs
+both the matching backup key and the original `ADMIN_AUTH_SECRET` for manifest
+HMAC verification and provider-credential decryption. Historical plaintext
+`.tar.gz` archives remain restorable with the original admin secret.
+
+AES-GCM authentication completes in private staging before an encrypted archive
+is parsed or installed. This protects archive confidentiality and integrity,
+but does not encrypt the active SQLite file or temporary plaintext staging.
+Docker operators must place `DATA_DIR` (including the default `BACKUP_DIR`) on
+host block-encrypted storage such as LUKS. Kubernetes operators must select and
+verify a CSI StorageClass that encrypts persistent volumes at rest; the deploy
+script checks that the class exists and is consistently selected, but cannot
+prove its provider-side encryption. Kubernetes Secrets also require encryption
+at rest in the cluster control plane and restrictive RBAC; a Secret object alone
+is not a key-management system. Keep independent encrypted backup copies and
+perform periodic restore drills with recovered keys. These controls support
+ISO/IEC 27001:2022 A.8.24 (use of cryptography) and A.8.13 (information backup)
+objectives, but do not by themselves establish organizational compliance.
+
 ### Content Security Policy
 
 All dashboard `<script>` tags use a per-request nonce. Bootstrap JSON embedded in the HTML is sanitised with Unicode escapes (`\u003c`, `\u003e`, `\u0026`) to prevent script injection through the JSON context.

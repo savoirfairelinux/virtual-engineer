@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { getConfig, resetConfig } from "../../src/config.js";
 
 describe("getConfig", () => {
@@ -10,6 +13,11 @@ describe("getConfig", () => {
       "NODE_ENV",
       "LOG_LEVEL",
       "DATABASE_PATH",
+      "BACKUP_DIR",
+      "BACKUP_ACCESS_GID",
+      "BACKUP_KEYRING_FILE",
+      "VE_RESTORE_FROM",
+      "VE_RESTORE_FORCE",
       "AGENT_MODE",
       "ADMIN_API_ENABLED",
       "ADMIN_API_HOST",
@@ -118,6 +126,15 @@ describe("getConfig", () => {
       expect(getConfig().databasePath).toBe("./data/virtual-engineer.db");
     });
 
+    it("places backups beside the database by default", () => {
+      expect(getConfig().backupDir).toBe(resolve("data/backups"));
+    });
+
+    it("disables restore by default", () => {
+      expect(getConfig().restoreFrom).toBeUndefined();
+      expect(getConfig().restoreForce).toBe(false);
+    });
+
     it("agentContainerImage defaults to virtual-engineer-workspace:latest", () => {
       expect(getConfig().agentContainerImage).toBe("virtual-engineer-workspace:latest");
     });
@@ -164,6 +181,110 @@ describe("getConfig", () => {
       process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"] = "10000";
       resetConfig();
       expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(10_000);
+    });
+
+    it("resolves backup and restore paths and parses the force flag", () => {
+      process.env["BACKUP_DIR"] = "./custom-backups";
+      process.env["VE_RESTORE_FROM"] = "./restore/ve-backup.tar.gz";
+      process.env["VE_RESTORE_FORCE"] = "true";
+      resetConfig();
+
+      const config = getConfig();
+      expect(config.backupDir).toBe(resolve("./custom-backups"));
+      expect(config.restoreFrom).toBe(resolve("./restore/ve-backup.tar.gz"));
+      expect(config.restoreForce).toBe(true);
+    });
+
+    it("parses the backup access GID", () => {
+      process.env["BACKUP_ACCESS_GID"] = "1000";
+      resetConfig();
+
+      expect(getConfig().backupAccessGid).toBe(1000);
+    });
+
+    it("resolves the backup keyring path", () => {
+      process.env["BACKUP_KEYRING_FILE"] = "./secrets/backup-keyring.json";
+      resetConfig();
+
+      expect(getConfig().backupKeyringFile).toBe(resolve("./secrets/backup-keyring.json"));
+    });
+
+    it.each(["./data/keyring.json", "./data/nested/keyring.json"])(
+      "rejects a backup keyring in the database directory: %s",
+      (keyringFile) => {
+        process.env["DATABASE_PATH"] = "./data/ve.db";
+        process.env["BACKUP_KEYRING_FILE"] = keyringFile;
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      },
+    );
+
+    it("rejects a keyring inside the database directory through a symlinked parent", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "data"));
+        symlinkSync(join(root, "data"), join(root, "alias"), "dir");
+        process.env["DATABASE_PATH"] = join(root, "data", "ve.db");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "alias", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a keyring beside the actual database when DATABASE_PATH is a symlink", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "data"));
+        mkdirSync(join(root, "alias"));
+        writeFileSync(join(root, "data", "ve.db"), "");
+        symlinkSync(join(root, "data", "ve.db"), join(root, "alias", "ve.db"));
+        process.env["DATABASE_PATH"] = join(root, "alias", "ve.db");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "data", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*DATABASE_PATH/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a keyring inside a custom backup directory through a symlinked parent", () => {
+      const root = mkdtempSync(join(tmpdir(), "ve-config-keyring-"));
+      try {
+        mkdirSync(join(root, "backups"));
+        symlinkSync(join(root, "backups"), join(root, "alias"), "dir");
+        process.env["DATABASE_PATH"] = join(root, "data", "ve.db");
+        process.env["BACKUP_DIR"] = join(root, "backups");
+        process.env["BACKUP_KEYRING_FILE"] = join(root, "alias", "keyring.json");
+        resetConfig();
+
+        expect(() => getConfig()).toThrow(/BACKUP_KEYRING_FILE.*outside.*BACKUP_DIR/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("derives the backup directory from a custom database path", () => {
+      process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
+      resetConfig();
+      expect(getConfig().backupDir).toBe("/var/lib/ve/backups");
+    });
+
+    it("treats empty backup and restore paths as unset", () => {
+      process.env["DATABASE_PATH"] = "/var/lib/ve/state.db";
+      process.env["BACKUP_DIR"] = "";
+      process.env["BACKUP_KEYRING_FILE"] = "";
+      process.env["VE_RESTORE_FROM"] = "";
+      resetConfig();
+
+      const config = getConfig();
+      expect(config.backupDir).toBe("/var/lib/ve/backups");
+      expect(config.backupKeyringFile).toBeUndefined();
+      expect(config.restoreFrom).toBeUndefined();
     });
   });
 

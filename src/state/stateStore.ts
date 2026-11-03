@@ -53,6 +53,7 @@ import { createTaskStore } from "./stores/taskStore.js";
 import type { UserStoreApi } from "./stores/userStore.js";
 import { createUserStore } from "./stores/userStore.js";
 import { runDatabaseMigrations } from "./databaseMigrations.js";
+import { sanitizeBackupSnapshot } from "./backupSnapshot.js";
 import * as schema from "./schema.js";
 import type { LogEntityKind } from "../logger.js";
 
@@ -253,6 +254,11 @@ export class SqliteStateStore {
       if (typeof value === "string" && value !== "") context[key] = value;
     }
     return Object.keys(context).length > 0 ? context : undefined;
+  }
+
+  async backupDatabaseTo(destinationPath: string): Promise<void> {
+    await this.raw.backup(destinationPath);
+    await sanitizeBackupSnapshot(destinationPath);
   }
 
   /** Convenience helper: fetch the ProjectRecord bound to a task via its projectId. */

@@ -71,6 +71,13 @@
       "when": 1791987505673,
       "tag": "0009_sad_sabra",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792603869946,
+      "tag": "0010_backup_schedule",
+      "breakpoints": true
     }
   ]
 }
