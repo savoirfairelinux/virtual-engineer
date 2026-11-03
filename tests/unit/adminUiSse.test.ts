@@ -60,4 +60,32 @@ describe("connectSse", () => {
 
     expect(onEvent).not.toHaveBeenCalled();
   });
+
+  it("sends the last received event id when it reconnects", async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("id: first\ndata: {}\n\ndata: {\"control\":true}\n\nid: latest\ndata: {}\n\n"));
+          controller.close();
+        },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>(), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onEvent = vi.fn();
+    const states: string[] = [];
+
+    const cleanup = connectSse("/stream", onEvent, undefined, (state) => states.push(state));
+    await vi.waitFor(() => expect(states).toContain("retrying"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    cleanup();
+
+    const headersOf = (call: number): Headers =>
+      new Headers((fetchMock.mock.calls[call] as [string, RequestInit])[1].headers);
+    expect(onEvent).toHaveBeenCalledTimes(3);
+    expect(headersOf(0).has("last-event-id")).toBe(false);
+    expect(headersOf(1).get("last-event-id")).toBe("latest");
+    expect(headersOf(1).get("authorization")).toBe("Bearer session-token");
+  });
 });

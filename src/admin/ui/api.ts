@@ -243,7 +243,9 @@ export type SseConnectionState = "connecting" | "open" | "retrying" | "forbidden
 
 /**
  * Connect to an SSE stream using fetch (to pass auth headers).
- * Auto-reconnects with exponential backoff. Returns a cleanup function.
+ * Auto-reconnects with exponential backoff and, like EventSource, sends the
+ * last received event `id` as `Last-Event-ID` so the server can resume the
+ * stream. Returns a cleanup function.
  */
 export function connectSse(
   path: string,
@@ -254,6 +256,7 @@ export function connectSse(
   let abort: AbortController | null = null;
   let stopped = false;
   let backoffMs = 1000;
+  let lastEventId = "";
 
   async function connect(): Promise<void> {
     if (stopped) return;
@@ -261,8 +264,10 @@ export function connectSse(
     abort = new AbortController();
     const requestToken = getStoredToken();
     try {
+      const headers = authHeaders(requestToken);
+      if (lastEventId) headers["Last-Event-ID"] = lastEventId;
       const res = await fetch(path, {
-        headers: authHeaders(requestToken),
+        headers,
         signal: abort.signal,
       });
       if (res.status === 401) {
@@ -300,6 +305,10 @@ export function connectSse(
           for (const line of lines) {
             if (line.startsWith("event: ")) eventType = line.slice(7).trim();
             else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+            else if (line.startsWith("id:")) {
+              const id = line.slice(line.startsWith("id: ") ? 4 : 3);
+              if (!id.includes("\0")) lastEventId = id;
+            }
           }
           if (dataLines.length > 0) onEvent(eventType, dataLines.join("\n"));
         }

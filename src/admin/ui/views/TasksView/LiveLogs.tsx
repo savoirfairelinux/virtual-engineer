@@ -8,8 +8,8 @@ import type { ToneKey } from "../../states.ts";
 import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { renderPayload } from "./liveLogFormat.ts";
 import {
-  appendLiveLogEntry,
   createLiveLogWindow,
+  receiveLiveLogEntry,
   type LiveLogEntry as StreamEntry,
 } from "./liveLogWindow.ts";
 
@@ -24,7 +24,6 @@ const LOG_TAG_TONE: Record<string, ToneKey> = {
   PARSING:       "warn",
   POSTING:       "warn",
   COMPLETED:     "ok",
-  "stream.connected": "ok",
   "review.prompt_received": "info",
   "session.start": "active",
   "assistant.message": "active",
@@ -153,7 +152,7 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;
         const normalized = normalizeIncomingEntry(parsed, nextId.current++);
         if (!normalized) return;
-        setLogWindow((previous) => appendLiveLogEntry(previous, normalized));
+        setLogWindow((previous) => receiveLiveLogEntry(previous, normalized));
         // auto-scroll
         requestAnimationFrame(() => {
           if (scrollRef.current) {
@@ -168,6 +167,10 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
   const shown = entries.filter((e) => matchesFilter(e, filter));
   const metrics = extractMetrics(entries);
   const connectionTone = TONE[CONNECTION_TONE[connectionState]];
+  const omitted = logWindow.omitted;
+  const omittedNotice = omitted > 0
+    ? `${omitted.toLocaleString()} older ${omitted === 1 ? "entry" : "entries"} omitted · showing the latest ${entries.length.toLocaleString()}; metrics cover shown entries only`
+    : null;
 
   const metricRow = [
     { k: "Tool calls",     v: metrics.toolCalls.toLocaleString() },
@@ -231,6 +234,16 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
           </button>
         ))}
       </div>
+
+      {omittedNotice && (
+        <div
+          role="note"
+          className="mono"
+          style={{ padding: "8px 16px", borderBottom: "1px solid var(--border-soft)", fontSize: "11px", color: "var(--text-faint)" }}
+        >
+          {omittedNotice}
+        </div>
+      )}
 
       {/* log feed */}
       <div ref={scrollRef} style={{ maxHeight: "320px", overflowY: "auto" }}>
