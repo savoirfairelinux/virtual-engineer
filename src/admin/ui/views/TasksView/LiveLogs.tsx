@@ -8,9 +8,8 @@ import type { ToneKey } from "../../states.ts";
 import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { renderPayload } from "./liveLogFormat.ts";
 import {
-  appendLiveLogEntry,
   createLiveLogWindow,
-  startLiveLogReplay,
+  receiveLiveLogEntry,
   type LiveLogEntry as StreamEntry,
 } from "./liveLogWindow.ts";
 
@@ -25,7 +24,6 @@ const LOG_TAG_TONE: Record<string, ToneKey> = {
   PARSING:       "warn",
   POSTING:       "warn",
   COMPLETED:     "ok",
-  "stream.connected": "ok",
   "review.prompt_received": "info",
   "session.start": "active",
   "assistant.message": "active",
@@ -154,10 +152,7 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;
         const normalized = normalizeIncomingEntry(parsed, nextId.current++);
         if (!normalized) return;
-        setLogWindow((previous) => appendLiveLogEntry(
-          normalized.type === "stream.connected" ? startLiveLogReplay(previous, normalized.data) : previous,
-          normalized,
-        ));
+        setLogWindow((previous) => receiveLiveLogEntry(previous, normalized));
         // auto-scroll
         requestAnimationFrame(() => {
           if (scrollRef.current) {

@@ -34,6 +34,17 @@ export function startLiveLogReplay(window: LiveLogWindow, replay: unknown): Live
   return createLiveLogWindow(typeof omitted === "number" && Number.isFinite(omitted) && omitted > 0 ? Math.floor(omitted) : 0);
 }
 
+/**
+ * Apply one stream entry. A `stream.connected` announcement only carries replay
+ * details and never takes a row: as a row it would count as omitted after a
+ * full replay and evict a real entry on every resumed reconnect.
+ */
+export function receiveLiveLogEntry(window: LiveLogWindow, entry: LiveLogEntry): LiveLogWindow {
+  return entry.type === "stream.connected"
+    ? startLiveLogReplay(window, entry.data)
+    : appendLiveLogEntry(window, entry);
+}
+
 export function liveLogEntryKey(entry: LiveLogEntry): string {
   const parts = [
     entry.timestamp,

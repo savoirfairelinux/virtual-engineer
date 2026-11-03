@@ -3,6 +3,7 @@ import {
   appendLiveLogEntry,
   createLiveLogWindow,
   liveLogEntryKey,
+  receiveLiveLogEntry,
   startLiveLogReplay,
   type LiveLogEntry,
 } from "../../src/admin/ui/views/TasksView/liveLogWindow.js";
@@ -91,5 +92,23 @@ describe("live log window", () => {
       expect(fresh.entries).toEqual([]);
       expect(fresh.omitted).toBe(0);
     }
+  });
+
+  it("keeps connection announcements out of the bounded window", () => {
+    const announcement = (replay: unknown): LiveLogEntry => ({
+      id: -1,
+      timestamp: new Date(0).toISOString(),
+      type: "stream.connected",
+      message: "Live log stream connected",
+      data: replay,
+    });
+    let window = receiveLiveLogEntry(createLiveLogWindow(), announcement({ resumed: false, replayed: 500, omitted: 9_500, limit: 500 }));
+    for (let id = 0; id < 500; id++) {
+      window = receiveLiveLogEntry(window, entry(id));
+    }
+
+    expect(window.entries).toHaveLength(500);
+    expect(window.omitted).toBe(9_500);
+    expect(receiveLiveLogEntry(window, announcement({ resumed: true, replayed: 0, omitted: 0, limit: 500 }))).toBe(window);
   });
 });

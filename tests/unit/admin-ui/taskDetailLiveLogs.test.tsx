@@ -133,6 +133,7 @@ describe("task detail live logs", () => {
     expect(await screen.findByText("latest replayed entry")).toBeTruthy();
     // Locale-formatted counts may use no-break spaces, which the DOM text normalizer collapses.
     const notice = `${(9_500).toLocaleString()} older entries omitted`.replace(/\s+/g, " ");
-    expect(await screen.findByText(notice, { exact: false })).toBeTruthy();
+    expect((await screen.findByText(notice, { exact: false })).textContent).toContain("showing the latest 1;");
+    expect(screen.queryByText("Live log stream connected")).toBeNull();
   });
 });
