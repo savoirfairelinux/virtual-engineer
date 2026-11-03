@@ -134,6 +134,20 @@ describe("task interactions", () => {
     expect(screen.getByLabelText("Task results").textContent).toBe("1/6");
   });
 
+  it("matches the search box against the owning project name", () => {
+    renderQueue([
+      { ...task, taskId: "alpha-task", ticketTitle: "Alpha work", projectId: "p-alpha", projectName: "Payments API" },
+      { ...task, taskId: "beta-task", ticketTitle: "Beta work", projectId: "p-beta", projectName: "Mobile App" },
+      { ...task, taskId: "orphan-task", ticketTitle: "Orphan work", projectId: null, projectName: null },
+    ]);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search tasks" }), { target: { value: "payments" } });
+    expect(screen.getByRole("button", { name: "Inspect task Alpha work" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Inspect task Beta work" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Inspect task Orphan work" })).toBeNull();
+    expect(screen.getByLabelText("Task results").textContent).toBe("1/3");
+  });
+
   it("shows status labels without numbers and keeps every choice available", () => {
     renderQueue();
     fireEvent.click(screen.getByRole("button", { name: "Active" }));

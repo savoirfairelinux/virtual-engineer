@@ -93,6 +93,22 @@ export function createTaskPermissionResolver(
   };
 }
 
+/** Memoized `projectId` → project name lookup shared by task list serializers. */
+export function createTaskProjectNameResolver(
+  projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> }
+): (task: Task) => Promise<string | null> {
+  const names = new Map<ProjectId, Promise<string | null>>();
+  return async (task) => {
+    if (task.projectId == null || !projectStore) return null;
+    let pending = names.get(task.projectId);
+    if (!pending) {
+      pending = projectStore.getProjectById(task.projectId).then((project) => project?.name ?? null, () => null);
+      names.set(task.projectId, pending);
+    }
+    return pending;
+  };
+}
+
 /** Subset of state-store methods required by the task routes. */
 export interface TaskRouteStore {
   getAllTasks(): Promise<Task[]>;
@@ -139,12 +155,14 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       }
     }
     const resolvePermissions = createTaskPermissionResolver(req, deps.projectStore);
+    const resolveProjectName = createTaskProjectNameResolver(deps.projectStore);
     writeJson(res, 200, {
       tasks: await Promise.all(deduplicated.map(async (t) => {
         const s = serializeTask(t);
         s["waitingForAgentSlot"] = deps.isTaskWaiting?.(t.taskId) ?? false;
         if (!s["reviewUrl"]) s["reviewUrl"] = cprReviewUrlByTaskId.get(t.taskId) ?? null;
         s["permissions"] = await resolvePermissions(t);
+        s["projectName"] = await resolveProjectName(t);
         return s;
       })),
     });
@@ -157,6 +175,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
     const serialized = serializeTask(task);
     serialized["permissions"] = await createTaskPermissionResolver(req, deps.projectStore)(task);
+    serialized["projectName"] = await createTaskProjectNameResolver(deps.projectStore)(task);
     serialized["waitingForAgentSlot"] = deps.isTaskWaiting?.(taskId) ?? false;
     serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
       repoKey: c.repoKey,
@@ -332,6 +351,7 @@ export function serializeTask(task: Task): Record<string, unknown> {
     ticketUrl: task.ticketUrl,
     reviewUrl: task.reviewUrl,
     displayId: task.displayId ?? task.ticketId,
+    projectId: task.projectId ?? null,
     createdAt: toIsoTimestamp(task.createdAt),
     updatedAt: toIsoTimestamp(task.updatedAt),
   };

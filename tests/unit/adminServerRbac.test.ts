@@ -1063,9 +1063,20 @@ describe("adminServer PBAC project scoping", () => {
     waitingTaskIds.add(taskId);
 
     const ownerList = await fetch(`${baseUrl}/api/admin/tasks`, authed(owner.token));
-    const ownerBody = (await ownerList.json()) as { tasks: Array<{ ticketId: string; waitingForAgentSlot: boolean }> };
+    const ownerBody = (await ownerList.json()) as {
+      tasks: Array<{ ticketId: string; waitingForAgentSlot: boolean; projectId: string | null; projectName: string | null }>;
+    };
     expect(ownerBody.tasks.map((task) => task.ticketId)).toContain("OWN-1");
-    expect(ownerBody.tasks.find((task) => task.ticketId === "OWN-1")?.waitingForAgentSlot).toBe(true);
+    expect(ownerBody.tasks.find((task) => task.ticketId === "OWN-1")).toMatchObject({
+      waitingForAgentSlot: true,
+      projectId: project.id,
+      projectName: "Task owner project",
+    });
+    const ownerStreamController = new AbortController();
+    const ownerStream = await fetch(`${baseUrl}/api/admin/events/stream`, { ...authed(owner.token), signal: ownerStreamController.signal });
+    const { value: ownerStreamChunk } = await ownerStream.body!.getReader().read();
+    ownerStreamController.abort();
+    expect(new TextDecoder().decode(ownerStreamChunk)).toContain('"projectName":"Task owner project"');
 
     const delegateBefore = await fetch(`${baseUrl}/api/admin/tasks`, authed(delegate.token));
     const delegateBeforeBody = (await delegateBefore.json()) as { tasks: Array<{ ticketId: string }> };

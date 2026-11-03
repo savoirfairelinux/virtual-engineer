@@ -27,6 +27,8 @@ export interface ApiTask {
   ticketUrl: string | null;
   reviewUrl: string | null;
   displayId: string | null;
+  projectId?: string | null;
+  projectName?: string | null;
   createdAt: string;
   updatedAt: string;
   waitingForAgentSlot?: boolean;

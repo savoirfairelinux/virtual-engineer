@@ -153,7 +153,8 @@ export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect
       return (
         (t.ticketTitle ?? "").toLowerCase().includes(query) ||
         (t.ticketId ?? "").toLowerCase().includes(query) ||
-        (t.displayId ?? "").toLowerCase().includes(query)
+        (t.displayId ?? "").toLowerCase().includes(query) ||
+        (t.projectName ?? "").toLowerCase().includes(query)
       );
     }
     return true;
@@ -205,7 +206,7 @@ export function TaskList({ tasks, filters, onFiltersChange, selectedId, onSelect
             aria-label="Search tasks"
             value={filters.query}
             onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
-            placeholder="Filter by title or #id"
+            placeholder="Filter by title, #id or project"
             style={{
               width: "100%",
               background: "var(--panel)", border: "1px solid var(--border-soft)",
