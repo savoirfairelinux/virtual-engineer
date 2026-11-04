@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { HostGitExecutor, type GitRunner } from "../../src/workspace/hostGitExecutor.js";
@@ -478,6 +478,89 @@ describe("HostGitExecutor", () => {
       }
     },
   );
+
+  it("rejects an oversized HEAD without loading it or rebuilding earlier repositories", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-oversized-head-"));
+    const git = vi.fn<GitRunner>().mockResolvedValue("");
+    const exec = new HostGitExecutor({ baseDir: tmpdir(), git });
+
+    try {
+      const rootGitDir = await createReturnedRepository(workspace);
+      const gitDir = await createReturnedRepository(workspace, "libs/core");
+      await writeFile(join(gitDir, "HEAD"), `ref: refs/heads/${"a".repeat(4096)}\n`);
+      const originalConfig = await readFile(join(rootGitDir, "config"), "utf8");
+
+      await expect(exec.rebuildTrustedMetadata(workspace, new Map([
+        [".", "https://trusted.example/root.git"],
+        ["libs/core", "https://trusted.example/core.git"],
+      ]))).rejects.toThrow(/oversized HEAD/i);
+
+      expect(git).not.toHaveBeenCalled();
+      expect(await readFile(join(rootGitDir, "config"), "utf8")).toBe(originalConfig);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a valid HEAD at the 4 KiB limit", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-head-limit-"));
+    const exec = new HostGitExecutor({ baseDir: tmpdir(), git: vi.fn<GitRunner>() });
+
+    try {
+      const gitDir = await createReturnedRepository(workspace);
+      const head = `ref: refs/heads/${"a".repeat(4096 - "ref: refs/heads/\n".length)}\n`;
+      await writeFile(join(gitDir, "HEAD"), head);
+
+      await exec.rebuildTrustedMetadata(workspace, new Map([[".", "https://trusted.example/repo.git"]]));
+
+      expect(Buffer.byteLength(head)).toBe(4096);
+      expect(await readFile(join(gitDir, "config"), "utf8")).toContain("url = https://trusted.example/repo.git");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // Root bypasses permission checks, so Git cannot be steered this way for a root orchestrator.
+  describe.skipIf(process.getuid?.() === 0)("when host Git cannot access recorded metadata", () => {
+    it.each([
+      { entry: "refs", mode: 0o444 },
+      { entry: "objects", mode: 0o444 },
+      { entry: "HEAD", mode: 0o200 },
+    ])("rejects inaccessible $entry before Git can fall back to an agent-created parent", async ({ entry, mode }) => {
+      const workspace = await mkdtemp(join(tmpdir(), "ve-git-inaccessible-"));
+      const git = vi.fn<GitRunner>().mockResolvedValue("");
+      const exec = new HostGitExecutor({ baseDir: tmpdir(), git });
+      const entryPath = join(workspace, "apps", "api", ".git", entry);
+
+      try {
+        const trustedGitDir = await createReturnedRepository(workspace, "libs/core");
+        await createReturnedRepository(workspace, "apps");
+        await createReturnedRepository(workspace, "apps/api");
+        if (entry !== "HEAD") {
+          await rm(entryPath, { recursive: true });
+          await mkdir(entryPath);
+        }
+        await chmod(entryPath, mode);
+        const originalConfig = await readFile(join(trustedGitDir, "config"), "utf8");
+
+        // Inert read-only probe: real Git resolves the recorded path to the unrecorded parent repository.
+        expect((await new HostGitExecutor({ baseDir: tmpdir() })
+          .execGit(workspace, ["rev-parse", "--absolute-git-dir"], "apps/api")).trim())
+          .toBe(join(workspace, "apps", ".git"));
+
+        await expect(exec.rebuildTrustedMetadata(workspace, new Map([
+          ["libs/core", "https://trusted.example/core.git"],
+          ["apps/api", "https://trusted.example/api.git"],
+        ]))).rejects.toThrow(/not accessible/i);
+
+        expect(git).not.toHaveBeenCalled();
+        expect(await readFile(join(trustedGitDir, "config"), "utf8")).toBe(originalConfig);
+      } finally {
+        await chmod(entryPath, 0o755).catch(() => undefined);
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+  });
 
   it.each([
     { name: "root and nested repositories", paths: [".", "libs/core", "tools/plugin"] },

@@ -37,12 +37,16 @@ The host owns all push/review credentials and orchestrates network operations; t
 Downloaded coding artifacts remain untrusted. Before host Git runs against
 them, VE validates every host-recorded root/sub-repository using filesystem
 operations only. Repositories must have standalone `.git` directories, valid
-`HEAD` files, and local object/ref directories. Shared/worktree layouts
-(`commondir`, `gitdir`, or `worktrees`), gitfiles, symlinks, and missing/bare
-layouts fail the coding run; even empty or dangling `commondir` entries are
-rejected. Only after all repositories pass does VE restore each trusted origin
-and remove sandbox-controlled configuration, hooks, alternates, worktree
-configuration, and attributes.
+`HEAD` files of at most 4 KiB, and local object/ref directories. Validation
+mirrors Git's repository recognition: `HEAD` must be readable and
+`objects`/`refs` searchable by the host user, so Git cannot skip a recorded
+repository and fall back to an ancestor or agent-created one. Shared/worktree
+layouts (`commondir`, `gitdir`, or `worktrees`), gitfiles, symlinks, and
+missing/bare layouts fail the coding run; even empty or dangling `commondir`
+entries are rejected. `HEAD` is read with a fixed bound, never loaded whole.
+Only after all repositories pass does VE restore each trusted origin and remove
+sandbox-controlled configuration, hooks, alternates, worktree configuration,
+and attributes.
 
 Host Git also forces `protocol.ext.allow=never`. This is defense in depth, not
 a replacement for metadata validation and rebuilding. Review workspaces are
