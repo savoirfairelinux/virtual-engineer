@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { GitHubIssueConnector } from "../../src/connectors/githubIssueConnector.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { extractAcceptanceCriteria } from "../../src/orchestrator/agentContextBuilder.js";
+import { validateTransition } from "../../src/state/stateMachine.js";
+import { errorResponse, jsonResponse } from "./helpers/fixtures.js";
 import type {
   StateStore,
   WorkspaceRunner,
@@ -583,6 +586,141 @@ describe("Orchestrator", () => {
       expect.stringContaining(String(task.externalChangeId))
     );
     expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "DONE");
+  });
+
+  describe("GitHub ticket closure", () => {
+    const issueUrl = "https://api.github.com/repos/octocat/hello-world/issues/7";
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    function setupClosure() {
+      let current = makeTask({ ticketId: makeTicketId("7"), ticketSourceLabel: "github" });
+      const states: Task["state"][] = [current.state];
+      const stateStore = makeStateStore({
+        getTask: vi.fn(() => Promise.resolve(current)),
+        findTaskByExternalChangeId: vi.fn(() => Promise.resolve(current)),
+        transition: vi.fn<StateStore["transition"]>((taskId, state) => {
+          expect(taskId).toBe(current.taskId);
+          validateTransition(current.state, state);
+          current = { ...current, state };
+          states.push(state);
+          return Promise.resolve(current);
+        }),
+        setFailureReason: vi.fn<StateStore["setFailureReason"]>((_taskId, failureReason) => {
+          current = { ...current, failureReason };
+          return Promise.resolve();
+        }),
+      });
+      const connector = new GitHubIssueConnector({
+        apiBaseUrl: "https://api.github.com",
+        owner: "octocat",
+        repo: "hello-world",
+        token: "test-token",
+        virtualEngineerUserLogin: "ve-bot",
+      });
+      const fetchMock = vi.fn<typeof globalThis.fetch>(() => Promise.resolve(jsonResponse({})));
+      vi.stubGlobal("fetch", fetchMock);
+      const orchestrator = makeOrchestrator({
+        stateStore,
+        redmineConnector: connector,
+        config: { ticketCloseMaxRetries: 2, ticketCloseRetryMinTimeoutMs: 100 },
+      });
+
+      return { orchestrator, stateStore, fetchMock, states, getTask: () => current };
+    }
+
+    it.each(["POST", "PATCH"])("finishes without retry when the real connector receives %s 404", async (method) => {
+      const { orchestrator, stateStore, fetchMock, states, getTask } = setupClosure();
+      fetchMock.mockImplementation((_url, init) =>
+        Promise.resolve(init?.method === method ? errorResponse(404, "Not Found") : jsonResponse({}))
+      );
+
+      const closure = orchestrator.markChangeMerged("gerrit-int", "I123");
+      await vi.runAllTimersAsync();
+      await closure;
+
+      expect(states).toEqual(["IN_REVIEW", "MERGED", "CLOSING", "DONE"]);
+      expect(getTask()).toMatchObject({ state: "DONE", failureReason: null });
+      expect(stateStore.setFailureReason).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(method === "POST" ? 1 : 2);
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1, `${issueUrl}/comments`, expect.objectContaining({ method: "POST" })
+      );
+      if (method === "PATCH") {
+        expect(fetchMock).toHaveBeenNthCalledWith(
+          2, issueUrl, expect.objectContaining({ method: "PATCH" })
+        );
+      }
+    });
+
+    it("preserves successful closure through the real connector", async () => {
+      const { orchestrator, stateStore, fetchMock, states, getTask } = setupClosure();
+
+      const closure = orchestrator.markChangeMerged("gerrit-int", "I123");
+      await vi.runAllTimersAsync();
+      await closure;
+
+      expect(states).toEqual(["IN_REVIEW", "MERGED", "CLOSING", "DONE"]);
+      expect(getTask()).toMatchObject({ state: "DONE", failureReason: null });
+      expect(stateStore.setFailureReason).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1, `${issueUrl}/comments`, expect.objectContaining({ method: "POST" })
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2, issueUrl, expect.objectContaining({ method: "PATCH" })
+      );
+    });
+
+    it.each([401, 403, 410, 429, 500])("retries and fails when the real connector receives HTTP %i", async (statusCode) => {
+      const { orchestrator, stateStore, fetchMock, states, getTask } = setupClosure();
+      fetchMock.mockImplementation(() => Promise.resolve(errorResponse(statusCode, "request failed")));
+
+      const closure = orchestrator.markChangeMerged("gerrit-int", "I123");
+      await vi.runAllTimersAsync();
+      await closure;
+
+      expect(states).toEqual(["IN_REVIEW", "MERGED", "CLOSING", "FAILED"]);
+      expect(getTask().state).toBe("FAILED");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+        getTask().taskId,
+        `Ticket close failed (change is merged): GitHub API error ${statusCode} on ${issueUrl}/comments: request failed`
+      );
+      expect(getTask().failureReason).toContain(`GitHub API error ${statusCode}`);
+    });
+
+    it.each([
+      { name: "transport failures", error: new TypeError("fetch failed") },
+      {
+        name: "lookalike 404 errors",
+        error: Object.assign(new Error("untyped 404"), { statusCode: 404, name: "TicketNotFoundError" }),
+      },
+    ])("does not mistake $name for missing tickets", async ({ error }) => {
+      const { orchestrator, stateStore, fetchMock, states, getTask } = setupClosure();
+      fetchMock.mockRejectedValue(error);
+
+      const closure = orchestrator.markChangeMerged("gerrit-int", "I123");
+      await vi.runAllTimersAsync();
+      await closure;
+
+      expect(states).toEqual(["IN_REVIEW", "MERGED", "CLOSING", "FAILED"]);
+      expect(getTask()).toMatchObject({
+        state: "FAILED",
+        failureReason: `Ticket close failed (change is merged): ${error.message}`,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+        getTask().taskId, `Ticket close failed (change is merged): ${error.message}`
+      );
+    });
   });
 
   it("marks merged tasks as failed if Redmine closing keeps failing", async () => {

@@ -1,9 +1,8 @@
 import { z } from "zod";
 import type { TicketConnector, Ticket, TicketId, AssignedTicketQueryOptions } from "../interfaces.js";
-import { makeTicketId } from "../interfaces.js";
+import { makeTicketId, TicketApiError, TicketNotFoundError } from "../interfaces.js";
 import { AbstractTicketConnector } from "./baseTicketConnector.js";
 import { getLogger } from "../logger.js";
-import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("github-issue-connector");
 
@@ -221,7 +220,7 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new GitHubApiError(response.status, url, body);
+      throw createGitHubError(response.status, url, body);
     }
 
     return response.json() as Promise<T>;
@@ -241,7 +240,7 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new GitHubApiError(response.status, url, body);
+      throw createGitHubError(response.status, url, body);
     }
 
     await response.text();
@@ -266,22 +265,29 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
   }
 }
 
-export class GitHubApiError extends Error {
-  public readonly statusCode: number;
-  public readonly url: string;
-  public readonly body: string;
-
+export class GitHubApiError extends TicketApiError {
   constructor(
     statusCode: number,
     url: string,
     body: string
   ) {
-    const safeUrl = sanitizeErrorDetail(url, 1000);
-    const safeBody = sanitizeErrorDetail(body, 500, "");
-    super(`GitHub API error ${statusCode} on ${safeUrl}: ${safeBody}`);
-    this.statusCode = statusCode;
-    this.url = safeUrl;
-    this.body = safeBody;
+    super(statusCode, url, body);
+    this.message = `GitHub API error ${statusCode} on ${this.url}: ${this.body}`;
     this.name = "GitHubApiError";
   }
+}
+
+export class GitHubNotFoundError extends TicketNotFoundError {
+  constructor(statusCode: number, url: string, body: string) {
+    super(statusCode, url, body);
+    this.message = `GitHub API error ${statusCode} on ${this.url}: ${this.body}`;
+    this.name = "GitHubNotFoundError";
+  }
+}
+
+function createGitHubError(statusCode: number, url: string, body: string): TicketApiError {
+  if (statusCode === 404) {
+    return new GitHubNotFoundError(statusCode, url, body);
+  }
+  return new GitHubApiError(statusCode, url, body);
 }

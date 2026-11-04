@@ -57,6 +57,12 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 
 ## Conventions
 
+- GitHub issue tests verify shared error inheritance and redacted, bounded
+  diagnostics. Closure regressions wire the real connector through
+  `markChangeMerged()` with mocked HTTP `Response` objects and validated,
+  stateful transitions: POST/PATCH 404 completes without retry, while non-404,
+  transport, and lookalike errors retain retry/failure behavior.
+
 - Dashboard shell tests mock the Vite manifest to verify the hashed brand-logo favicon URL and graceful omission when the logo is absent.
 
 - Worker result transport tests (`workerResult`) cover delayed writes, large success/failure envelopes through actual Node process pipes, credential-filtered error events, write failure, and the 15-minute review budget.

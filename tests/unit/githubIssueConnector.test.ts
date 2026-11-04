@@ -3,7 +3,7 @@ import {
   GitHubIssueConnector,
   GitHubApiError,
 } from "../../src/connectors/githubIssueConnector.js";
-import { makeTicketId } from "../../src/interfaces.js";
+import { makeTicketId, TicketApiError, TicketNotFoundError } from "../../src/interfaces.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 
 const API_BASE_URL = "https://api.github.com";
@@ -168,9 +168,18 @@ describe("GitHubIssueConnector", () => {
       expect(ticket.subject).toBe(githubIssue.title);
     });
 
-    it("throws GitHubApiError on 404", async () => {
+    it("throws a shared missing-ticket error on 404", async () => {
       fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
-      await expect(makeConnector().getTicket(makeTicketId("999"))).rejects.toThrow(GitHubApiError);
+      const error = await makeConnector().getTicket(makeTicketId("999")).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(TicketNotFoundError);
+      expect(error).toBeInstanceOf(TicketApiError);
+      expect(error).toMatchObject({
+        name: "GitHubNotFoundError",
+        statusCode: 404,
+        url: `${API_BASE_URL}/repos/${OWNER}/${REPO}/issues/999`,
+        body: "Not Found",
+      });
     });
   });
 
@@ -252,6 +261,77 @@ describe("GitHubIssueConnector", () => {
       const [closeUrl, closeInit] = fetchMock.mock.calls[1] as [string, RequestInit];
       expect(closeUrl).toContain("/issues/7");
       expect(JSON.parse(closeInit.body as string)).toMatchObject({ state: "closed" });
+    });
+
+    it.each(["POST", "PATCH"])("propagates a missing-ticket error from the %s request", async (method) => {
+      fetchMock.mockImplementation((_url: unknown, init?: RequestInit) =>
+        Promise.resolve(init?.method === method ? errorResponse(404, "Not Found") : jsonResponse({}))
+      );
+
+      const error = await makeConnector().closeTicket(makeTicketId("7"), "Done!")
+        .catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(TicketNotFoundError);
+      expect(error).toBeInstanceOf(TicketApiError);
+      expect(error).toMatchObject({ name: "GitHubNotFoundError", statusCode: 404 });
+      expect(fetchMock).toHaveBeenCalledTimes(method === "POST" ? 1 : 2);
+    });
+  });
+
+  describe.each([
+    {
+      operation: "getTicket",
+      request: (connector: GitHubIssueConnector) => connector.getTicket(makeTicketId("7")),
+    },
+    {
+      operation: "addNote",
+      request: (connector: GitHubIssueConnector) => connector.addNote(makeTicketId("7"), "note"),
+    },
+  ])("$operation HTTP failures", ({ operation, request }) => {
+    it.each([401, 403, 410, 429, 500])("keeps HTTP %i as a non-missing ticket API error", async (statusCode) => {
+      fetchMock.mockResolvedValueOnce(errorResponse(statusCode, "request failed"));
+
+      const error = await request(makeConnector()).catch((err: unknown) => err);
+      const url = `${API_BASE_URL}/repos/${OWNER}/${REPO}/issues/7${operation === "addNote" ? "/comments" : ""}`;
+
+      expect(error).toBeInstanceOf(GitHubApiError);
+      expect(error).toBeInstanceOf(TicketApiError);
+      expect(error).not.toBeInstanceOf(TicketNotFoundError);
+      expect(error).toMatchObject({
+        name: "GitHubApiError",
+        statusCode,
+        url,
+        body: "request failed",
+        message: `GitHub API error ${statusCode} on ${url}: request failed`,
+      });
+    });
+
+    it("preserves transport rejections", async () => {
+      const error = new TypeError("fetch failed");
+      fetchMock.mockRejectedValueOnce(error);
+
+      await expect(request(makeConnector())).rejects.toBe(error);
+    });
+
+    it.each([403, 404])("redacts and bounds diagnostics for HTTP %i", async (statusCode) => {
+      const path = "p".repeat(1100);
+      const padding = "b".repeat(600);
+      const url = `https://<redacted>@api.github.com/${path}`.slice(0, 1000);
+      const body = `token=<redacted> ${padding}`.slice(0, 500);
+      fetchMock.mockResolvedValueOnce(errorResponse(statusCode, `token=test-secret ${padding}`));
+
+      const error = await request(makeConnector({
+        apiBaseUrl: `https://test-user:test-password@api.github.com/${path}`,
+      })).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(TicketApiError);
+      expect(error).toMatchObject({
+        name: statusCode === 404 ? "GitHubNotFoundError" : "GitHubApiError",
+        statusCode,
+        url,
+        body,
+        message: `GitHub API error ${statusCode} on ${url}: ${body}`,
+      });
     });
   });
 
