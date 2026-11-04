@@ -7,9 +7,11 @@
  * the same implementation three times.
  */
 import { execFile, spawn } from "node:child_process";
+import { isIPv6 } from "node:net";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { ReviewComment } from "../interfaces.js";
+import { sshConnectionConfigSchema } from "../utils/sshConfig.js";
 import { sshHostKeyArgs } from "../utils/sshHostKeys.js";
 import { toRejectionError } from "../utils/rejection.js";
 import { getLogger } from "../logger.js";
@@ -158,6 +160,32 @@ export function buildSshHostKeyOptions(knownHostsPath?: string): string[] {
   return sshHostKeyArgs(knownHostsPath);
 }
 
+export function buildGerritSshArgs(config: GerritSshConfig, options: readonly string[] = []): string[] {
+  const host = sshConnectionConfigSchema.shape.sshHost.parse(config.host);
+  const unbracketedHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const user = sshConnectionConfigSchema.shape.sshUser.parse(config.user);
+  const port = sshConnectionConfigSchema.shape.sshPort.parse(config.port);
+  const identityArgs: string[] = [];
+  if (config.keyPath) {
+    identityArgs.push("-i", config.keyPath, "-o", "IdentitiesOnly=yes");
+  } else if (config.agentPubKeyPath) {
+    identityArgs.push("-o", "IdentitiesOnly=yes", "-i", config.agentPubKeyPath);
+  }
+  return [
+    "-p", String(port),
+    ...identityArgs,
+    ...buildSshHostKeyOptions(config.knownHostsPath),
+    ...options,
+    "-l", user,
+    "--", isIPv6(unbracketedHost) ? unbracketedHost : host,
+  ];
+}
+
+export function buildGerritGitSshCommand(config: GerritSshConfig): string {
+  const options = buildGerritSshArgs(config).slice(0, -2);
+  return `ssh ${options.map((argument) => `'${argument.replace(/'/g, `'"'"'`)}'`).join(" ")}`;
+}
+
 // ─── Client ───────────────────────────────────────────────────────────────────
 
 /**
@@ -171,19 +199,8 @@ export class GerritSshClient {
 
   /** Build the SSH argument list for the configured host, port, key, and known-hosts policy. */
   private buildArgs(gerritArgs: string[]): string[] {
-    const { host, port, user, keyPath, agentPubKeyPath, knownHostsPath } = this.config;
-    const identityArgs: string[] = [];
-    if (keyPath) {
-      identityArgs.push("-i", keyPath, "-o", "IdentitiesOnly=yes");
-    } else if (agentPubKeyPath) {
-      // Agent mode with identity pinning: offer only the key matching this public key.
-      identityArgs.push("-o", "IdentitiesOnly=yes", "-i", agentPubKeyPath);
-    }
     return [
-      "-p", String(port),
-      ...identityArgs,
-      ...buildSshHostKeyOptions(knownHostsPath),
-      `${user}@${host}`,
+      ...buildGerritSshArgs(this.config),
       "gerrit", ...gerritArgs,
     ];
   }

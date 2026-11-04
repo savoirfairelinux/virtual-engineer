@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { listRepositoriesViaSsh } from "../../src/connectors/gerritConnector.js";
+import { listBranchesViaSsh, listRepositoriesViaSsh } from "../../src/connectors/gerritConnector.js";
 
 // We mock child_process.execFile so the tests never touch a real SSH host.
 vi.mock("child_process", () => ({
@@ -42,6 +42,7 @@ const SSH_CONFIG = {
 describe("listRepositoriesViaSsh", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    mockedExecFile.mockReset();
   });
 
   it("returns discovered repositories from JSON output", async () => {
@@ -79,11 +80,39 @@ describe("listRepositoriesViaSsh", () => {
     expect(args).toContain("29418");
     expect(args).toContain("-i");
     expect(args).toContain("/tmp/gerrit_id_ed25519");
-    expect(args).toContain("ve-bot@gerrit.test");
-    expect(args).toContain("gerrit");
-    expect(args).toContain("ls-projects");
-    expect(args).toContain("--format");
-    expect(args).toContain("JSON");
+    expect(args.slice(-8)).toEqual([
+      "-l", "ve-bot", "--", "gerrit.test",
+      "gerrit", "ls-projects", "--format", "JSON",
+    ]);
+  });
+
+  it.each([
+    { user: "-oProxyCommand=ignored" },
+    { host: "-oProxyCommand=ignored" },
+    { user: "ve bot" },
+    { host: "gerrit.test\n" },
+    { user: "ve\u0000" },
+    { host: "gerrit.test\u007f" },
+  ])("rejects unsafe identities before starting a process: %j", async (identity) => {
+    makeExecFileResolve("{}");
+
+    await expect(listRepositoriesViaSsh({ ...SSH_CONFIG, ...identity })).rejects.toThrow(/SSH identity/);
+
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it.each(["2001:db8::1", "[2001:db8::1]"])("discovers repositories over IPv6 host %s with a valid SSH clone URL", async (host) => {
+    makeExecFileResolve(JSON.stringify({ demo: { state: "ACTIVE" } }));
+
+    const repos = await listRepositoriesViaSsh({ ...SSH_CONFIG, host });
+
+    expect(repos[0]?.cloneUrlSsh).toBe("ssh://ve-bot@[2001:db8::1]:29418/demo");
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "ssh",
+      expect.arrayContaining(["-l", "ve-bot", "--", "2001:db8::1"]),
+      expect.anything(),
+      expect.any(Function),
+    );
   });
 
   it("skips READ_ONLY and HIDDEN projects", async () => {
@@ -132,6 +161,41 @@ describe("listRepositoriesViaSsh", () => {
     makeExecFileReject("ssh: connect to host gerrit.test port 29418: Connection refused");
     await expect(listRepositoriesViaSsh(SSH_CONFIG)).rejects.toThrow(
       /Connection refused/
+    );
+  });
+});
+
+describe("listBranchesViaSsh", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    mockedExecFile.mockReset();
+  });
+
+  it.each([
+    { user: "-oProxyCommand=ignored" },
+    { host: "-oProxyCommand=ignored" },
+    { user: "ve bot" },
+    { host: "gerrit.test\n" },
+  ])("rejects unsafe identities before starting Git: %j", async (identity) => {
+    makeExecFileResolve("");
+
+    await expect(listBranchesViaSsh({ ...SSH_CONFIG, ...identity }, "demo")).rejects.toThrow(/SSH identity/);
+
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it("uses shared login options and an IPv6 repository URL", async () => {
+    makeExecFileResolve("abc\trefs/heads/main\ndef\trefs/heads/feature\n");
+
+    await expect(listBranchesViaSsh({ ...SSH_CONFIG, host: "2001:db8::1" }, "demo")).resolves.toEqual(["main", "feature"]);
+
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "git",
+      ["ls-remote", "--heads", "ssh://ve-bot@[2001:db8::1]:29418/demo"],
+      expect.objectContaining({
+        env: expect.objectContaining({ GIT_SSH_COMMAND: expect.stringContaining("'-l' 've-bot'") }),
+      }),
+      expect.any(Function),
     );
   });
 });

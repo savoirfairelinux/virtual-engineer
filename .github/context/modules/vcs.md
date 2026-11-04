@@ -46,7 +46,8 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Reuses `existingChangeId` to keep the same Gerrit change across patchsets.
 - Uses SSH for change-status lookup and comment-thread follow-up (`gerrit query`, `gerrit review --json`) instead of Gerrit REST credentials.
 - `baseUrl` is optional and used only to build clickable review URLs.
-- Requires `gerrit_ssh_host`, `gerrit_ssh_port`, `gerrit_username`, and `gerrit_ssh_key_path` from the resolved Gerrit integration; `sshKnownHostsPath` is optional (trust-on-first-use fallback).
+- Requires `sshHost`, `sshPort`, and `sshUser` from the resolved Gerrit integration; `sshKeyPath`, `sshAgentPubKeyPath`, and `sshKnownHostsPath` are optional (SSH agent authentication and trust-on-first-use fallbacks).
+- Git SSH commands use `buildGerritGitSshCommand()` from the shared Gerrit transport. It validates users/hosts before Git starts, pins the login with `-l`, and POSIX-quotes each option value. Direct SSH commands use `buildGerritSshArgs()` with `--` before the host. Raw and bracketed IPv6 configured hosts work with SSH clone validation and bracketed patchset URLs.
 - `pushDirect(repoDir, ref, topic, reviewerEmails)`: pushes HEAD via SSH with one Gerrit option suffix containing the topic and one `r=<email>` entry per configured reviewer. Existing ref options are extended with commas rather than a second `%`. Returns a `VcsPushResult` with the Change-Id parsed from the commit footer.
 
 ### `gitlabVcsConnector.ts`

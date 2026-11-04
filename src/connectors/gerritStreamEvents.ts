@@ -2,7 +2,8 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child
 import { promisify } from "node:util";
 import type { Integration, ReviewComment } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE, isNonActionableChangeMessage, isCiFailureMessage } from "./gerritSshClient.js";
+import { buildGerritSshArgs, PREAMBLE_RE, COMMENTS_SUMMARY_RE, isNonActionableChangeMessage, isCiFailureMessage, type GerritSshConfig } from "./gerritSshClient.js";
+import { sshConnectionConfigSchema } from "../utils/sshConfig.js";
 import { SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../utils/sshKeyResolver.js";
 import type {
   IntegrationEventStreamDependencies,
@@ -283,15 +284,13 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     const child = this.spawnProcess(
       "ssh",
       [
-        "-p", String(config.sshPort),
-        ...buildIdentityArgs(config),
-        "-o", "BatchMode=yes",
-        "-o", `ConnectTimeout=30`,
-        ...buildSshHostKeyOptions(config.sshKnownHostsPath),
-        "-o", "LogLevel=ERROR",
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=3",
-        `${config.sshUser}@${config.sshHost}`,
+        ...buildGerritSshArgs(toGerritSshConfig(config), [
+          "-o", "BatchMode=yes",
+          "-o", "ConnectTimeout=30",
+          "-o", "LogLevel=ERROR",
+          "-o", "ServerAliveInterval=30",
+          "-o", "ServerAliveCountMax=3",
+        ]),
         "gerrit", "stream-events",
       ],
       { stdio: "pipe" }
@@ -744,8 +743,8 @@ function parseGerritStreamConfig(integration: Integration):
   }
 
   const cfg = raw as Record<string, unknown>;
-  const sshHost = typeof cfg["sshHost"] === "string" ? cfg["sshHost"].trim() : "";
-  const sshUser = typeof cfg["sshUser"] === "string" ? cfg["sshUser"].trim() : "";
+  const sshHost = typeof cfg["sshHost"] === "string" ? cfg["sshHost"] : "";
+  const sshUser = typeof cfg["sshUser"] === "string" ? cfg["sshUser"] : "";
   // Key path is resolved exclusively from SSH_RESOLVED_KEY_PATH, injected by
   // preprocessConfig (generated-key mode). Raw user-provided key paths are no
   // longer supported. Omit for SSH agent mode.
@@ -764,6 +763,12 @@ function parseGerritStreamConfig(integration: Integration):
 
   if (!sshHost || !sshUser || !Number.isFinite(sshPort) || sshPort <= 0) {
     return { success: false, error: "Gerrit stream-events requires sshHost, sshUser, and sshPort" };
+  }
+  const connection = sshConnectionConfigSchema.pick({
+    sshHost: true, sshUser: true, sshPort: true,
+  }).safeParse({ sshHost, sshUser, sshPort });
+  if (!connection.success) {
+    return { success: false, error: connection.error.issues.map((issue) => issue.message).join("; ") };
   }
   const sshKnownHostsPath = typeof cfg["sshKnownHostsPath"] === "string" && cfg["sshKnownHostsPath"].trim() !== ""
     ? cfg["sshKnownHostsPath"].trim()
@@ -787,11 +792,7 @@ async function defaultSshQuery(args: string[], config: GerritStreamConfig): Prom
   const { stdout } = await execFileAsync(
     "ssh",
     [
-      "-p", String(config.sshPort),
-      ...buildIdentityArgs(config),
-      ...buildSshHostKeyOptions(config.sshKnownHostsPath),
-      "-o", "LogLevel=ERROR",
-      `${config.sshUser}@${config.sshHost}`,
+      ...buildGerritSshArgs(toGerritSshConfig(config), ["-o", "LogLevel=ERROR"]),
       "gerrit", ...args,
     ],
     { timeout: SSH_QUERY_TIMEOUT_MS }
@@ -799,15 +800,15 @@ async function defaultSshQuery(args: string[], config: GerritStreamConfig): Prom
   return stdout;
 }
 
-/** Build SSH identity arguments from a stream config. */
-function buildIdentityArgs(config: GerritStreamConfig): string[] {
-  if (config.sshKeyPath) {
-    return ["-i", config.sshKeyPath, "-o", "IdentitiesOnly=yes"];
-  }
-  if (config.sshAgentPubKeyPath) {
-    return ["-o", "IdentitiesOnly=yes", "-i", config.sshAgentPubKeyPath];
-  }
-  return [];
+function toGerritSshConfig(config: GerritStreamConfig): GerritSshConfig {
+  return {
+    host: config.sshHost,
+    user: config.sshUser,
+    port: config.sshPort,
+    keyPath: config.sshKeyPath,
+    agentPubKeyPath: config.sshAgentPubKeyPath,
+    knownHostsPath: config.sshKnownHostsPath,
+  };
 }
 
 /** Return true when two GerritStreamConfig objects represent the same SSH endpoint. */

@@ -579,6 +579,47 @@ describe("GerritSshReviewProvider", () => {
       expect(diffCall!.args).toContain("shaFrom..shaTo");
     });
 
+    it.each([
+      { sshUser: "-oProxyCommand=ignored" },
+      { sshHost: "-oProxyCommand=ignored" },
+      { sshUser: "ve user" },
+      { sshHost: "gerrit.test\n" },
+    ])("rejects unsafe identities before starting Git: %j", async (identity) => {
+      await expect(makeProvider(identity).getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3)).rejects.toThrow(/SSH identity/);
+
+      expect(gitFileCalls).toHaveLength(0);
+    });
+
+    it.each([
+      { mode: "private key", config: { sshKeyPath: "/key" }, identity: "'-i' '/key' '-o' 'IdentitiesOnly=yes'" },
+      { mode: "pinned agent", config: { sshAgentPubKeyPath: "/agent.pub" }, identity: "'-o' 'IdentitiesOnly=yes' '-i' '/agent.pub'" },
+      { mode: "agent", config: {}, identity: null },
+    ])("uses shared login options in $mode mode", async ({ config, identity }) => {
+      setGitResults(["", "", "", "shaFrom\n", "", "shaTo\n", ""]);
+
+      await makeProvider(config).getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3);
+
+      const fetchCall = gitFileCalls.find((call) => call.args[0] === "fetch");
+      const env = fetchCall?.opts["env"] as Record<string, string>;
+      expect(env["GIT_SSH_COMMAND"]).toContain("'-l' 've-bot'");
+      if (identity !== null) {
+        expect(env["GIT_SSH_COMMAND"]).toContain(identity);
+      } else {
+        expect(env["GIT_SSH_COMMAND"]).not.toContain("'-i'");
+        expect(env["GIT_SSH_COMMAND"]).not.toContain("undefined");
+      }
+    });
+
+    it.each(["2001:db8::1", "[2001:db8::1]"])("uses a valid IPv6 fetch URL for host %s", async (host) => {
+      setGitResults(["", "", "", "shaFrom\n", "", "shaTo\n", ""]);
+
+      await makeProvider({ sshHost: host }).getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3);
+
+      expect(gitFileCalls.find((call) => call.args[0] === "remote")?.args).toEqual([
+        "remote", "add", "origin", "ssh://ve-bot@[2001:db8::1]:29418/jami-client-qt",
+      ]);
+    });
+
     it("cleans up temp directory on error", async () => {
       setGitResults([new Error("git init failed")]);
 

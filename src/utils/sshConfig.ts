@@ -18,11 +18,16 @@
  */
 import { z } from "zod";
 
+const sshIdentitySchema = z.string().min(1).refine(
+  (value) => !value.startsWith("-") && !/[\s\p{Cc}]/u.test(value),
+  "SSH identity must not start with '-' or contain whitespace or control characters"
+);
+
 export const sshConnectionConfigSchema = z.object({
-  sshHost: z.string().min(1),
+  sshHost: sshIdentitySchema,
   /** SSH port. Providers should override this with their own default (e.g. 29418 for Gerrit). */
   sshPort: z.coerce.number().int().positive(),
-  sshUser: z.string().min(1),
+  sshUser: sshIdentitySchema,
   /** Path to a known_hosts file. When set, SSH operations use strict host-key verification. */
   sshKnownHostsPath: z.string().trim().optional(),
   /** AES-256-GCM–encrypted ed25519 private key PEM (generated via the UI). Selects generated-key auth mode. */

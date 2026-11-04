@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { SshChangeInfo } from "../../src/connectors/gerritSshClient.js";
 import { GerritSshConnector } from "../../src/connectors/gerritConnector.js";
 import { makeExternalChangeId } from "../../src/interfaces.js";
+import { sshConnectionConfigSchema } from "../../src/utils/sshConfig.js";
 
 // ─── GerritSshClient mock ─────────────────────────────────────────────────────
 
@@ -44,6 +45,45 @@ function makeConnector(): GerritSshConnector {
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe("Gerrit SSH configuration validation", () => {
+  it.each([
+    "",
+    "-oProxyCommand=ignored",
+    "-ve",
+    " leading",
+    "trailing ",
+    "embedded space",
+    "embedded\ttab",
+    "embedded\nnewline",
+    "embedded\rreturn",
+    "embedded\u0000null",
+    "embedded\u001bescape",
+    "embedded\u007fdelete",
+    "embedded\u0085control",
+    "embedded\u00a0space",
+  ])("rejects unsafe SSH user and host %j", (identity) => {
+    const config = {
+      sshHost: SSH_CONFIG.host,
+      sshUser: SSH_CONFIG.user,
+      sshPort: SSH_CONFIG.port,
+    };
+
+    expect(sshConnectionConfigSchema.safeParse({ ...config, sshUser: identity }).success).toBe(false);
+    expect(sshConnectionConfigSchema.safeParse({ ...config, sshHost: identity }).success).toBe(false);
+  });
+
+  it.each(["gerrit.test", "192.0.2.1", "::1", "2001:db8::1", "[2001:db8::1]", "fe80::1%eth0"])(
+    "accepts legitimate SSH host %s",
+    (host) => {
+      expect(sshConnectionConfigSchema.safeParse({
+        sshHost: host,
+        sshUser: "ve-service",
+        sshPort: SSH_CONFIG.port,
+      }).success).toBe(true);
+    }
+  );
+});
 
 describe("GerritSshConnector", () => {
   beforeEach(() => {

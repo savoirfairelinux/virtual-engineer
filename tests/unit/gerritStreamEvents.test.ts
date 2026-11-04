@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,18 @@ const { logger } = vi.hoisted(() => ({
 
 vi.mock("../../src/logger.js", () => ({
   getLogger: vi.fn(() => logger),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn((
+    _command: string,
+    _args: string[],
+    _options: unknown,
+    callback: (error: Error | null, result: { stdout: string; stderr: string }) => void,
+  ) => {
+    callback(null, { stdout: "", stderr: "" });
+  }),
+  spawn: vi.fn(),
 }));
 
 import {
@@ -173,6 +186,89 @@ describe("GerritStreamEventsManager", () => {
       expect.arrayContaining(["BatchMode=yes", expect.stringMatching(/^ConnectTimeout=/)]),
       expect.anything()
     );
+  });
+
+  it("passes the listener login separately and ends options before the host", async () => {
+    const { manager, spawnProcess } = createManager([new FakeChildProcess()]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+
+    const args = (spawnProcess.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.slice(-6)).toEqual([
+      "-l", VE_SSH_USER, "--", "gerrit.example.com", "gerrit", "stream-events",
+    ]);
+    await manager.stopAll();
+  });
+
+  it.each([
+    { sshUser: "-oProxyCommand=ignored" },
+    { sshHost: "-oProxyCommand=ignored" },
+    { sshUser: " ve" },
+    { sshHost: "gerrit.example.com " },
+    { sshUser: "ve user" },
+    { sshHost: "gerrit.example.com\ttab" },
+    { sshUser: "ve\n" },
+    { sshHost: "gerrit.example.com\u0000" },
+    { sshUser: "ve\u007f" },
+  ])("rejects unsafe identities without spawning or backfilling: %j", async (identity) => {
+    const sshQueryFn = makeSshReviewerQueryFn([]);
+    const { manager, spawnProcess } = createManager([new FakeChildProcess()], sshQueryFn);
+    const integration = makeIntegration("gerrit-a", {
+      configJson: JSON.stringify({
+        sshHost: "gerrit.example.com",
+        sshUser: VE_SSH_USER,
+        sshPort: 29418,
+        ...identity,
+      }),
+    });
+
+    await manager.reconcile([integration]);
+    await manager.requestBackfill([integration.id]);
+
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(sshQueryFn).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
+    expect(manager.getStatus(integration.id)?.state).toBe("error");
+    await manager.stopAll();
+  });
+
+  it.each(["::1", "2001:db8::1", "fe80::1%eth0"])("keeps IPv6 listener host %s after the option boundary", async (host) => {
+    const { manager, spawnProcess } = createManager([new FakeChildProcess()]);
+
+    await manager.reconcile([makeIntegration("gerrit-a", {
+      configJson: JSON.stringify({ sshHost: host, sshUser: VE_SSH_USER, sshPort: 29418 }),
+    })]);
+
+    const args = (spawnProcess.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.slice(-6)).toEqual([
+      "-l", VE_SSH_USER, "--", host, "gerrit", "stream-events",
+    ]);
+    await manager.stopAll();
+  });
+
+  it("uses the same safe destination for default backfill SSH queries", async () => {
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.stdout.write("\n");
+    await flushAsyncWork();
+
+    expect(execFile).toHaveBeenCalledWith(
+      "ssh",
+      [
+        "-p", "29418",
+        "-i", "/tmp/id_rsa", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=/app/secrets/gerrit_known_hosts",
+        "-o", "LogLevel=ERROR",
+        "-l", VE_SSH_USER, "--", "gerrit.example.com",
+        "gerrit", "query", "--format", "JSON", `status:open reviewer:${VE_SSH_USER}`,
+      ],
+      { timeout: 30_000 },
+      expect.any(Function),
+    );
+    await manager.stopAll();
   });
 
   it("does not restart an exhausted stream until it is removed from demand", async () => {
