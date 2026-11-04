@@ -380,23 +380,81 @@ describe("HostGitExecutor", () => {
     }
   });
 
-  it.each(["gitdir", "worktrees"])("rejects shared repository metadata %s without invoking Git", async (entry) => {
+  it("rejects shared repository metadata gitdir without invoking Git", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "ve-git-shared-"));
     const git = vi.fn<GitRunner>().mockResolvedValue("");
     const exec = new HostGitExecutor({ baseDir: tmpdir(), git });
 
     try {
       const gitDir = await createReturnedRepository(workspace);
-      if (entry === "worktrees") {
-        await mkdir(join(gitDir, entry));
-      } else {
-        await writeFile(join(gitDir, entry), "/untrusted/worktree/.git\n");
-      }
+      await writeFile(join(gitDir, "gitdir"), "/untrusted/worktree/.git\n");
 
       await expect(exec.rebuildTrustedMetadata(workspace, new Map([
         [".", "https://trusted.example/repo.git"],
-      ]))).rejects.toThrow(/shared repository layout/i);
+      ]))).rejects.toThrow(/shared repository layout \(gitdir\)/i);
       expect(git).not.toHaveBeenCalled();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([".", "libs/core"].flatMap((subPath) =>
+    (["directory", "file"] as const).map((layout) => ({ subPath, layout })),
+  ))("strips a leftover linked-worktree registry ($layout) in $subPath without invoking Git", async ({ subPath, layout }) => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-worktrees-"));
+    const git = vi.fn<GitRunner>().mockResolvedValue("");
+    const exec = new HostGitExecutor({ baseDir: tmpdir(), git });
+
+    try {
+      const rootGitDir = await createReturnedRepository(workspace);
+      const secondaryGitDir = await createReturnedRepository(workspace, "libs/core");
+      const gitDir = subPath === "." ? rootGitDir : secondaryGitDir;
+      const registry = join(gitDir, "worktrees");
+      if (layout === "directory") {
+        const adminDir = join(registry, "agent-1");
+        await mkdir(adminDir, { recursive: true });
+        await writeFile(join(adminDir, "HEAD"), "ref: refs/heads/worktree-agent-1\n");
+        await writeFile(join(adminDir, "commondir"), "/untrusted/common\n");
+        await writeFile(join(adminDir, "gitdir"), "/sandbox/ws/.claude/worktrees/agent-1/.git\n");
+        await writeFile(join(adminDir, "config.worktree"), "[core]\n\tfsmonitor = touch /tmp/pwned\n");
+        await writeFile(join(adminDir, "locked"), "claude agent\n");
+      } else {
+        await writeFile(registry, "not a registry\n");
+      }
+
+      await exec.rebuildTrustedMetadata(workspace, new Map([
+        [".", "https://trusted.example/root.git"],
+        ["libs/core", "https://trusted.example/core.git"],
+      ]));
+
+      expect(git).not.toHaveBeenCalled();
+      await expect(access(registry)).rejects.toThrow();
+      expect(await readFile(join(gitDir, "config"), "utf8"))
+        .toContain(`url = https://trusted.example/${subPath === "." ? "root" : "core"}.git`);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlink inside a linked-worktree registry before stripping it", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-worktrees-link-"));
+    const git = vi.fn<GitRunner>().mockResolvedValue("");
+    const exec = new HostGitExecutor({ baseDir: tmpdir(), git });
+
+    try {
+      const gitDir = await createReturnedRepository(workspace);
+      const outside = join(workspace, "outside");
+      await mkdir(outside);
+      await writeFile(join(outside, "keep"), "keep\n");
+      await mkdir(join(gitDir, "worktrees"));
+      await symlink(outside, join(gitDir, "worktrees", "agent-1"));
+
+      await expect(exec.rebuildTrustedMetadata(workspace, new Map([
+        [".", "https://trusted.example/repo.git"],
+      ]))).rejects.toThrow(/symbolic link/i);
+
+      expect(git).not.toHaveBeenCalled();
+      expect(await readFile(join(outside, "keep"), "utf8")).toBe("keep\n");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -624,6 +682,34 @@ describe("HostGitExecutor", () => {
         .toBe("https://trusted.example/repo.git");
       expect(await readFile(join(workspace, ".git", "HEAD"), "utf8")).toBe(`${commit}\n`);
       expect(await readFile(join(workspace, ".git", "shallow"), "utf8")).toBe(`${commit}\n`);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("restores a repository whose agent left a locked linked worktree", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-agent-worktree-"));
+    const exec = new HostGitExecutor({ baseDir: tmpdir() });
+    const identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
+    const worktreePath = join(".claude", "worktrees", "agent-1");
+
+    try {
+      await exec.execGit(workspace, ["init", "--initial-branch=main"]);
+      await exec.execGit(workspace, [...identity, "commit", "--allow-empty", "--no-gpg-sign", "-m", "base"]);
+      await exec.execGit(workspace, ["worktree", "add", "-b", "worktree-agent-1", worktreePath]);
+      await exec.execGit(workspace, [...identity, "commit", "--allow-empty", "--no-gpg-sign", "-m", "subagent"], worktreePath);
+      await exec.execGit(workspace, ["worktree", "lock", worktreePath]);
+      await exec.execGit(workspace, ["merge", "--ff-only", "worktree-agent-1"]);
+      const head = (await exec.execGit(workspace, ["rev-parse", "HEAD"])).trim();
+
+      await exec.rebuildTrustedMetadata(workspace, new Map([[".", "https://trusted.example/repo.git"]]));
+
+      await expect(access(join(workspace, ".git", "worktrees"))).rejects.toThrow();
+      expect((await exec.execGit(workspace, ["worktree", "list", "--porcelain"])).match(/^worktree /gm)).toHaveLength(1);
+      expect((await exec.execGit(workspace, ["rev-parse", "HEAD"])).trim()).toBe(head);
+      expect((await exec.execGit(workspace, ["log", "-1", "--format=%s"])).trim()).toBe("subagent");
+      expect((await exec.execGit(workspace, ["remote", "get-url", "--push", "origin"])).trim())
+        .toBe("https://trusted.example/repo.git");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

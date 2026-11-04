@@ -346,7 +346,7 @@ export class HostGitExecutor {
       if (!lstatSync(gitDir).isDirectory()) {
         throw new Error(`Untrusted Git metadata is not a directory: ${subPath}`);
       }
-      for (const entry of ["commondir", "gitdir", "worktrees"]) {
+      for (const entry of ["commondir", "gitdir"]) {
         try {
           lstatSync(join(gitDir, entry));
         } catch (err) {
@@ -388,6 +388,8 @@ export class HostGitExecutor {
         rm(join(gitDir, "hooks"), { recursive: true, force: true }),
         rm(join(gitDir, "objects", "info", "alternates"), { force: true }),
         rm(join(gitDir, "config.worktree"), { force: true }),
+        // Agent worktree isolation can leave linked worktrees; host Git never runs inside them.
+        rm(join(gitDir, "worktrees"), { recursive: true, force: true }),
         rm(join(gitDir, "info", "attributes"), { force: true }),
         rm(join(gitDir, "config"), { force: true }),
       ]);
