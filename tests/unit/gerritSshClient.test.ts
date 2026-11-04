@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { managedKnownHostsPath } from "../../src/utils/sshHostKeys.js";
@@ -169,7 +170,7 @@ describe("GerritSshClient", () => {
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "UserKnownHostsFile=/etc/ssh/known_hosts",
-        "ve@gerrit.test",
+        "-l", "ve", "--", "gerrit.test",
         "gerrit", "ls-projects", "--format", "JSON",
       ]);
     });
@@ -201,8 +202,48 @@ describe("GerritSshClient", () => {
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "UserKnownHostsFile=/etc/ssh/known_hosts",
-        "ve@gerrit.test",
+        "-l", "ve", "--", "gerrit.test",
         "gerrit", "ls-projects",
+      ]);
+    });
+
+    it.each([
+      { user: "-oProxyCommand=ignored" },
+      { host: "-oProxyCommand=ignored" },
+      { user: "ve user" },
+      { host: "gerrit.test\ttab" },
+      { user: "ve\n" },
+      { host: "gerrit.test\u0000" },
+      { user: "ve\u007f" },
+      { host: " gerrit.test" },
+    ])("rejects unsafe identities before execFile or spawn: %j", async (identity) => {
+      const client = new GerritSshClient({ ...SSH_CONFIG, ...identity });
+
+      await expect(client.query(["ls-projects"])).rejects.toThrow(/SSH identity/);
+      await expect(client.addReviewers("42", ["reviewer"])).rejects.toThrow(/SSH identity/);
+      await expect(client.reviewJson("42,1", "{}")).rejects.toThrow(/SSH identity/);
+
+      expect(execFile).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it.each(["::1", "2001:db8::1", "fe80::1%eth0"])("keeps IPv6 host %s after the option boundary", async (host) => {
+      const client = new GerritSshClient({ ...SSH_CONFIG, host });
+
+      await client.query(["ls-projects"]);
+
+      expect(execFileCalls[0]?.args.slice(-6)).toEqual([
+        "-l", "ve", "--", host, "gerrit", "ls-projects",
+      ]);
+    });
+
+    it("normalizes bracketed IPv6 hosts for OpenSSH", async () => {
+      const client = new GerritSshClient({ ...SSH_CONFIG, host: "[2001:db8::1]" });
+
+      await client.query(["ls-projects"]);
+
+      expect(execFileCalls[0]?.args.slice(-6)).toEqual([
+        "-l", "ve", "--", "2001:db8::1", "gerrit", "ls-projects",
       ]);
     });
 

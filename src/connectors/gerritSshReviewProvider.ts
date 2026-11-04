@@ -6,6 +6,7 @@
  * HTTP REST credentials are unavailable or the Gerrit instance is SSH-only.
  */
 import { execFile } from "node:child_process";
+import { isIPv6 } from "node:net";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ import {
   GerritSshClient,
   type GerritDiscussionComment,
   parseSshNdjson,
-  buildSshHostKeyOptions,
+  buildGerritGitSshCommand,
 } from "./gerritSshClient.js";
 
 const log = getLogger("gerrit-ssh-review-provider");
@@ -142,6 +143,17 @@ export class GerritSshReviewProvider implements ReviewProvider {
       ...(config.sshKeyPath !== undefined ? { keyPath: config.sshKeyPath } : {}),
       ...(config.sshAgentPubKeyPath !== undefined ? { agentPubKeyPath: config.sshAgentPubKeyPath } : {}),
       ...(config.sshKnownHostsPath !== undefined ? { knownHostsPath: config.sshKnownHostsPath } : {}),
+    });
+  }
+
+  private buildGitSshCommand(): string {
+    return buildGerritGitSshCommand({
+      host: this.config.sshHost,
+      user: this.config.sshUser,
+      port: this.config.sshPort,
+      keyPath: this.config.sshKeyPath,
+      agentPubKeyPath: this.config.sshAgentPubKeyPath,
+      knownHostsPath: this.config.sshKnownHostsPath,
     });
   }
 
@@ -285,14 +297,9 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const dir = await mkdtemp(join(baseDir, `diff-${details.changeNumber}-`));
 
     try {
-      const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
-      const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
-      const identityPart = this.config.sshKeyPath
-        ? `-i ${this.config.sshKeyPath} -o IdentitiesOnly=yes`
-        : this.config.sshAgentPubKeyPath
-          ? `-o IdentitiesOnly=yes -i ${this.config.sshAgentPubKeyPath}`
-          : "";
-      const sshCmd = `ssh -p ${this.config.sshPort} ${identityPart} ${hostKeyOpts}`.replace(/\s+/g, " ").trim();
+      const urlHost = isIPv6(this.config.sshHost) ? `[${this.config.sshHost}]` : this.config.sshHost;
+      const sshUrl = `ssh://${this.config.sshUser}@${urlHost}:${this.config.sshPort}/${details.project}`;
+      const sshCmd = this.buildGitSshCommand();
       const gitEnv = {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
@@ -382,9 +389,9 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const dir = await mkdtemp(join(baseDir, `delta-${details.changeNumber}-`));
 
     try {
-      const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
-      const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
-      const sshCmd = `ssh -p ${this.config.sshPort} -i ${this.config.sshKeyPath} ${hostKeyOpts}`;
+      const urlHost = isIPv6(this.config.sshHost) ? `[${this.config.sshHost}]` : this.config.sshHost;
+      const sshUrl = `ssh://${this.config.sshUser}@${urlHost}:${this.config.sshPort}/${details.project}`;
+      const sshCmd = this.buildGitSshCommand();
       const gitEnv = {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",

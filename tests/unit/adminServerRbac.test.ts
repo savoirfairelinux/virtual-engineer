@@ -7,6 +7,7 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import { agentLogBus, clearTaskEventBuffer, pushToTaskBuffer } from "../../src/agents/agentEventBus.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,9 +26,10 @@ function tempDbPath(): string {
   return tempDatabasePath("ve-rbac");
 }
 
-function makeServer(store: SqliteStateStore, agentEngineDir?: string): ReturnType<typeof createAdminServer> {
+function makeServer(store: SqliteStateStore, agentEngineDir?: string, pluginManager?: PluginManager): ReturnType<typeof createAdminServer> {
   return createAdminServer({
     ...(agentEngineDir !== undefined ? { agentEngines: new AgentEngineStateStore(agentEngineDir) } : {}),
+    ...(pluginManager !== undefined ? { pluginManager } : {}),
     stateStore: store,
     integrationStore: store,
     oAuthAppStore: store,
@@ -110,6 +112,104 @@ describe("adminServer RBAC and session auth", () => {
     expect(login.status).toBe(200);
     return (await login.json()) as SessionResponse;
   }
+
+  async function restartWithPluginManager(): Promise<PluginManager> {
+    registerBuiltinPlugins();
+    const pluginManager = new PluginManager(store, { adminAuthSecret: SECRET });
+    await closeServer(server);
+    server = makeServer(store, undefined, pluginManager);
+    baseUrl = await listen(server);
+    return pluginManager;
+  }
+
+  it("keeps Gerrit preflight authenticated and permission-gated", async () => {
+    const pluginManager = await restartWithPluginManager();
+    const testConnection = vi.spyOn(pluginManager, "testConnectionConfig");
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const viewer = await setupAndLogin("vera", "Str0ng-Pass-1x", "viewer", admin);
+
+    for (const [token, expectedStatus] of [
+      [undefined, 401],
+      ["invalid-session", 401],
+      [viewer.token, 403],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/admin/integrations/test`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          provider: "gerrit",
+          config: { sshHost: "gerrit.test", sshUser: "-oProxyCommand=ignored", sshPort: 29418 },
+        }),
+      });
+
+      expect(response.status).toBe(expectedStatus);
+      if (expectedStatus === 403) {
+        await expect(response.json()).resolves.toEqual({ error: "forbidden", permission: "integration.create" });
+      }
+    }
+    expect(testConnection).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe unsaved Gerrit preflight identities from default Operators", async () => {
+    const pluginManager = await restartWithPluginManager();
+    const tester = vi.fn(async () => ({ success: true, error: null, models: [] }));
+    pluginManager.registerConnectionTester("gerrit", tester);
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const operator = await setupAndLogin("oscar", "Str0ng-Pass-1x", "operator", admin);
+
+    for (const identity of [
+      { sshUser: "-oProxyCommand=ignored" },
+      { sshHost: "-oProxyCommand=ignored" },
+      { sshUser: "ve user" },
+      { sshHost: "gerrit.test\n" },
+      { sshUser: "ve\u0000" },
+      { sshHost: "gerrit.test\u007f" },
+    ]) {
+      const response = await fetch(`${baseUrl}/api/admin/integrations/test`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: "gerrit",
+          config: { sshHost: "gerrit.test", sshUser: "ve", sshPort: 29418, ...identity },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("SSH identity"),
+      });
+    }
+    expect(tester).not.toHaveBeenCalled();
+    await expect(store.getIntegrations()).resolves.toEqual([]);
+  });
+
+  it("allows legitimate Gerrit preflight identities including IPv6", async () => {
+    const pluginManager = await restartWithPluginManager();
+    const tester = vi.fn(async () => ({ success: true, error: null, models: [] }));
+    pluginManager.registerConnectionTester("gerrit", tester);
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const operator = await setupAndLogin("oscar", "Str0ng-Pass-1x", "operator", admin);
+
+    for (const host of ["gerrit.test", "2001:db8::1", "[2001:db8::1]"]) {
+      const response = await fetch(`${baseUrl}/api/admin/integrations/test`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: "gerrit",
+          config: { sshHost: host, sshUser: "ve-service", sshPort: 29418 },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ success: true });
+      expect(tester).toHaveBeenLastCalledWith(expect.objectContaining({ sshHost: host, sshUser: "ve-service" }));
+    }
+    await expect(store.getIntegrations()).resolves.toEqual([]);
+  });
 
   it("exposes only bootstrap auth routes while zero users exist", async () => {
     const setupStatus = await fetch(`${baseUrl}/api/admin/auth/setup-status`);

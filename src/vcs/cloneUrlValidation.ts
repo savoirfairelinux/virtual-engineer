@@ -1,3 +1,5 @@
+import { isIPv6 } from "node:net";
+
 interface CloneAuthority {
   hostname: string;
   port: string;
@@ -20,7 +22,8 @@ function rejectUnsafeInput(repoUrl: string, provider: string): void {
 
 function parseExpectedAuthority(expectedHost: string, protocol: "https" | "ssh"): CloneAuthority {
   try {
-    const parsed = new URL(expectedHost.includes("://") ? expectedHost : `${protocol}://${expectedHost}`);
+    const host = protocol === "ssh" && isIPv6(expectedHost) ? `[${expectedHost}]` : expectedHost;
+    const parsed = new URL(host.includes("://") ? host : `${protocol}://${host}`);
     return { hostname: parsed.hostname.toLowerCase(), port: parsed.port };
   } catch {
     invalid(protocol === "https" ? "HTTPS" : "SSH", "configured host is invalid");

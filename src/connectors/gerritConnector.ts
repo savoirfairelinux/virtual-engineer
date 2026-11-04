@@ -2,6 +2,7 @@
  * Gerrit review connector — implements `ReviewConnector` via SSH API.
  */
 import { execFile } from "node:child_process";
+import { isIPv6 } from "node:net";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type {
@@ -13,7 +14,7 @@ import type {
   ExternalChangeId,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { GerritSshClient, buildSshHostKeyOptions } from "./gerritSshClient.js";
+import { GerritSshClient, buildGerritSshArgs, buildGerritGitSshCommand } from "./gerritSshClient.js";
 
 const log = getLogger("gerrit-connector");
 const execFileAsync = promisify(execFile);
@@ -39,27 +40,16 @@ export interface GerritSshDiscoveryConfig {
   knownHostsPath?: string | undefined;
 }
 
-/** Build SSH identity flag args from a discovery config. */
-function buildDiscoveryIdentityArgs(ssh: GerritSshDiscoveryConfig): string[] {
-  if (ssh.keyPath) return ["-i", ssh.keyPath, "-o", "IdentitiesOnly=yes"];
-  if (ssh.agentPubKeyPath) return ["-o", "IdentitiesOnly=yes", "-i", ssh.agentPubKeyPath];
-  return [];
-}
-
 /**
  * List Gerrit repositories via `ssh gerrit ls-projects --format JSON`.
  */
 export async function listRepositoriesViaSsh(
   ssh: GerritSshDiscoveryConfig
 ): Promise<DiscoveredRepository[]> {
-  const hostKeyOptions = buildSshHostKeyOptions(ssh.knownHostsPath);
   const { stdout } = await execFileAsync(
     "ssh",
     [
-      "-p", String(ssh.port),
-      ...buildDiscoveryIdentityArgs(ssh),
-      ...hostKeyOptions,
-      `${ssh.user}@${ssh.host}`,
+      ...buildGerritSshArgs(ssh),
       "gerrit", "ls-projects", "--format", "JSON",
     ],
     { timeout: SSH_TIMEOUT_MS }
@@ -74,6 +64,7 @@ export async function listRepositoriesViaSsh(
 
   const projects = GerritProjectsResponseSchema.parse(raw ?? {});
   const out: DiscoveredRepository[] = [];
+  const urlHost = isIPv6(ssh.host) ? `[${ssh.host}]` : ssh.host;
 
   for (const [name, info] of Object.entries(projects)) {
     if (info.state === "READ_ONLY" || info.state === "HIDDEN") continue;
@@ -81,7 +72,7 @@ export async function listRepositoriesViaSsh(
     const repo: DiscoveredRepository = {
       key: name,
       name,
-      cloneUrlSsh: `ssh://${ssh.user}@${ssh.host}:${ssh.port}/${name}`,
+      cloneUrlSsh: `ssh://${ssh.user}@${urlHost}:${ssh.port}/${name}`,
     };
 
     if (info.HEAD) {
@@ -109,17 +100,13 @@ export async function listBranchesViaSsh(
   ssh: GerritSshDiscoveryConfig,
   repoKey: string
 ): Promise<string[]> {
-  const hostKeyOptions = buildSshHostKeyOptions(ssh.knownHostsPath);
-  const sshArgs = [
-    "-p", String(ssh.port),
-    ...buildDiscoveryIdentityArgs(ssh),
-    ...hostKeyOptions,
-  ];
-  const repoUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}/${repoKey}`;
+  const sshCommand = buildGerritGitSshCommand(ssh);
+  const urlHost = isIPv6(ssh.host) ? `[${ssh.host}]` : ssh.host;
+  const repoUrl = `ssh://${ssh.user}@${urlHost}:${ssh.port}/${repoKey}`;
   const { stdout } = await execFileAsync(
     "git",
     ["ls-remote", "--heads", repoUrl],
-    { timeout: SSH_TIMEOUT_MS, env: { ...process.env, GIT_SSH_COMMAND: `ssh ${sshArgs.join(" ")}` } }
+    { timeout: SSH_TIMEOUT_MS, env: { ...process.env, GIT_SSH_COMMAND: sshCommand } }
   );
 
   const prefix = "refs/heads/";

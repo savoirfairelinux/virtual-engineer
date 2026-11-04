@@ -3,11 +3,12 @@
  * Pushes to `refs/for/<branch>` with a Change-Id trailer; all git operations run host-side.
  */
 
+import { isIPv6 } from "node:net";
 import { getLogger } from "../logger.js";
 import { trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
-import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
+import { GerritSshClient, buildGerritGitSshCommand } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
@@ -34,16 +35,14 @@ export interface GerritVcsConnectorConfig {
 
 /** Build the GIT_SSH_COMMAND string for authenticating git over SSH with the given config. */
 function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: string): string {
-  const keyPath = overrideSshKeyPath ?? config.sshKeyPath;
-  const agentPubKeyPath = config.sshAgentPubKeyPath;
-  const hostKeyOpts = buildSshHostKeyOptions(config.sshKnownHostsPath).join(" ");
-  const portPart = `-p ${config.sshPort}`;
-  const identityPart = keyPath
-    ? `-i "${keyPath.replace(/"/g, '\\"')}" -o IdentitiesOnly=yes`
-    : agentPubKeyPath
-      ? `-o IdentitiesOnly=yes -i "${agentPubKeyPath.replace(/"/g, '\\"')}"`
-      : "";
-  return ["ssh", portPart, identityPart, hostKeyOpts].filter(Boolean).join(" ");
+  return buildGerritGitSshCommand({
+    host: config.sshHost,
+    user: config.sshUser,
+    port: config.sshPort,
+    keyPath: overrideSshKeyPath ?? config.sshKeyPath,
+    agentPubKeyPath: config.sshAgentPubKeyPath,
+    knownHostsPath: config.sshKnownHostsPath,
+  });
 }
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
@@ -116,7 +115,8 @@ export class GerritVcsConnector implements VcsConnector {
     const info = await this.sshClient.queryChange(changeId);
     // Build the SSH fetch URL from connection params — config.baseUrl is the Gerrit
     // web UI URL (optional, used only for review links) and must NOT be used here.
-    const sshBaseUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}`;
+    const urlHost = isIPv6(this.config.sshHost) ? `[${this.config.sshHost}]` : this.config.sshHost;
+    const sshBaseUrl = `ssh://${this.config.sshUser}@${urlHost}:${this.config.sshPort}`;
     return {
       vcsBaseUrl: sshBaseUrl,
       revisionNumber: info.number,

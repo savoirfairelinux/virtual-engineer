@@ -63,6 +63,18 @@ describe("GerritVcsConnector", () => {
   });
 
   describe("clone", () => {
+    it.each(["2001:db8::1", "[2001:db8::1]"])("accepts an IPv6 clone on configured host %s", async (host) => {
+      const ipv6Connector = new GerritVcsConnector({ ...mockConfig, sshHost: host }, gitRunner);
+      const repoUrl = "ssh://virtual-engineer@[2001:db8::1]:29418/repo.git";
+
+      await ipv6Connector.clone(repoUrl, "main", "/tmp/repo");
+
+      expect(gitRunner.run).toHaveBeenCalledWith(
+        ["clone", "--branch", "main", "--depth", "1", "--", repoUrl, "/tmp/repo"],
+        expect.any(Object),
+      );
+    });
+
     it("should execute git clone with correct parameters", async () => {
       const repoUrl = "ssh://gerrit.example.com:29418/my-repo.git";
       const branch = "main";
@@ -136,6 +148,33 @@ describe("GerritVcsConnector", () => {
   });
 
   describe("GIT_SSH_COMMAND / known-hosts policy", () => {
+    it.each([
+      { sshUser: "-oProxyCommand=ignored" },
+      { sshHost: "-oProxyCommand=ignored" },
+      { sshUser: "ve user" },
+      { sshHost: "gerrit.example.com\n" },
+    ])("rejects unsafe identities before invoking Git: %j", async (identity) => {
+      const invalidConnector = new GerritVcsConnector({ ...mockConfig, ...identity }, gitRunner);
+
+      await expect(invalidConnector.pushDirect("/tmp/repo", "refs/for/main")).rejects.toThrow(/SSH identity/);
+
+      expect(gitRunner.run).not.toHaveBeenCalled();
+    });
+
+    it("quotes SSH paths as literal shell arguments", async () => {
+      const quotedConnector = new GerritVcsConnector({
+        ...mockConfig,
+        sshKeyPath: "/tmp/key's file",
+        sshKnownHostsPath: "/tmp/known hosts",
+      }, gitRunner);
+
+      await quotedConnector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
+
+      const sshCommand = gitRunner.calls[0]?.options.env?.["GIT_SSH_COMMAND"];
+      expect(sshCommand).toContain("'/tmp/key'\"'\"'s file'");
+      expect(sshCommand).toContain("'UserKnownHostsFile=/tmp/known hosts'");
+    });
+
     it("trusts the host key on first use when sshKnownHostsPath is not set", async () => {
       const tofuConnector = new GerritVcsConnector({
         ...mockConfig,
@@ -158,6 +197,7 @@ describe("GerritVcsConnector", () => {
       const sshCommand = gitRunner.calls[0]?.options.env?.["GIT_SSH_COMMAND"];
       expect(sshCommand).toContain("StrictHostKeyChecking=yes");
       expect(sshCommand).toContain("UserKnownHostsFile=/app/secrets/gerrit_known_hosts");
+      expect(sshCommand).toContain("'-l' 'virtual-engineer'");
       expect(sshCommand).not.toContain("StrictHostKeyChecking=no");
     });
   });
@@ -203,6 +243,15 @@ describe("GerritVcsConnector", () => {
 
       expect(status).toBe("OPEN");
     });
+  });
+
+  it.each(["2001:db8::1", "[2001:db8::1]"])("resolves a valid IPv6 patchset URL for host %s", async (host) => {
+    mockQueryChange.mockResolvedValue({ number: 42, status: "NEW", currentPatchSet: { number: 3, revision: "abc" } });
+    const ipv6Connector = new GerritVcsConnector({ ...mockConfig, sshHost: host }, gitRunner);
+
+    const options = await ipv6Connector.resolvePatchsetOptions("I123");
+
+    expect(options.vcsBaseUrl).toBe("ssh://virtual-engineer@[2001:db8::1]:29418");
   });
 
   describe("push-spec protocol members", () => {
