@@ -515,8 +515,21 @@ describe("Orchestrator — Phase 4 project mode", () => {
         }),
       };
       const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
-      return { orch, stateStore, vcsRoot, vcsCore };
+      return { orch, stateStore, ws, vcsRoot, vcsCore };
     }
+
+    it("never pushes when the coding run rejects returned Git metadata", async () => {
+      const { orch, ws, vcsRoot, vcsCore } = makeTrustFixture([".", "libs/core"]);
+      vi.mocked(ws.runAgent).mockRejectedValue(new Error("Untrusted Git metadata contains commondir"));
+      const task = makeTask({ state: "AGENT_RUNNING" });
+
+      await expect(
+        (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task),
+      ).rejects.toThrow(/commondir/i);
+
+      expect(vcsRoot.pushDirect).not.toHaveBeenCalled();
+      expect(vcsCore.pushDirect).not.toHaveBeenCalled();
+    });
 
     it("refuses to push a target the workspace runner did not clone", async () => {
       // Only "." was cloned by VE; "libs/core" is an agent-authored directory.

@@ -10,7 +10,7 @@
  */
 
 import { execFile } from "child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
@@ -319,15 +319,40 @@ export class HostGitExecutor {
     return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir, undefined, signal);
   }
 
-  /** Replace sandbox-returned Git configuration with host-trusted metadata. */
+  /** Validate all returned repository layouts, then rebuild host-trusted metadata without invoking Git. */
   async rebuildTrustedMetadata(dir: string, remotes: ReadonlyMap<string, string>): Promise<void> {
+    const repositories: Array<{ gitDir: string; remoteUrl: string }> = [];
     for (const [subPath, remoteUrl] of remotes) {
       const repoDir = resolveWorkspacePath(dir, subPath);
       const gitDir = join(repoDir, ".git");
       if (!lstatSync(gitDir).isDirectory()) {
         throw new Error(`Untrusted Git metadata is not a directory: ${subPath}`);
       }
+      for (const entry of ["commondir", "gitdir", "worktrees"]) {
+        try {
+          lstatSync(join(gitDir, entry));
+        } catch (err) {
+          if (err instanceof Error && "code" in err && err.code === "ENOENT") continue;
+          throw err;
+        }
+        throw new Error(`Untrusted Git metadata uses a shared repository layout (${entry}): ${subPath}`);
+      }
       await assertNoSymlinks(gitDir);
+      if (!lstatSync(join(gitDir, "HEAD")).isFile()
+        || !lstatSync(join(gitDir, "objects")).isDirectory()
+        || !lstatSync(join(gitDir, "refs")).isDirectory()) {
+        throw new Error(`Untrusted Git metadata has an invalid repository layout: ${subPath}`);
+      }
+      // An invalid HEAD makes Git skip this directory and discover an ancestor repository.
+      const head = await readFile(join(gitDir, "HEAD"), "utf8");
+      if (!/^ref: refs\/\S+\r?\n?$/.test(head)
+        && !/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\r?\n?$/.test(head)) {
+        throw new Error(`Untrusted Git metadata has an invalid HEAD: ${subPath}`);
+      }
+      repositories.push({ gitDir, remoteUrl });
+    }
+
+    for (const { gitDir, remoteUrl } of repositories) {
       await Promise.all([
         rm(join(gitDir, "hooks"), { recursive: true, force: true }),
         rm(join(gitDir, "objects", "info", "alternates"), { force: true }),
