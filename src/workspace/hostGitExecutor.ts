@@ -375,7 +375,8 @@ export class HostGitExecutor {
       if (head === undefined) {
         throw new Error(`Untrusted Git metadata has an oversized HEAD: ${subPath}`);
       }
-      if (!/^ref: refs\/\S+\r?\n?$/.test(head)
+      // Git refnames forbid only ASCII control and space bytes; non-ASCII whitespace is valid.
+      if (!/^ref: refs\/[^\x00-\x20\x7f]+\r?\n?$/.test(head)
         && !/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\r?\n?$/.test(head)) {
         throw new Error(`Untrusted Git metadata has an invalid HEAD: ${subPath}`);
       }

@@ -456,7 +456,7 @@ describe("HostGitExecutor", () => {
     }
   });
 
-  it.each(["", "invalid\n", "ref: HEAD\n", "1234\n"])(
+  it.each(["", "invalid\n", "ref: HEAD\n", "1234\n", "ref: refs/heads/fix bug\n", "ref: refs/heads/fix\tbug\n", "ref: refs/heads/fix\u007fbug\n"])(
     "rejects malformed HEAD %j before Git can discover an ancestor repository",
     async (head) => {
       const workspace = await mkdtemp(join(tmpdir(), "ve-git-invalid-head-"));
@@ -624,6 +624,33 @@ describe("HostGitExecutor", () => {
         .toBe("https://trusted.example/repo.git");
       expect(await readFile(join(workspace, ".git", "HEAD"), "utf8")).toBe(`${commit}\n`);
       expect(await readFile(join(workspace, ".git", "shallow"), "utf8")).toBe(`${commit}\n`);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: "U+00A0", branch: "fix\u00a0bug" },
+    { label: "U+2028", branch: "fix\u2028bug" },
+    { label: "U+3000", branch: "fix\u3000bug" },
+    { label: "U+FEFF", branch: "fix\ufeffbug" },
+  ])("restores a repository checked out on a valid branch containing $label", async ({ branch }) => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-unicode-branch-"));
+    const exec = new HostGitExecutor({ baseDir: tmpdir() });
+
+    try {
+      await exec.execGit(workspace, ["init", `--initial-branch=${branch}`]);
+      await exec.execGit(workspace, [
+        "-c", "user.name=Test",
+        "-c", "user.email=test@example.com",
+        "commit", "--allow-empty", "--no-gpg-sign", "-m", "test",
+      ]);
+
+      await exec.rebuildTrustedMetadata(workspace, new Map([[".", "https://trusted.example/repo.git"]]));
+
+      expect((await exec.execGit(workspace, ["symbolic-ref", "HEAD"])).trim()).toBe(`refs/heads/${branch}`);
+      expect((await exec.execGit(workspace, ["remote", "get-url", "--push", "origin"])).trim())
+        .toBe("https://trusted.example/repo.git");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
