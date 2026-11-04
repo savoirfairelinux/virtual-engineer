@@ -72,6 +72,10 @@ Methods used by the orchestrator:
 - Maps the same orchestrator-facing contract onto GitHub Issues REST endpoints (`GET /repos/:owner/:repo/issues`, paginated).
 - Reuses the same `in-progress / in-review / closed` workflow semantics via a single configurable `inProgressLabel` (default `in-progress`); GitHub Issues has no built-in status field, so labels double as workflow state.
 - The GitHub owner/repo selector can come from the VE project ticket binding (`ticketProjectKey`) rather than from the integration row.
+- HTTP failures use `GitHubApiError` (`TicketApiError`); HTTP 404 uses
+  `GitHubNotFoundError` (`TicketNotFoundError`) for both JSON reads and writes.
+  A 404 from either the closing comment or the close request lets a merged
+  task finish at `DONE` without retry; other failures keep the existing policy.
 
 ## Review contract (`ReviewConnector`)
 
