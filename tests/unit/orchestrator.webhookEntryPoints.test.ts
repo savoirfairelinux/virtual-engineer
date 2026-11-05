@@ -495,5 +495,34 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect((await store.getChangesForTask(taskId))[0]?.status).toBe("MERGED");
       expect((await store.getTask(taskId))?.state).toBe("DONE");
     });
+
+    it("does not abandon a task through its mirrored id after its project is rebound", async () => {
+      const agent = await store.createAgent({
+        name: "Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      await store.upsertIntegration({ id: "github-1", provider: "github", name: "GitHub", configJson: "{}", enabled: true });
+      await store.createProject({ id: makeProjectId("proj-1"), name: "Project", type: "coding", agentId: agent.id, enabled: true });
+      await store.addProjectPushTarget(makeProjectId("proj-1"), {
+        integrationId: "github-1",
+        repoKey: "owner/b",
+        cloneUrl: "https://github.com/owner/b.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 1,
+        localPath: ".",
+      });
+      const tracked = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      await store.updateExternalChangeId(tracked, makeExternalChangeId("42"), 1);
+      const orch = makeOrchestrator(store);
+
+      await orch.markChangeAbandoned("github-1", "owner/b#42");
+
+      expect(await store.getTask(tracked)).toMatchObject({ state: "IN_REVIEW", failureReason: null });
+    });
   });
 });

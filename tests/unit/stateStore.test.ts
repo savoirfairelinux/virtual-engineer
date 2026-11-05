@@ -1515,6 +1515,61 @@ describe("SqliteStateStore", () => {
       await expect(store.findTaskByExternalChangeId("github-1", "7", "owner/b")).resolves.toBeNull();
     });
 
+    it("never lets the current binding override a task's recorded change rows", async () => {
+      const agent = await store.createAgent({
+        name: "Rebound Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      const createSingleTargetProject = async (
+        integrationId: string,
+        provider: "github" | "gerrit",
+        repoKey: string,
+      ) => {
+        await store.upsertIntegration({ id: integrationId, provider, name: integrationId, configJson: "{}", enabled: true });
+        const project = await store.createProject({
+          id: makeProjectId(randomUUID()), name: repoKey, type: "coding", agentId: agent.id, enabled: true,
+        });
+        await store.addProjectPushTarget(project.id, {
+          integrationId,
+          repoKey,
+          cloneUrl: `https://example.test/${repoKey}.git`,
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+        });
+        return project;
+      };
+
+      // Recorded on owner/a (task-level id mirrored), project later rebound to owner/b.
+      const rebound = await createSingleTargetProject("github-1", "github", "owner/b");
+      const reboundTaskId = makeTaskId(randomUUID());
+      await store.createTask(reboundTaskId, makeTicketId("rebound"));
+      await store.setTaskProjectId(reboundTaskId, rebound.id);
+      await store.updateExternalChangeId(reboundTaskId, makeExternalChangeId("42"), 1);
+      await store.saveChangePerRepository(reboundTaskId, "owner/a", "42", null, "OPEN", "github-1", "github");
+
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/b")).resolves.toBeNull();
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toMatchObject({
+        taskId: reboundTaskId,
+      });
+
+      // An inactive (orphaned) recorded change must not resurface through the task-level id either.
+      const gerrit = await createSingleTargetProject("gerrit-1", "gerrit", "team/repo");
+      const orphanedTaskId = makeTaskId(randomUUID());
+      const orphanedChangeId = makeExternalChangeId("Iorphaned");
+      await store.createTask(orphanedTaskId, makeTicketId("orphaned"));
+      await store.setTaskProjectId(orphanedTaskId, gerrit.id);
+      await store.updateExternalChangeId(orphanedTaskId, orphanedChangeId, 1);
+      await store.saveChangePerRepository(orphanedTaskId, "team/repo", orphanedChangeId, null, "ORPHANED", "gerrit-1", "gerrit");
+
+      await expect(store.findTaskByExternalChangeId("gerrit-1", orphanedChangeId)).resolves.toBeNull();
+    });
+
     it("upserts existing per-repo change", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("repo-2"));

@@ -1130,11 +1130,15 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         if (reviewTask) return rowToTask(reviewTask);
       }
 
+      // Task-level ids predate per-repository tracking. Once a task has rows, they
+      // are the authoritative repository/status evidence; a current binding must
+      // never re-select it through its mirrored id (e.g. after a project rebind).
       const legacyTaskRows = raw
         .prepare(
           "SELECT DISTINCT task.task_id FROM tasks task " +
           "JOIN project_push_targets target ON target.project_id = task.project_id " +
           "WHERE task.task_type = 'code-gen' AND task.deleted_at IS NULL AND task.gerrit_change_id = ? " +
+          "AND NOT EXISTS (SELECT 1 FROM change_per_repository recorded WHERE recorded.task_id = task.task_id) " +
           "AND target.integration_id = ? " +
           "AND (? IS NULL OR target.repo_key = ? COLLATE NOCASE) " +
           "AND (SELECT COUNT(*) FROM project_push_targets target_count " +
