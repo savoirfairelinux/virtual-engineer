@@ -116,7 +116,7 @@ export interface TaskStoreApi {
   ): Promise<void>;
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
-  findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string): Promise<Task | null>;
+  findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string, repository?: string): Promise<Task | null>;
   findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null>;
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
   setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
@@ -1095,16 +1095,20 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
   async function findTaskByExternalChangeId(
     integrationId: string | null,
-    externalChangeId: string
+    externalChangeId: string,
+    repository?: string
   ): Promise<Task | null> {
     if (!externalChangeId) return null;
 
     if (integrationId !== null) {
+      const repositoryScope = repository ?? null;
       const scopedChangeRows = raw
         .prepare(
-          "SELECT DISTINCT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? AND status NOT IN ('NO_CHANGE', 'ORPHANED', 'MERGED', 'ABANDONED') LIMIT 2"
+          "SELECT DISTINCT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? " +
+          "AND (? IS NULL OR repo_key = ? COLLATE NOCASE) " +
+          "AND status NOT IN ('NO_CHANGE', 'ORPHANED', 'MERGED', 'ABANDONED') LIMIT 2"
         )
-        .all(externalChangeId, integrationId) as { task_id: string }[];
+        .all(externalChangeId, integrationId, repositoryScope, repositoryScope) as { task_id: string }[];
       if (scopedChangeRows.length > 1) return null;
       const scopedChangeRow = scopedChangeRows[0];
       if (scopedChangeRow) {
@@ -1114,7 +1118,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         if (scopedTask) return rowToTask(scopedTask);
       }
 
-      const reviewTaskRow = raw
+      const reviewTaskRow = repositoryScope !== null ? undefined : raw
         .prepare(
           "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND deleted_at IS NULL AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
         )
@@ -1132,11 +1136,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           "JOIN project_push_targets target ON target.project_id = task.project_id " +
           "WHERE task.task_type = 'code-gen' AND task.deleted_at IS NULL AND task.gerrit_change_id = ? " +
           "AND target.integration_id = ? " +
+          "AND (? IS NULL OR target.repo_key = ? COLLATE NOCASE) " +
           "AND (SELECT COUNT(*) FROM project_push_targets target_count " +
           "WHERE target_count.project_id = task.project_id " +
           "AND target_count.integration_id = ?) = 1 LIMIT 2"
         )
-        .all(externalChangeId, integrationId, integrationId) as { task_id: string }[];
+        .all(externalChangeId, integrationId, repositoryScope, repositoryScope, integrationId) as { task_id: string }[];
       if (legacyTaskRows.length !== 1) return null;
 
       const legacyTask = await db.query.tasks.findFirst({

@@ -1448,6 +1448,73 @@ describe("SqliteStateStore", () => {
       });
     });
 
+    it("scopes native hosted change numbers to the event repository", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      await store.createTask(firstTaskId, makeTicketId("hosted-a"));
+      await store.createTask(secondTaskId, makeTicketId("hosted-b"));
+      await store.saveChangePerRepository(firstTaskId, "owner/a", "42", null, "OPEN", "github-1", "github");
+      await store.saveChangePerRepository(secondTaskId, "Owner/B", "42", null, "OPEN", "github-1", "github");
+
+      await expect(store.findTaskByExternalChangeId("github-1", "42")).resolves.toBeNull();
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/b")).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/c")).resolves.toBeNull();
+    });
+
+    it("does not resolve bare review or legacy task ids outside the event repository", async () => {
+      const reviewTaskId = makeTaskId(randomUUID());
+      await store.createReviewTask({
+        taskId: reviewTaskId,
+        ticketId: makeTicketId("bare-review"),
+        subject: "Bare review",
+        sourceLabel: "github:github-1",
+        changeId: makeExternalChangeId("42"),
+        patchset: 1,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42")).resolves.toMatchObject({
+        taskId: reviewTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toBeNull();
+
+      const agent = await store.createAgent({
+        name: "Legacy Hosted Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      await store.upsertIntegration({
+        id: "github-1", provider: "github", name: "github-1", configJson: "{}", enabled: true,
+      });
+      const project = await store.createProject({
+        id: makeProjectId(randomUUID()), name: "legacy-hosted", type: "coding", agentId: agent.id, enabled: true,
+      });
+      await store.addProjectPushTarget(project.id, {
+        integrationId: "github-1",
+        repoKey: "owner/a",
+        cloneUrl: "https://github.com/owner/a.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 1,
+        localPath: ".",
+      });
+      const legacyTaskId = makeTaskId(randomUUID());
+      await store.createTask(legacyTaskId, makeTicketId("legacy-hosted"));
+      await store.setTaskProjectId(legacyTaskId, project.id);
+      await store.updateExternalChangeId(legacyTaskId, makeExternalChangeId("7"), 1);
+
+      await expect(store.findTaskByExternalChangeId("github-1", "7", "OWNER/A")).resolves.toMatchObject({
+        taskId: legacyTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "7", "owner/b")).resolves.toBeNull();
+    });
+
     it("upserts existing per-repo change", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("repo-2"));

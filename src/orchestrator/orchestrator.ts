@@ -16,6 +16,7 @@ import type { IntegrationStore } from "../interfaces.js";
 import {
   makeTaskId,
   makeTicketId,
+  parseQualifiedChangeId,
   type ExternalChangeId,
   type TicketId,
 } from "../domain/identifiers.js";
@@ -427,13 +428,17 @@ export class Orchestrator {
     });
   }
 
-  /** Resolve qualified review ids first, then legacy bare ids used by coding tasks. */
+  /**
+   * Resolve exact ids first (Gerrit Change-Ids, qualified review-task ids). A
+   * repository-qualified hosted id then matches its native number only within
+   * that repository, so `B#42` can never select repository A's PR/MR 42.
+   */
   private async findTaskForExternalChange(integrationId: string, externalChangeId: string): Promise<Task | null> {
     const exact = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (exact !== null) return exact;
-    const separator = externalChangeId.indexOf("#");
-    if (separator <= 0 || separator === externalChangeId.length - 1) return null;
-    return this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId.slice(separator + 1));
+    const qualified = parseQualifiedChangeId(externalChangeId);
+    if (qualified === null) return null;
+    return this.stateStore.findTaskByExternalChangeId(integrationId, qualified.changeId, qualified.repository);
   }
 
   private async resolveGerritRepoKey(

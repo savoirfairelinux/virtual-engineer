@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type Database from "better-sqlite3";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { SqliteStateStore } from "../../src/state/stateStore.js";
 import {
   makeTaskId,
   makeTicketId,
@@ -411,6 +413,87 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(stateStore.abandonTask).toHaveBeenCalledWith(task.taskId);
       expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "ABANDONED");
       expect(stateStore.setFailureReason).toHaveBeenCalled();
+    });
+  });
+
+  describe("repository-qualified hosted events (real state store)", () => {
+    let store: SqliteStateStore;
+
+    beforeEach(async () => {
+      store = await SqliteStateStore.create(":memory:");
+    });
+
+    afterEach(() => {
+      store.close();
+    });
+
+    async function trackHostedChange(
+      taskName: string,
+      changes: Array<{ repoKey: string; changeId?: string }>,
+    ): Promise<Task["taskId"]> {
+      const taskId = makeTaskId(taskName);
+      await store.createTask(taskId, makeTicketId(`ticket-${taskName}`));
+      (store as unknown as { raw: Database.Database }).raw
+        .prepare("UPDATE tasks SET state = 'IN_REVIEW', project_id = 'proj-1' WHERE task_id = ?")
+        .run(taskId);
+      for (const change of changes) {
+        const changeId = change.changeId ?? "42";
+        await store.saveChangePerRepository(
+          taskId, change.repoKey, changeId, `https://github.com/${change.repoKey}/pull/${changeId}`,
+          "OPEN", "github-1", "github", 0, null,
+        );
+      }
+      return taskId;
+    }
+
+    it.each(["markChangeMerged", "markChangeAbandoned", "triggerFeedbackForChange"] as const)(
+      "%s for an untracked repository leaves another repository's native number untouched",
+      async (entryPoint) => {
+        const tracked = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+        const transitionsBefore = await store.getStateTransitions(tracked);
+        const orch = makeOrchestrator(store);
+
+        await orch[entryPoint]("github-1", "owner/b#42");
+
+        expect(await store.getTask(tracked)).toMatchObject({ state: "IN_REVIEW", failureReason: null });
+        expect(await store.getStateTransitions(tracked)).toHaveLength(transitionsBefore.length);
+        expect(await store.getChangesForTask(tracked)).toEqual([
+          expect.objectContaining({ repoKey: "owner/a", changeId: "42", status: "OPEN" }),
+        ]);
+      },
+    );
+
+    it("routes a shared native number to the task of the event repository, case-insensitively", async () => {
+      const taskA = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const taskB = await trackHostedChange("task-b", [{ repoKey: "Owner/B" }]);
+      const orch = makeOrchestrator(store);
+
+      await orch.markChangeAbandoned("github-1", "owner/b#42");
+
+      expect((await store.getTask(taskB))?.state).toBe("ABANDONED");
+      expect((await store.getTask(taskA))?.state).toBe("IN_REVIEW");
+    });
+
+    it("merges only the event repository's row when one task tracks the same number twice", async () => {
+      const taskId = await trackHostedChange("task-multi", [{ repoKey: "owner/a" }, { repoKey: "owner/b" }]);
+      const orch = makeOrchestrator(store);
+
+      await orch.markChangeMerged("github-1", "owner/b#42");
+
+      const rows = await store.getChangesForTask(taskId);
+      expect(rows.find((row) => row.repoKey === "owner/b")?.status).toBe("MERGED");
+      expect(rows.find((row) => row.repoKey === "owner/a")?.status).toBe("OPEN");
+      expect((await store.getTask(taskId))?.state).toBe("IN_REVIEW");
+    });
+
+    it("still completes the tracked task for its own repository's merge event", async () => {
+      const taskId = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const orch = makeOrchestrator(store);
+
+      await orch.markChangeMerged("github-1", "OWNER/A#42");
+
+      expect((await store.getChangesForTask(taskId))[0]?.status).toBe("MERGED");
+      expect((await store.getTask(taskId))?.state).toBe("DONE");
     });
   });
 });

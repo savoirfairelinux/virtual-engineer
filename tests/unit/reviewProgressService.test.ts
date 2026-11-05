@@ -230,6 +230,26 @@ describe("ReviewProgressService", () => {
     expect(dependencies.closeTicket).toHaveBeenCalledOnce();
   });
 
+  it("selects a qualified merge event's row by repository as well as native number", async () => {
+    const task = makeTask();
+    const hosted = { integrationId: "github-1", reviewSystem: "github", changeId: "42" };
+    const changes = [
+      makeChange(task, { ...hosted, id: "change-a", repoKey: "owner/a" }),
+      makeChange(task, { ...hosted, id: "change-b", repoKey: "owner/b" }),
+    ];
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn(async () => changes),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.markChangeMerged(task, "github-1", "owner/c#42");
+    expect(dependencies.updateChangeStatus).not.toHaveBeenCalled();
+
+    await service.markChangeMerged(task, "github-1", "OWNER/B#42");
+    expect(dependencies.updateChangeStatus).toHaveBeenCalledExactlyOnceWith(task.taskId, "change-b", "MERGED");
+    expect(dependencies.transition).not.toHaveBeenCalled();
+  });
+
   it("accepts qualified legacy merge event ids", async () => {
     const task = makeTask({ externalChangeId: makeExternalChangeId("123") });
     const dependencies = makeDependencies(task, {} as ReviewConnector, {

@@ -1,4 +1,5 @@
 import type { ExternalChangeId, TaskId } from "../domain/identifiers.js";
+import { isSameRepository, parseQualifiedChangeId } from "../domain/identifiers.js";
 import type { ChangePerRepository, Task, TaskState } from "../domain/tasks.js";
 import type {
   FeedbackItem,
@@ -14,10 +15,19 @@ const log = getLogger("review-progress");
 
 type ReviewProgressConnector = ReviewConnector | VcsConnector;
 
+/** Legacy task-level ids carry no repository; the store already scoped the task to the event repository. */
 function matchesExternalChangeId(recordedChangeId: string, eventChangeId: string): boolean {
-  if (recordedChangeId === eventChangeId) return true;
-  const separator = eventChangeId.lastIndexOf("#");
-  return separator > 0 && recordedChangeId === eventChangeId.slice(separator + 1);
+  return recordedChangeId === eventChangeId
+    || parseQualifiedChangeId(eventChangeId)?.changeId === recordedChangeId;
+}
+
+/** A qualified hosted event matches a change row only for the same native number and repository. */
+function matchesChangeRow(change: ChangePerRepository, eventChangeId: string): boolean {
+  if (change.changeId === eventChangeId) return true;
+  const qualified = parseQualifiedChangeId(eventChangeId);
+  return qualified !== null
+    && change.changeId === qualified.changeId
+    && isSameRepository(change.repoKey, qualified.repository);
 }
 
 export interface ReviewProgressDependencies {
@@ -86,7 +96,7 @@ export class ReviewProgressService {
         && (repoKey === undefined || change.repoKey === repoKey)
         && change.status !== "NO_CHANGE"
         && change.status !== "ORPHANED"
-        && matchesExternalChangeId(change.changeId, externalChangeId)
+        && matchesChangeRow(change, externalChangeId)
     );
     if (matchingChanges.length !== 1) {
       log.warn(
