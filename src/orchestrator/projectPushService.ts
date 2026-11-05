@@ -157,8 +157,11 @@ export class ProjectPushService {
           target.reviewerEmails,
         );
 
-        const repoCommits = (agentCommits ?? []).filter((commit) => commit.repoKey === target.repoKey);
+        const repoCommits = vcsConnector.useChangeIdContinuity
+          ? (agentCommits ?? []).filter((commit) => commit.repoKey === target.repoKey)
+          : [];
         const makeChangeUrl = (targetChangeId: string): string => {
+          if (!vcsConnector.useChangeIdContinuity) return pushResult.url;
           if (!pushResult.url) return "";
           if (pushResult.changeId && pushResult.url.includes(pushResult.changeId)) {
             return pushResult.url.replace(pushResult.changeId, targetChangeId);

@@ -1,12 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CommitDescriptor,
   ProjectPushTargetRecord,
+  ReviewConnector,
   StateStore,
   Task,
   WorkspaceHandle,
 } from "../../src/interfaces.js";
-import { makeProjectId, makeTaskId } from "../../src/interfaces.js";
+import { makeProjectId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
+import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { ReviewProgressService } from "../../src/orchestrator/reviewProgressService.js";
 import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import {
   ProjectPushService,
@@ -78,6 +81,7 @@ describe("ProjectPushService", () => {
       }),
       buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-1" }),
       reviewSystemLabel: "gerrit",
+      useChangeIdContinuity: true,
     } as unknown as VcsConnector;
     const commits: CommitDescriptor[] = [
       { repoKey: "root", sha: "sha-1", subject: "feat: first", body: "", changeId: "Ione", files: [] },
@@ -122,5 +126,151 @@ describe("ProjectPushService", () => {
       "root",
       1,
     );
+  });
+
+  describe.each([
+    { reviewSystemLabel: "gerrit", useChangeIdContinuity: true, changeId: "Ihead", path: "c" },
+    { reviewSystemLabel: "github", useChangeIdContinuity: false, changeId: "42", path: "pull" },
+    { reviewSystemLabel: "gitlab", useChangeIdContinuity: false, changeId: "42", path: "-/merge_requests" },
+  ] as const)("$reviewSystemLabel native persistence", (provider) => {
+    let store: SqliteStateStore;
+
+    beforeEach(async () => {
+      store = await SqliteStateStore.create(":memory:");
+      await store.createTask(makeTask().taskId, makeTicketId("ticket-1"));
+    });
+
+    afterEach(() => {
+      store.close();
+    });
+
+    it.each([
+      { commitCount: 1, rewrite: false },
+      { commitCount: 2, rewrite: false },
+      { commitCount: 1, rewrite: true },
+      { commitCount: 2, rewrite: true },
+    ])("stores $commitCount commit(s), rewrite=$rewrite", async ({ commitCount, rewrite }) => {
+      const pushResult = {
+        changeId: provider.changeId,
+        url: `https://review.example.test/team42/root/${provider.path}/${provider.changeId}?context=42`,
+        status: "OPEN",
+      };
+      const connector: VcsConnector = {
+        clone: vi.fn().mockResolvedValue(undefined),
+        getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+        pushDirect: vi.fn().mockResolvedValue(pushResult),
+        buildPushSpec: () => ({ ref: "feature-task-1" }),
+        useChangeIdContinuity: provider.useChangeIdContinuity,
+        reviewSystemLabel: provider.reviewSystemLabel,
+      };
+      const workspaceRunner = {
+        listTrustedRepoPaths: () => ["."],
+        execGitInVolume: vi.fn().mockResolvedValue(`${commitCount}\n`),
+      };
+      const service = new ProjectPushService(makeDependencies(store, workspaceRunner, connector));
+      const commits: CommitDescriptor[] = Array.from({ length: commitCount }, (_, index) => ({
+        repoKey: "root",
+        sha: `sha-${index}`,
+        subject: `feat: commit ${index}`,
+        body: "",
+        changeId: `I${String(index + 1).repeat(40)}`,
+        files: [],
+      }));
+
+      if (rewrite) {
+        await service.pushProjectChanges(makeTask(), makeHandle(), [makeTarget()], "feat: fallback", commits);
+        commits.forEach((commit) => {
+          commit.sha += "-rewritten";
+          commit.subject += " rewritten";
+          if (!provider.useChangeIdContinuity) {
+            commit.changeId = `I${"a".repeat(40)}`;
+          }
+        });
+      }
+
+      await service.pushProjectChanges(makeTask(), makeHandle(), [makeTarget()], "feat: fallback", commits);
+
+      const rows = (await store.getChangesForTask(makeTask().taskId))
+        .sort((left, right) => left.commitIndex - right.commitIndex);
+      expect(rows).toHaveLength(provider.useChangeIdContinuity ? commitCount : 1);
+      expect(rows.map((row) => row.changeId)).toEqual(
+        provider.useChangeIdContinuity ? commits.map((commit) => commit.changeId) : ["42"],
+      );
+      for (const [index, row] of rows.entries()) {
+        expect(row).toMatchObject({
+          integrationId: "vcs-1",
+          reviewSystem: provider.reviewSystemLabel,
+          commitIndex: index,
+          status: "OPEN",
+        });
+        expect(row.reviewUrl).toBe(provider.useChangeIdContinuity
+          ? index === 0 ? pushResult.url.replace(provider.changeId, commits[0]!.changeId) : ""
+          : pushResult.url);
+      }
+      if (!provider.useChangeIdContinuity) {
+        const task = await store.getTask(makeTask().taskId);
+        if (!task) throw new Error("Expected persisted task");
+        const reviewConnector: ReviewConnector = {
+          getChange: vi.fn<ReviewConnector["getChange"]>(),
+          getChangeStatus: vi.fn<ReviewConnector["getChangeStatus"]>().mockResolvedValue("OPEN"),
+          getUnresolvedComments: vi.fn<ReviewConnector["getUnresolvedComments"]>().mockResolvedValue([]),
+          addChangeComment: vi.fn<ReviewConnector["addChangeComment"]>(),
+          resolveComments: vi.fn<ReviewConnector["resolveComments"]>(),
+        };
+        const reviewProgress = new ReviewProgressService({
+          getChangesForTask: (taskId) => store.getChangesForTask(taskId),
+          transition: vi.fn().mockImplementation((_taskId, state: Task["state"]) => Promise.resolve({ ...task, state })),
+          updateChangeStatus: (taskId, rowId, status) => store.updateChangePerRepositoryStatusById(taskId, rowId, status),
+          getTask: (taskId) => store.getTask(taskId),
+          resolveReviewConnector: () => Promise.resolve(reviewConnector),
+          resolveVcsConnector: () => Promise.resolve(connector),
+          getDefaultVcsConnector: () => undefined,
+          extractNewFeedback: vi.fn().mockResolvedValue([[], []]),
+          reactsToCiFailures: () => Promise.resolve(false),
+          getMaxAgentCycles: () => 3,
+          runAgentCycle: vi.fn().mockResolvedValue(undefined),
+          closeTicket: vi.fn().mockResolvedValue(undefined),
+          abandonTask: vi.fn().mockResolvedValue(undefined),
+        });
+
+        await reviewProgress.check({ ...task, state: "IN_REVIEW" });
+
+        expect(connector.getChangeStatus).toHaveBeenCalledExactlyOnceWith("42");
+        expect(reviewConnector.getUnresolvedComments).toHaveBeenCalledExactlyOnceWith("42");
+      }
+    });
+  });
+
+  it("uses the continuity capability, not the review-system label", async () => {
+    const stateStore = {
+      saveChangePerRepository: vi.fn().mockResolvedValue(undefined),
+      orphanExcessChanges: vi.fn().mockResolvedValue(0),
+    };
+    const connector: VcsConnector = {
+      clone: vi.fn().mockResolvedValue(undefined),
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      pushDirect: vi.fn().mockResolvedValue({
+        changeId: "42",
+        url: "https://review.example.test/pull/42",
+        status: "OPEN",
+      }),
+      buildPushSpec: () => ({ ref: "feature-task-1" }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: "gerrit",
+    };
+    const service = new ProjectPushService(makeDependencies(stateStore, {
+      execGitInVolume: vi.fn().mockResolvedValue("2"),
+    }, connector));
+
+    await service.pushProjectChanges(makeTask(), makeHandle(), [makeTarget()], "feat: fallback", [
+      { repoKey: "root", sha: "sha-1", subject: "first", body: "", changeId: "Ione", files: [] },
+      { repoKey: "root", sha: "sha-2", subject: "second", body: "", changeId: "Itwo", files: [] },
+    ]);
+
+    expect(stateStore.saveChangePerRepository).toHaveBeenCalledExactlyOnceWith(
+      makeTask().taskId, "root", "42", "https://review.example.test/pull/42",
+      "OPEN", "vcs-1", "gerrit", 0, expect.any(String),
+    );
+    expect(stateStore.orphanExcessChanges).toHaveBeenCalledWith(makeTask().taskId, "root", 0);
   });
 });

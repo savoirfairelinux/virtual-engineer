@@ -16,7 +16,7 @@ import type { PatchsetCheckoutOptions, ReviewComment, ReviewSystem } from "../in
  * Represents the change/MR that was created or updated.
  */
 export interface VcsPushResult {
-  /** The change or merge request identifier (Gerrit Change-Id or GitLab MR IID) */
+  /** Native review identifier: Gerrit Change-Id, GitHub PR number, or GitLab MR IID. */
   changeId: string;
   /** HTTP URL to view the change/MR */
   url: string;
@@ -58,6 +58,15 @@ export interface VcsConnector {
   ): Promise<VcsPushResult>;
 
   /**
+   * Look up an existing review for an exact branch pair without pushing or
+   * creating one. Returns null if absent; throws for ambiguous matches.
+   */
+  findExistingReview?(
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<VcsPushResult | null>;
+
+  /**
    * Get the current status of a change/MR.
    * @param changeId The Gerrit Change-Id or GitLab MR IID
    * @returns Status string: "OPEN", "MERGED", "ABANDONED", etc.
@@ -93,7 +102,8 @@ export interface VcsConnector {
    * change continuity across amend/rebase cycles (Gerrit) vs. branch-based
    * identity (GitLab MR). When true the orchestrator populates
    * existingChangeId and perRepoChangeIds in the agent session; when false
-   * it omits them.
+   * it omits them. Push persistence follows the same capability: true stores
+   * one change per commit; false stores the single native push result.
    */
   readonly useChangeIdContinuity: boolean;
 

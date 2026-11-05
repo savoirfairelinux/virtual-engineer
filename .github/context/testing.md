@@ -38,7 +38,7 @@ tests/
 | Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshKeyPair`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `githubConnectionValidator`, `branchNaming`, `webhookHandlerGithubPullRequest` |
-| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector` |
+| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector`, `changeIdentityRepair` |
 | Agents / shared + Copilot | `providerOptions`, `toolAuthorization`, `toolAuthorizationValidation`, `agentStderrPipeline`, `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract, per-engine image), `agentEngines`, `copilotWorker`, `mcpSubmission`, `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerPromptLoader`, `promptSkillIntegrity`, `workerCopilotProvider`, `workerClaudeProvider`, `workerNetworkGuard`, `workerToolAuthorization`, `workerSkills` |
 | Agents / Claude | `claudeAdapter`, `claudeDescriptor`, `claudeOAuth`, `claudeWorker`, `claudeConnectionValidator` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
@@ -58,6 +58,8 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 
 ## Conventions
+
+- `projectPushService` uses real SQLite persistence for the Gerrit/GitHub/GitLab matrix (one/two commits, original/rewritten chains). Hosted IDs and URLs must equal the native push result; Gerrit remains per-commit. `changeIdentityRepair` covers read-only defaults, exact provider lookups, ambiguity, mixed-provider preservation, idempotence, multi-repository atomic application, stale snapshots, and rollback. Its CLI tests use only temporary databases and no live providers. The operator command `npm run repair:change-identities` defaults to a dry run; see [the rollout contract](modules/vcs.md#historical-hosted-change-repair) before using `--apply`.
 
 - GitHub issue tests verify shared error inheritance and redacted, bounded
   diagnostics. Closure regressions wire the real connector through

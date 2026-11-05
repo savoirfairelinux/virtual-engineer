@@ -15,8 +15,17 @@ import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
+import { z } from "zod";
 
 const log = getLogger("github-vcs");
+const branchPullRequestsSchema = z.array(z.object({
+  number: z.number().int().positive(),
+  html_url: z.url(),
+  state: z.enum(["open", "closed"]),
+  merged_at: z.string().nullable(),
+  head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+  base: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+}));
 
 export interface GitHubVcsConnectorConfig {
   /** API base URL: "https://api.github.com" or "https://ghe.example.com/api/v3" */
@@ -125,6 +134,30 @@ export class GitHubVcsConnector implements VcsConnector {
     const pr = await this.fetchPullRequest(parseInt(changeId, 10));
     if (pr.state === "closed") return pr.merged ? "MERGED" : "ABANDONED";
     return "OPEN";
+  }
+
+  async findExistingReview(sourceBranch: string, targetBranch: string): Promise<VcsPushResult | null> {
+    const repoSlug = `${this.config.owner}/${this.config.repo}`;
+    const url = `${this.repoApiUrl()}/pulls?state=all&head=${encodeURIComponent(
+      `${this.config.owner}:${sourceBranch}`,
+    )}&base=${encodeURIComponent(targetBranch)}&per_page=2`;
+    const response = await globalThis.fetch(url, { headers: this.authHeaders() });
+    if (!response.ok) {
+      throw new ReviewApiError(response.status, url, await response.text().catch(() => ""));
+    }
+    const prs = branchPullRequestsSchema.parse(await response.json());
+    if (prs.length > 1) throw new Error("Ambiguous pull requests for the pushed branch");
+    const pr = prs[0];
+    if (!pr) return null;
+    if (pr.head.ref !== sourceBranch || pr.base.ref !== targetBranch
+      || pr.head.repo.full_name !== repoSlug || pr.base.repo.full_name !== repoSlug) {
+      throw new Error("Pull request does not match the bound repository and branches");
+    }
+    return {
+      changeId: String(pr.number),
+      url: pr.html_url,
+      status: pr.state === "open" ? "OPEN" : pr.merged_at !== null ? "MERGED" : "ABANDONED",
+    };
   }
 
   getUnresolvedComments(_changeId: string): Promise<ReviewComment[]> {

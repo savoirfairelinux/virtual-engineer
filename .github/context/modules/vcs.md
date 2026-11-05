@@ -26,6 +26,11 @@ interface VcsConnector {
     topic?: string,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
+  /** Read-only exact branch lookup; null if absent, error if ambiguous. */
+  findExistingReview?(
+    sourceBranch: string,
+    targetBranch: string
+  ): Promise<VcsPushResult | null>;
 }
 ```
 
@@ -39,7 +44,24 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 
 After coding-workspace download, all recorded repositories must pass filesystem-only standalone-layout validation before any metadata is rebuilt or host Git runs. Shared-directory markers (`commondir`, `gitdir`), gitfiles, symlinks, missing/bare layouts, malformed or oversized (over 4 KiB) `HEAD` files, and metadata Git itself could not recognize (unreadable `HEAD`, non-searchable `objects`/`refs`, which would make discovery fall back to a parent repository) fail the coding run. Rebuilding then restores each repository's own credential-free origin and removes sandbox-controlled push URLs, URL rewrites, hooks, alternates, attributes, worktree configuration, and leftover linked-worktree registrations (`worktrees`). See [modules/workspace.md](workspace.md#sandbox-lifecycle-per-cycle).
 
-`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR identifier. Per-repository results are stored in `change_per_repository`; the legacy task-level `tasks.gerrit_change_id` and `tasks.review_url` fields retain the primary result.
+`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR number (the hosted identifiers are native numeric strings, not commit trailers or repository-qualified IDs). `useChangeIdContinuity` controls persistence: Gerrit keeps one row per commit; GitHub/GitLab keep one row per pushed repository and the exact returned URL. `reviewSystemLabel` remains an opaque stored label.
+
+## Historical hosted change repair
+
+`npm run repair:change-identities` inspects an existing, migrated `DATABASE_PATH` using its database-managed integrations. The default connection is read-only: it does not create a database, run migrations, seed data, push, or create reviews. Optional `--task <id>` restricts the scan.
+
+The tool recognizes legacy `I<40 hex digits>` rows, resolves the recorded integration and current project target, and respects the connector's continuity capability. GitHub/GitLab `findExistingReview()` queries **all** review states for the exact persisted `push_ref` and target branch, validates native identifiers and branch/repository ownership, and refuses forks or multiple matches rather than selecting the first result.
+
+An authoritative provider URL must equal the stored URL or reproduce the known faulty identifier replacement exactly. Missing branches/integrations, changed bindings, mixed review systems, conflicting native IDs/terminal statuses, and unproven URLs block application. No ID is inferred from a malformed URL.
+
+Rollout:
+
+1. Deploy the fix, stop VE intake, and back up the database.
+2. Run `npm run repair:change-identities` (or append `-- --task <id>`) and review the JSON report.
+3. Resolve every blocked target in the selected scope, then run `npm run repair:change-identities -- --apply` (retaining `--task <id>` if selected).
+4. Restart intake and verify status/feedback polling uses the native review identifiers.
+
+Application revalidates complete task, integration, push-target, and change-row snapshots in one immediate SQLite transaction before any writes. It fixes the primary row and marks proven duplicate hosted rows `ORPHANED`, retaining their IDs and history. A task's legacy mirrored review fields are corrected only when their URL independently proves the same corruption; task state and push reference never change. Genuine Gerrit rows are untouched. Any blocked target prevents all selected repairs; a stale snapshot or write failure rolls back the whole transaction. Exit codes are 0 for a successful scan/application, 2 for blocked targets, and 1 for execution failures.
 
 ## Implementations
 

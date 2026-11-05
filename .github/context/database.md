@@ -142,6 +142,8 @@ measured zero and missing provider usage.
 
 ## Per-Repository Change Status
 
+- Per-push persistence follows `VcsConnector.useChangeIdContinuity`: Gerrit keeps indexed commit Change-Ids; GitHub/GitLab keep one native PR number/MR IID and the unchanged provider URL at `commit_index = 0`. Existing excess active rows are orphaned after a successful push.
+- The explicit [hosted identity repair tool](modules/vcs.md#historical-hosted-change-repair) opens an existing database read-only by default and makes no schema changes. Application revalidates full snapshots atomically, preserves duplicate rows as `ORPHANED` history, and never deletes genuine Gerrit changes or alters task lifecycle state.
 - Integration-scoped `findTaskByExternalChangeId()` lookup for `change_per_repository` rows excludes `NO_CHANGE` / `ORPHANED` / `MERGED` / `ABANDONED` entries and returns no task when more than one task matches, rather than selecting the most recently updated task.
 - When no per-repository row resolves, legacy code-generation `tasks.gerrit_change_id` values resolve only if the task's project has exactly one push target for the supplied integration. Projectless tasks, multiple targets, and multiple task candidates remain unresolved.
 - `updateChangePerRepositoryStatusById(taskId, changeRowId, status)` updates a single existing row using `(task_id, id)`. It does not reactivate `NO_CHANGE` / `ORPHANED` rows or downgrade a persisted `MERGED` / `ABANDONED` status from a stale poll. This store-contract change adds no column, index, or migration.
