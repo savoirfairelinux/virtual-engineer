@@ -8,6 +8,8 @@
 
 - Runtime schemas use Zod 4.6.7 or newer. Root and agent-worker overrides keep transitive Zod copies on the patched release line; both lockfiles must be updated together. Schema migrations preserve custom admin validation messages, explicit string-keyed records, LDAP parse results, and provider defaults.
 - CI treats `npm audit --omit=dev` in the root and in `agent-worker/` as blocking checks. Development-tooling audits are informational. Validate both production dependency trees when updating lockfiles; do not bypass these audit gates.
+- A root override pins `minimatch` to `^11.0.1` only under `@typescript-eslint/typescript-estree` (GHSA-g3hv-75wg-m249), because typescript-eslint still declares `^10.2.2`; ESLint's `minimatch@3` copies are outside the advisory range. Remove the override once typescript-eslint accepts a patched release.
+- npm 10.9.x can abort with `Cannot read properties of null (reading 'edgesOut')` while re-resolving Vitest's optional peers. Produce such lockfile updates with npm 11 (`npx npm@11 install --package-lock-only ...`), then normalize the lockfile with Node 22's npm (`npm install --package-lock-only`) and confirm `npm ci`.
 
 ## Layout
 
