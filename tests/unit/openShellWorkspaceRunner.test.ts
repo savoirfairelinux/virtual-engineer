@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   OpenShellWorkspaceRunner as ProductionOpenShellWorkspaceRunner,
   type OpenShellRunnerDeps,
 } from "../../src/workspace/openShellWorkspaceRunner.js";
-import type { HostGitExecutor } from "../../src/workspace/hostGitExecutor.js";
+import { HostGitExecutor, type GitRunner } from "../../src/workspace/hostGitExecutor.js";
 import type { OpenShellClient } from "../../src/openshell/openShellClient.js";
 import type {
   AgentAdapter,
@@ -602,6 +602,53 @@ describe("OpenShellWorkspaceRunner", () => {
       "/tmp/ws-1",
       new Map([[".", "https://trusted.example/repo.git"]]),
     );
+  });
+
+  it("rejects a downloaded commondir before returning coding success or invoking host Git", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-returned-commondir-"));
+    const gitRunner = vi.fn<GitRunner>().mockResolvedValue("");
+    const git = new HostGitExecutor({ baseDir: tmpdir(), git: gitRunner });
+    vi.spyOn(git, "cloneRepo").mockResolvedValue(undefined);
+    const client = fakeClient({
+      downloadFromSandbox: vi.fn(async () => {
+        const gitDir = join(workspace, ".git");
+        await mkdir(join(gitDir, "objects"), { recursive: true });
+        await mkdir(join(gitDir, "refs"));
+        await writeFile(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+        await writeFile(join(gitDir, "commondir"), "../untrusted-common\n");
+      }),
+    });
+    const runner = new OpenShellWorkspaceRunner({ git, client });
+    const context: TaskContext = {
+      taskId: handle.taskId,
+      ticketTitle: "Test returned metadata",
+      ticketDescription: "",
+      acceptanceCriteria: [],
+      baseBranch: "main",
+      workspacePath: workspace,
+      constraints: [],
+      priorFeedback: [],
+      cycleNumber: 1,
+      commitMessage: "fix: test",
+      agentSession: {
+        agentContainerImage: "agent:img",
+        repoCloneUrl: "https://trusted.example/repo.git",
+        pushRef: "refs/for/main",
+        gitAuthorName: "Test",
+        gitAuthorEmail: "test@example.com",
+      },
+    };
+
+    try {
+      await runner.cloneRepo({ ...handle, hostWorkspacePath: workspace }, "https://trusted.example/repo.git", "main");
+
+      await expect(runner.runAgentInDocker(fakeCodingAdapter(), context)).rejects.toThrow(/commondir/i);
+
+      expect(client.downloadFromSandbox).toHaveBeenCalledOnce();
+      expect(gitRunner).not.toHaveBeenCalled();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it.each([

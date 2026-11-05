@@ -32,6 +32,28 @@ deny-by-default gateway runtime policies:
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
+### Returned Coding Workspaces
+
+Downloaded coding artifacts remain untrusted. Before host Git runs against
+them, VE validates every host-recorded root/sub-repository using filesystem
+operations only. Repositories must have standalone `.git` directories, valid
+`HEAD` files of at most 4 KiB, and local object/ref directories. Validation
+mirrors Git's repository recognition: `HEAD` must be readable and
+`objects`/`refs` searchable by the host user, so Git cannot skip a recorded
+repository and fall back to an ancestor or agent-created one. Shared-repository
+markers (`commondir` or `gitdir`), gitfiles, symlinks, and missing/bare layouts
+fail the coding run; even empty or dangling `commondir` entries are rejected.
+`HEAD` is read with a fixed bound, never loaded whole. Only after all
+repositories pass does VE restore each trusted origin and remove
+sandbox-controlled configuration, hooks, alternates, worktree configuration,
+attributes, and linked-worktree registrations (`worktrees`). Agent worktree
+isolation can legitimately leave such registrations, and host Git never runs
+inside linked worktrees, so they are stripped rather than rejected.
+
+Host Git also forces `protocol.ext.allow=never`. This is defense in depth, not
+a replacement for metadata validation and rebuilding. Review workspaces are
+never downloaded back.
+
 ### Project Skill Discovery
 
 Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`); `OpenShellWorkspaceRunner` fetches and installs them **on the host**, before the workspace is uploaded to the sandbox, so SSH material and `SKILL_SOURCES_JSON` never reach the sandbox — only the resulting skill files do. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:

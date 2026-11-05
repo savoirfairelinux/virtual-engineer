@@ -2,10 +2,11 @@ import { describe, it, expect } from "vitest";
 import { trustedGitArgs, trustedGitEnv } from "../../src/utils/gitExec.js";
 
 describe("trustedGitArgs", () => {
-  it("neutralises repository hooks and config includes", () => {
+  it("neutralises repository hooks, config includes and ext transport", () => {
     expect(trustedGitArgs(["status"])).toEqual([
       "-c", "core.hooksPath=/dev/null",
       "-c", "include.path=/dev/null",
+      "-c", "protocol.ext.allow=never",
       "status",
     ]);
   });

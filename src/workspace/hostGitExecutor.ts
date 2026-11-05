@@ -10,8 +10,8 @@
  */
 
 import { execFile } from "child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
-import { lstatSync } from "node:fs";
+import { access, mkdir, mkdtemp, open, readdir, rm, writeFile } from "fs/promises";
+import { constants, lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 import { isSshRemoteUrl } from "../utils/gitRemoteUrl.js";
@@ -23,6 +23,7 @@ export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv, s
 const DEFAULT_CLONE_MAX_ATTEMPTS = 3;
 const DEFAULT_CLONE_RETRY_DELAY_MS = 1_000;
 const DEFAULT_CLONE_TIMEOUT_MS = 5 * 60 * 1_000;
+const MAX_RETURNED_HEAD_BYTES = 4_096;
 const TRANSIENT_CLONE_ERROR = /(?:RPC failed|early EOF|invalid index-pack|index-pack failed|remote end hung up|could not resolve host|network is unreachable|connection (?:timed out|reset|closed|refused)|curl \d+.*(?:timed out|recv failure|reset))/i;
 
 const defaultGitRunner: GitRunner = (args, cwd, env, signal) =>
@@ -79,6 +80,23 @@ async function assertNoSymlinks(path: string): Promise<void> {
       throw new Error(`Untrusted Git metadata contains a symbolic link: ${entry.name}`);
     }
     if (entry.isDirectory()) await assertNoSymlinks(entryPath);
+  }
+}
+
+/** Read at most `maxBytes` from a file; resolves undefined when the file is larger. */
+async function readBoundedFile(path: string, maxBytes: number): Promise<string | undefined> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    return length > maxBytes ? undefined : buffer.toString("utf8", 0, length);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -319,19 +337,59 @@ export class HostGitExecutor {
     return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir, undefined, signal);
   }
 
-  /** Replace sandbox-returned Git configuration with host-trusted metadata. */
+  /** Validate all returned repository layouts, then rebuild host-trusted metadata without invoking Git. */
   async rebuildTrustedMetadata(dir: string, remotes: ReadonlyMap<string, string>): Promise<void> {
+    const repositories: Array<{ gitDir: string; remoteUrl: string }> = [];
     for (const [subPath, remoteUrl] of remotes) {
       const repoDir = resolveWorkspacePath(dir, subPath);
       const gitDir = join(repoDir, ".git");
       if (!lstatSync(gitDir).isDirectory()) {
         throw new Error(`Untrusted Git metadata is not a directory: ${subPath}`);
       }
+      for (const entry of ["commondir", "gitdir"]) {
+        try {
+          lstatSync(join(gitDir, entry));
+        } catch (err) {
+          if (err instanceof Error && "code" in err && err.code === "ENOENT") continue;
+          throw err;
+        }
+        throw new Error(`Untrusted Git metadata uses a shared repository layout (${entry}): ${subPath}`);
+      }
       await assertNoSymlinks(gitDir);
+      if (!lstatSync(join(gitDir, "HEAD")).isFile()
+        || !lstatSync(join(gitDir, "objects")).isDirectory()
+        || !lstatSync(join(gitDir, "refs")).isDirectory()) {
+        throw new Error(`Untrusted Git metadata has an invalid repository layout: ${subPath}`);
+      }
+      // Mirror Git's repository recognition; otherwise discovery falls back to an ancestor repository.
+      try {
+        await Promise.all([
+          access(join(gitDir, "HEAD"), constants.R_OK),
+          access(join(gitDir, "objects"), constants.X_OK),
+          access(join(gitDir, "refs"), constants.X_OK),
+        ]);
+      } catch (err) {
+        throw new Error(`Untrusted Git metadata is not accessible to host Git: ${subPath}`, { cause: err });
+      }
+      const head = await readBoundedFile(join(gitDir, "HEAD"), MAX_RETURNED_HEAD_BYTES);
+      if (head === undefined) {
+        throw new Error(`Untrusted Git metadata has an oversized HEAD: ${subPath}`);
+      }
+      // Git refnames forbid only ASCII control and space bytes; non-ASCII whitespace is valid.
+      if (!/^ref: refs\/[^\x00-\x20\x7f]+\r?\n?$/.test(head)
+        && !/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\r?\n?$/.test(head)) {
+        throw new Error(`Untrusted Git metadata has an invalid HEAD: ${subPath}`);
+      }
+      repositories.push({ gitDir, remoteUrl });
+    }
+
+    for (const { gitDir, remoteUrl } of repositories) {
       await Promise.all([
         rm(join(gitDir, "hooks"), { recursive: true, force: true }),
         rm(join(gitDir, "objects", "info", "alternates"), { force: true }),
         rm(join(gitDir, "config.worktree"), { force: true }),
+        // Agent worktree isolation can leave linked worktrees; host Git never runs inside them.
+        rm(join(gitDir, "worktrees"), { recursive: true, force: true }),
         rm(join(gitDir, "info", "attributes"), { force: true }),
         rm(join(gitDir, "config"), { force: true }),
       ]);

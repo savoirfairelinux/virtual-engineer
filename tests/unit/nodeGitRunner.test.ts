@@ -151,7 +151,7 @@ describe("NodeGitRunner", () => {
 });
 
 describe("NodeGitRunner git hardening", () => {
-  it("neutralises hooks, include.path and user/system config for the git executable", async () => {
+  it("neutralises hooks, includes, ext transport and user/system config for git", async () => {
     const captured = captureNextExec();
 
     await new NodeGitRunner().run(["status", "--porcelain"], { cwd: "/tmp/ws" });
@@ -161,6 +161,7 @@ describe("NodeGitRunner git hardening", () => {
     expect(call.args).toEqual([
       "-c", "core.hooksPath=/dev/null",
       "-c", "include.path=/dev/null",
+      "-c", "protocol.ext.allow=never",
       "status", "--porcelain",
     ]);
     expect(call.env).toMatchObject({
