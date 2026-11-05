@@ -7,7 +7,7 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
+import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
@@ -15,6 +15,7 @@ import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
+import { isSameRepository } from "../domain/identifiers.js";
 import { z } from "zod";
 
 const log = getLogger("github-vcs");
@@ -23,7 +24,7 @@ const branchPullRequestsSchema = z.array(z.object({
   html_url: z.url(),
   state: z.enum(["open", "closed"]),
   merged_at: z.string().nullable(),
-  head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+  head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
   base: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
 }));
 
@@ -136,27 +137,29 @@ export class GitHubVcsConnector implements VcsConnector {
     return "OPEN";
   }
 
-  async findExistingReview(sourceBranch: string, targetBranch: string): Promise<VcsPushResult | null> {
+  async findExistingReview(sourceBranch: string): Promise<ExistingReview | null> {
     const repoSlug = `${this.config.owner}/${this.config.repo}`;
     const url = `${this.repoApiUrl()}/pulls?state=all&head=${encodeURIComponent(
       `${this.config.owner}:${sourceBranch}`,
-    )}&base=${encodeURIComponent(targetBranch)}&per_page=2`;
+    )}&per_page=2`;
     const response = await globalThis.fetch(url, { headers: this.authHeaders() });
     if (!response.ok) {
       throw new ReviewApiError(response.status, url, await response.text().catch(() => ""));
     }
     const prs = branchPullRequestsSchema.parse(await response.json());
-    if (prs.length > 1) throw new Error("Ambiguous pull requests for the pushed branch");
+    if (prs.length > 1) throw new Error("Ambiguous pull requests from the pushed branch across target branches");
     const pr = prs[0];
     if (!pr) return null;
-    if (pr.head.ref !== sourceBranch || pr.base.ref !== targetBranch
-      || pr.head.repo.full_name !== repoSlug || pr.base.repo.full_name !== repoSlug) {
-      throw new Error("Pull request does not match the bound repository and branches");
+    // Owner/repository names are case-insensitive on GitHub; Git branch names are not.
+    if (pr.head.ref !== sourceBranch || pr.head.repo === null
+      || !isSameRepository(pr.head.repo.full_name, repoSlug) || !isSameRepository(pr.base.repo.full_name, repoSlug)) {
+      throw new Error("Pull request does not match the bound repository and source branch");
     }
     return {
       changeId: String(pr.number),
       url: pr.html_url,
       status: pr.state === "open" ? "OPEN" : pr.merged_at !== null ? "MERGED" : "ABANDONED",
+      targetBranch: pr.base.ref,
     };
   }
 

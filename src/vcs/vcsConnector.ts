@@ -25,6 +25,13 @@ export interface VcsPushResult {
 }
 
 /**
+ * A review found by its source branch, with the target branch it was opened against.
+ */
+export interface ExistingReview extends VcsPushResult {
+  targetBranch: string;
+}
+
+/**
  * VcsConnector — abstract interface for version control operations.
  */
 export interface VcsConnector {
@@ -58,13 +65,12 @@ export interface VcsConnector {
   ): Promise<VcsPushResult>;
 
   /**
-   * Look up an existing review for an exact branch pair without pushing or
-   * creating one. Returns null if absent; throws for ambiguous matches.
+   * Read-only lookup of the review opened from `sourceBranch` in the bound
+   * repository, across every target branch and state; never pushes or creates
+   * one. Returns null if none exists and throws when several exist, since a
+   * target-branch filter could otherwise hide the original review.
    */
-  findExistingReview?(
-    sourceBranch: string,
-    targetBranch: string,
-  ): Promise<VcsPushResult | null>;
+  findExistingReview?(sourceBranch: string): Promise<ExistingReview | null>;
 
   /**
    * Get the current status of a change/MR.

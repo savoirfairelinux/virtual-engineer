@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { makeTaskId } from "../../src/interfaces.js";
 import { runDatabaseMigrations } from "../../src/state/databaseMigrations.js";
 import {
@@ -12,7 +12,10 @@ import {
 } from "../../src/state/schema.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import type { VcsConnector, VcsPushResult } from "../../src/vcs/vcsConnector.js";
+import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
 import { repairHostedChangeIdentities } from "../../src/vcs/changeIdentityRepair.js";
+import { jsonResponse } from "./helpers/fixtures.js";
+import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const FIRST_CHANGE_ID = `I${"1".repeat(40)}`;
@@ -24,7 +27,7 @@ function makeConnector(result: VcsPushResult, useChangeIdContinuity = false): Vc
     pushDirect: vi.fn().mockResolvedValue(result),
     getChangeStatus: vi.fn().mockResolvedValue(result.status),
     buildPushSpec: () => ({ ref: "feature-task-1" }),
-    findExistingReview: vi.fn().mockResolvedValue(result),
+    findExistingReview: vi.fn().mockResolvedValue({ ...result, targetBranch: "main" }),
     reviewSystemLabel: "github",
     useChangeIdContinuity,
   };
@@ -118,7 +121,7 @@ describe("repairHostedChangeIdentities", () => {
         expect.objectContaining({ id: `${provider}-1` }),
         { repoKey: "team42/repo", targetBranch: "main" },
       );
-      expect(connector.findExistingReview).toHaveBeenCalledWith("feature-task-1", "main");
+      expect(connector.findExistingReview).toHaveBeenCalledWith("feature-task-1");
       expect(connector.pushDirect).not.toHaveBeenCalled();
       expect(snapshot()).toBe(before);
     });
@@ -234,6 +237,39 @@ describe("repairHostedChangeIdentities", () => {
     },
   );
 
+  it.each([
+    { name: "a different review", url: (result: VcsPushResult) => result.url.replace("/pull/42", "/pull/99") },
+    { name: "another repository", url: (result: VcsPushResult) => result.url.replace("/repo/", "/other/") },
+  ])("blocks an active secondary row whose URL points to $name, without writes", async ({ url }) => {
+    const result = await seed();
+    drizzle(raw).update(changePerRepository).set({ reviewUrl: url(result) })
+      .where(eq(changePerRepository.commitIndex, 1)).run();
+    const before = snapshot();
+
+    const report = await repairHostedChangeIdentities({
+      database: raw, createConnector: () => makeConnector(result), apply: true,
+    });
+
+    expect(report).toMatchObject({ applied: 0, blocked: 1 });
+    expect(report.targets[0]?.detail).toContain("URL");
+    expect(snapshot()).toBe(before);
+  });
+
+  it.each([
+    { name: "the recovered URL", url: (result: VcsPushResult) => result.url },
+    { name: "its own exact legacy replacement", url: (result: VcsPushResult) => result.url.replace("42", SECOND_CHANGE_ID) },
+  ])("accepts an active secondary row whose URL is $name", async ({ url }) => {
+    const result = await seed();
+    drizzle(raw).update(changePerRepository).set({ reviewUrl: url(result) })
+      .where(eq(changePerRepository.commitIndex, 1)).run();
+
+    const report = await repairHostedChangeIdentities({
+      database: raw, createConnector: () => makeConnector(result), apply: true,
+    });
+
+    expect(report).toMatchObject({ applied: 1, blocked: 0 });
+  });
+
   it("refuses to invent a numeric provider id", async () => {
     const result = await seed();
     const before = snapshot();
@@ -328,6 +364,70 @@ describe("repairHostedChangeIdentities", () => {
     expect(snapshot()).toBe(before);
   });
 
+  describe("with the real GitHub connector after a target-branch change", () => {
+    const PR_URL = "https://github.com/octocat/hello-world/pull";
+    const pullRequest = (number: number, base: string) => ({
+      number, html_url: `${PR_URL}/${number}`, state: "open", merged_at: null,
+      head: { ref: "feature-task-1", repo: { full_name: "octocat/hello-world" } },
+      base: { ref: base, repo: { full_name: "octocat/hello-world" } },
+    });
+
+    async function seedDriftedTarget(): Promise<void> {
+      await seed("github", 1, "task-1", "octocat/hello-world");
+      // Corrupted from PR 42 (feature-task-1 -> main): the trailer replaced the URL's only "42".
+      const erasedUrl = `${PR_URL}/${FIRST_CHANGE_ID}`;
+      const db = drizzle(raw);
+      db.update(changePerRepository).set({ reviewUrl: erasedUrl }).run();
+      db.update(tasks).set({ reviewUrl: erasedUrl }).run();
+      db.update(projectPushTargets).set({ targetBranch: "release" }).run();
+    }
+
+    function githubConnector(pulls: Array<ReturnType<typeof pullRequest>>): VcsConnector {
+      // Mirrors GitHub's server-side filtering of the optional base parameter.
+      vi.stubGlobal("fetch", vi.fn((input: string) => {
+        const base = new URL(input).searchParams.get("base");
+        return Promise.resolve(jsonResponse(pulls.filter((pr) => base === null || pr.base.ref === base)));
+      }));
+      onTestFinished(() => {
+        vi.unstubAllGlobals();
+      });
+      return new GitHubVcsConnector({
+        apiBaseUrl: "https://api.github.com", host: "github.com", owner: "octocat", repo: "hello-world",
+        token: "test-token", gitAuthorName: "VE", gitAuthorEmail: "ve@example.test", targetBranch: "release",
+      }, new RecordingGitRunner());
+    }
+
+    it("blocks when the branch has reviews on several target branches, without writes", async () => {
+      await seedDriftedTarget();
+      const before = snapshot();
+      const connector = githubConnector([pullRequest(43, "release"), pullRequest(42, "main")]);
+
+      const report = await repairHostedChangeIdentities({
+        database: raw, createConnector: () => connector, apply: true,
+      });
+
+      expect(report).toMatchObject({ repairable: 0, applied: 0, blocked: 1 });
+      expect(report.targets[0]?.detail).toContain("Ambiguous");
+      expect(snapshot()).toBe(before);
+    });
+
+    it("recovers the only review from the branch even when it targets a former branch", async () => {
+      await seedDriftedTarget();
+      const connector = githubConnector([pullRequest(42, "main")]);
+
+      const report = await repairHostedChangeIdentities({
+        database: raw, createConnector: () => connector, apply: true,
+      });
+
+      expect(report).toMatchObject({ applied: 1, blocked: 0 });
+      expect(report.targets[0]).toMatchObject({ resolvedChangeId: "42", resolvedTargetBranch: "main" });
+      expect(report.targets[0]?.detail).toContain("release");
+      expect((await store.getChangesForTask(makeTaskId("task-1")))[0]).toMatchObject({
+        changeId: "42", reviewUrl: `${PR_URL}/42`,
+      });
+    });
+  });
+
   it("can restrict a dry run to one selected task", async () => {
     const result = await seed();
     await seed("github", 1, "task-2");
@@ -340,7 +440,7 @@ describe("repairHostedChangeIdentities", () => {
 
     expect(report.targets).toHaveLength(1);
     expect(report.targets[0]?.taskId).toBe("task-2");
-    expect(connector.findExistingReview).toHaveBeenCalledExactlyOnceWith("feature-task-2", "main");
+    expect(connector.findExistingReview).toHaveBeenCalledExactlyOnceWith("feature-task-2");
     expect(snapshot()).toBe(before);
   });
 

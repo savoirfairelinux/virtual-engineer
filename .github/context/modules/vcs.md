@@ -26,11 +26,8 @@ interface VcsConnector {
     topic?: string,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
-  /** Read-only exact branch lookup; null if absent, error if ambiguous. */
-  findExistingReview?(
-    sourceBranch: string,
-    targetBranch: string
-  ): Promise<VcsPushResult | null>;
+  /** Read-only source-branch lookup across all targets/states; null if absent, error if several. */
+  findExistingReview?(sourceBranch: string): Promise<ExistingReview | null>;
 }
 ```
 
@@ -50,9 +47,9 @@ After coding-workspace download, all recorded repositories must pass filesystem-
 
 `npm run repair:change-identities` inspects an existing, migrated `DATABASE_PATH` using its database-managed integrations. The default connection is read-only: it does not create a database, run migrations, seed data, push, or create reviews. Optional `--task <id>` restricts the scan.
 
-The tool recognizes legacy `I<40 hex digits>` rows, resolves the recorded integration and current project target, and respects the connector's continuity capability. GitHub/GitLab `findExistingReview()` queries **all** review states for the exact persisted `push_ref` and target branch, validates native identifiers and branch/repository ownership, and refuses forks or multiple matches rather than selecting the first result.
+The tool recognizes legacy `I<40 hex digits>` rows, resolves the recorded integration and current project target, and respects the connector's continuity capability. GitHub/GitLab `findExistingReview()` queries **all** review states from the exact persisted `push_ref` across **every** target branch: the corrupted URL usually lost the number (`/pull/43` and `/pull/42` corrupt to the same `/pull/I…`), and the project target may have changed since the push, so a filter on the current target could hide the original review. More than one review from the branch blocks the target; a unique review is accepted and its `resolvedTargetBranch` is reported, with a note when it differs from the current target. The lookup validates native identifiers, the exact (case-sensitive) source branch and the bound repository (case-insensitive owner/repository on GitHub), and refuses forks or deleted head repositories rather than selecting a result.
 
-An authoritative provider URL must equal the stored URL or reproduce the known faulty identifier replacement exactly. Missing branches/integrations, changed bindings, mixed review systems, conflicting native IDs/terminal statuses, and unproven URLs block application. No ID is inferred from a malformed URL.
+Every non-empty URL on an active row must equal the recovered URL or reproduce the known faulty identifier replacement exactly for that row's own identifier; the primary row must carry such a URL. Missing branches/integrations, changed bindings, mixed review systems, conflicting native IDs/terminal statuses, and unproven URLs (including a secondary row pointing to a different review) block application. No ID is inferred from a malformed URL.
 
 Rollout:
 

@@ -4,7 +4,7 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
+import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
@@ -166,24 +166,22 @@ export class GitLabVcsConnector implements VcsConnector {
     }
   }
 
-  async findExistingReview(sourceBranch: string, targetBranch: string): Promise<VcsPushResult | null> {
+  async findExistingReview(sourceBranch: string): Promise<ExistingReview | null> {
     const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(
       String(this.config.projectId),
-    )}/merge_requests?state=all&scope=all&source_branch=${encodeURIComponent(
-      sourceBranch,
-    )}&target_branch=${encodeURIComponent(targetBranch)}&per_page=2`;
+    )}/merge_requests?state=all&scope=all&source_branch=${encodeURIComponent(sourceBranch)}&per_page=2`;
     const mrs = branchMergeRequestsSchema.parse(await this.httpClient.fetchJson<unknown>(url));
-    if (mrs.length > 1) throw new Error("Ambiguous merge requests for the pushed branch");
+    if (mrs.length > 1) throw new Error("Ambiguous merge requests from the pushed branch across target branches");
     const mr = mrs[0];
     if (!mr) return null;
-    if (mr.source_branch !== sourceBranch || mr.target_branch !== targetBranch
-      || mr.source_project_id !== mr.target_project_id) {
-      throw new Error("Merge request does not match the bound repository and branches");
+    if (mr.source_branch !== sourceBranch || mr.source_project_id !== mr.target_project_id) {
+      throw new Error("Merge request does not match the bound project and source branch");
     }
     return {
       changeId: String(mr.iid),
       url: mr.web_url,
       status: mr.state === "opened" ? "OPEN" : mr.state === "merged" ? "MERGED" : "ABANDONED",
+      targetBranch: mr.target_branch,
     };
   }
 

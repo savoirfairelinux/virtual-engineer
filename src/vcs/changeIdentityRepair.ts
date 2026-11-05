@@ -14,6 +14,7 @@ export interface HostedChangeRepairTarget {
   repoKey: string;
   currentChangeIds: string[];
   resolvedChangeId: string | null;
+  resolvedTargetBranch: string | null;
   status: "repairable" | "applied" | "skipped" | "blocked";
   detail: string | null;
 }
@@ -76,7 +77,7 @@ export async function repairHostedChangeIdentities(input: {
     const active = rows.filter((row) => !INACTIVE_STATUSES.includes(row.status));
     const targetReport: HostedChangeRepairTarget = {
       ...candidate, currentChangeIds: active.map((row) => row.changeId),
-      resolvedChangeId: null, status: "blocked", detail: null,
+      resolvedChangeId: null, resolvedTargetBranch: null, status: "blocked", detail: null,
     };
     report.targets.push(targetReport);
     try {
@@ -107,17 +108,23 @@ export async function repairHostedChangeIdentities(input: {
       }
       if (!task.pushRef) throw new Error("No recorded push branch; refusing to guess");
       if (!connector.findExistingReview) throw new Error("Connector does not support read-only review lookup");
-      const review = await connector.findExistingReview(task.pushRef, target.targetBranch);
+      // Search every target branch: the URL may have lost the number, and the
+      // project target can change after the push, so only one review may exist.
+      const review = await connector.findExistingReview(task.pushRef);
       if (!review) throw new Error("No existing review found for the recorded branch");
       if (!/^[1-9]\d*$/.test(review.changeId) || !Number.isSafeInteger(Number(review.changeId))
         || !["OPEN", "MERGED", "ABANDONED"].includes(review.status)) {
         throw new Error("Provider lookup did not return a valid native review result");
       }
-      if (!primary.reviewUrl || (primary.reviewUrl !== review.url
-        && primary.reviewUrl !== review.url.replace(review.changeId, primary.changeId))) {
+      const urlProvesReview = (row: typeof changePerRepository.$inferSelect): boolean =>
+        row.reviewUrl === review.url || row.reviewUrl === review.url.replace(review.changeId, row.changeId);
+      if (!primary.reviewUrl || !urlProvesReview(primary)) {
         throw new Error("Recorded URL does not prove the recovered review identity");
       }
       for (const row of active) {
+        if (row.reviewUrl && !urlProvesReview(row)) {
+          throw new Error("An active row's URL points to a different review; refusing to orphan it");
+        }
         if (row.changeId !== review.changeId && !LEGACY_CHANGE_ID.test(row.changeId)) {
           throw new Error("Conflicting native change id; refusing to orphan a different review");
         }
@@ -127,6 +134,12 @@ export async function repairHostedChangeIdentities(input: {
       }
       targetReport.status = "repairable";
       targetReport.resolvedChangeId = review.changeId;
+      targetReport.resolvedTargetBranch = review.targetBranch;
+      if (review.targetBranch !== target.targetBranch) {
+        targetReport.detail = sanitizeErrorDetail(
+          `Only review from the branch targets ${review.targetBranch}; the project now targets ${target.targetBranch}`,
+        );
+      }
       report.repairable++;
       plans.push({ task, target, integration, rows, primary, review, report: targetReport });
     } catch (error: unknown) {

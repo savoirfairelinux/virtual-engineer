@@ -59,7 +59,9 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 
 ## Conventions
 
-- `projectPushService` uses real SQLite persistence for the Gerrit/GitHub/GitLab matrix (one/two commits, original/rewritten chains). Hosted IDs and URLs must equal the native push result; Gerrit remains per-commit. `changeIdentityRepair` covers read-only defaults, exact provider lookups, ambiguity, mixed-provider preservation, idempotence, multi-repository atomic application, stale snapshots, and rollback. Its CLI tests use only temporary databases and no live providers. The operator command `npm run repair:change-identities` defaults to a dry run; see [the rollout contract](modules/vcs.md#historical-hosted-change-repair) before using `--apply`.
+- `projectPushService` uses real SQLite persistence for the Gerrit/GitHub/GitLab matrix (one/two commits, original/rewritten chains). Hosted IDs and URLs must equal the native push result; Gerrit remains per-commit. `changeIdentityRepair` covers read-only defaults, source-branch lookups across target branches (including the real GitHub connector after a target-branch change), ambiguity, unproven secondary-row URLs, mixed-provider preservation, idempotence, multi-repository atomic application, stale snapshots, and rollback. Its CLI tests use only temporary databases and no live providers. The operator command `npm run repair:change-identities` defaults to a dry run; see [the rollout contract](modules/vcs.md#historical-hosted-change-repair) before using `--apply`.
+
+- `orchestrator.webhookEntryPoints` drives repository-qualified hosted webhook events through a real SQLite store: another repository's event with the same native PR/MR number must leave the tracked task, its change rows, and its transitions unchanged.
 
 - `orchestrator.webhookEntryPoints` drives repository-qualified hosted webhook events through a real SQLite store: another repository's event with the same native PR/MR number must leave the tracked task, its change rows, and its transitions unchanged.
 
