@@ -16,6 +16,16 @@ import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
 import { z } from "zod";
 
 const log = getLogger("gitlab-vcs");
+/** GitLab MR states in VE's review vocabulary; `locked` is GitLab's transient merging state. */
+const MERGE_REQUEST_STATUSES = {
+  opened: "OPEN",
+  locked: "OPEN",
+  merged: "MERGED",
+  closed: "ABANDONED",
+} as const;
+const mergeRequestStateSchema = z.object({
+  state: z.enum(["opened", "locked", "merged", "closed"]),
+});
 const branchMergeRequestsSchema = z.array(z.object({
   iid: z.number().int().positive(),
   web_url: z.url(),
@@ -147,23 +157,14 @@ export class GitLabVcsConnector implements VcsConnector {
   }
 
   /**
-   * Get the current status of a GitLab Merge Request.
+   * Get the current status of a GitLab Merge Request as OPEN, MERGED, or
+   * ABANDONED. Lookup failures and unknown states throw, so callers keep the
+   * recorded status instead of persisting a provider-specific value.
    */
   async getChangeStatus(changeId: string): Promise<string> {
-    try {
-      const mrIid = String(changeId);
-      const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${mrIid}`;
-      const mr = await this.httpClient.fetchJson<{ state: string }>(url);
-
-      const state = mr.state;
-      return state.toUpperCase();
-    } catch (err: unknown) {
-      log.warn(
-        { changeId, err: err instanceof Error ? err.message : String(err) },
-        "failed to fetch MR status"
-      );
-      return "UNKNOWN";
-    }
+    const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${encodeURIComponent(changeId)}`;
+    const mr = mergeRequestStateSchema.parse(await this.httpClient.fetchJson<unknown>(url));
+    return MERGE_REQUEST_STATUSES[mr.state];
   }
 
   async findExistingReview(sourceBranch: string): Promise<ExistingReview | null> {
@@ -180,7 +181,7 @@ export class GitLabVcsConnector implements VcsConnector {
     return {
       changeId: String(mr.iid),
       url: mr.web_url,
-      status: mr.state === "opened" ? "OPEN" : mr.state === "merged" ? "MERGED" : "ABANDONED",
+      status: MERGE_REQUEST_STATUSES[mr.state],
       targetBranch: mr.target_branch,
     };
   }

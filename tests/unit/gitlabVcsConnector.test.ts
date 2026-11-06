@@ -134,12 +134,25 @@ describe("GitLabVcsConnector", () => {
   });
 
   describe("getChangeStatus", () => {
-    it("returns the uppercased MR state on success", async () => {
+    it.each([
+      { state: "opened", status: "OPEN" },
+      { state: "locked", status: "OPEN" },
+      { state: "merged", status: "MERGED" },
+      { state: "closed", status: "ABANDONED" },
+    ])("normalizes the $state MR state to $status", async ({ state, status }) => {
       const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockResolvedValue({ state: "opened" });
+      httpClient.fetchJson.mockResolvedValue({ state });
 
-      const status = await connector.getChangeStatus("42");
-      expect(status).toBe("OPENED");
+      expect(await connector.getChangeStatus("42")).toBe(status);
+      expect(httpClient.fetchJson).toHaveBeenCalledExactlyOnceWith(
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/42",
+      );
+    });
+
+    it("rejects an unrecognized MR state instead of persisting it", async () => {
+      getHttpClient(connector).fetchJson.mockResolvedValue({ state: "draft" });
+
+      await expect(connector.getChangeStatus("42")).rejects.toThrow();
     });
 
     describe("findExistingReview", () => {
@@ -217,12 +230,11 @@ describe("GitLabVcsConnector", () => {
       });
     });
 
-    it("returns UNKNOWN on API error", async () => {
-      const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockRejectedValue(new ReviewApiError(404, "/api/v4/projects/x/merge_requests/99", "Not Found"));
+    it("propagates API errors so pollers keep the recorded status", async () => {
+      const failure = new ReviewApiError(404, "/api/v4/projects/x/merge_requests/99", "Not Found");
+      getHttpClient(connector).fetchJson.mockRejectedValue(failure);
 
-      const status = await connector.getChangeStatus("99");
-      expect(status).toBe("UNKNOWN");
+      await expect(connector.getChangeStatus("99")).rejects.toBe(failure);
     });
   });
 

@@ -9,7 +9,6 @@
 import { getLogger } from "../logger.js";
 import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
-import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
@@ -163,16 +162,9 @@ export class GitHubVcsConnector implements VcsConnector {
     };
   }
 
-  getUnresolvedComments(_changeId: string): Promise<ReviewComment[]> {
-    // VE reads PR review comments via the dedicated ReviewConnector
-    // (GitHubPullRequestReviewConnector). The VCS connector intentionally
-    // returns no comments to avoid duplicate fetching.
-    return Promise.resolve([]);
-  }
-
-  async resolveComments(_changeId: string, _comments: ReviewComment[]): Promise<void> {
-    // No-op: resolution lives in GitHubPullRequestReviewConnector (GraphQL).
-  }
+  // PR review comments and their resolution are read through the
+  // repository-bound GitHubPullRequestReviewConnector, so this connector does
+  // not implement the optional comment methods.
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 

@@ -157,6 +157,11 @@ export class Orchestrator {
         this.resolveReviewConnector(task),
       resolveVcsConnector: (integrationId, context): ReturnType<ReviewProgressDependencies["resolveVcsConnector"]> =>
         this.tryResolveVcsConnectorForTarget(integrationId, context),
+      resolveRepositoryReviewConnector: (
+        integrationId,
+        repoKey,
+      ): ReturnType<ReviewProgressDependencies["resolveRepositoryReviewConnector"]> =>
+        this.projectConnectorResolver.resolveRepositoryReviewConnector(integrationId, repoKey),
       getDefaultVcsConnector: (): ReturnType<ReviewProgressDependencies["getDefaultVcsConnector"]> =>
         this.vcsConnector,
       extractNewFeedback: (taskId, changeId, comments): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>

@@ -74,21 +74,24 @@ export interface VcsConnector {
 
   /**
    * Get the current status of a change/MR.
-   * @param changeId The Gerrit Change-Id or GitLab MR IID
-   * @returns Status string: "OPEN", "MERGED", "ABANDONED", etc.
+   * @param changeId The Gerrit Change-Id, GitHub PR number, or GitLab MR IID
+   * @returns Normalized status: "OPEN", "MERGED", or "ABANDONED"
    * @throws {Error} If status cannot be determined
    */
   getChangeStatus(changeId: string): Promise<string>;
 
   /**
    * Fetch unresolved review comments for a change.
-   * Optional — only implemented by connectors that support inline comments (Gerrit, GitLab MR).
+   * Optional — only implemented by connectors that support inline comments
+   * (Gerrit, GitLab MR). Without it, review progress reads comments through the
+   * code_review connector bound to the change's repository (GitHub).
    */
   getUnresolvedComments?(changeId: string): Promise<ReviewComment[]>;
 
   /**
    * Mark review comments as resolved.
-   * Optional — only implemented by connectors that support it (Gerrit, GitLab MR).
+   * Optional — only implemented by connectors that support it (Gerrit, GitLab MR);
+   * otherwise the repository-bound code_review connector resolves them.
    */
   resolveComments?(changeId: string, comments: ReviewComment[]): Promise<void>;
 

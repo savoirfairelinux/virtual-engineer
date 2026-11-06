@@ -183,6 +183,16 @@ export class ProjectConnectorResolver {
     throw new Error(`No active review connector found for project ${task.projectId} (task ${task.taskId})`);
   }
 
+  /**
+   * Resolve the code_review connector bound to one repository. Never falls back
+   * to an unbound connector, which could read another repository's review.
+   */
+  async resolveRepositoryReviewConnector(integrationId: string, repoKey: string): Promise<ReviewConnector | null> {
+    const pluginManager = this.dependencies.getProjectMode()?.pluginManager;
+    if (!pluginManager?.createConnectorForCapability) return null;
+    return pluginManager.createConnectorForCapability<ReviewConnector>(integrationId, "code_review", { repoKey });
+  }
+
   private async resolveReviewCapabilityConnector(
     integrationId: string,
     repoKey?: string,

@@ -2,14 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CommitDescriptor,
   ProjectPushTargetRecord,
-  ReviewConnector,
   StateStore,
   Task,
   WorkspaceHandle,
 } from "../../src/interfaces.js";
 import { makeProjectId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
-import { ReviewProgressService } from "../../src/orchestrator/reviewProgressService.js";
 import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import {
   ProjectPushService,
@@ -206,37 +204,6 @@ describe("ProjectPushService", () => {
         expect(row.reviewUrl).toBe(provider.useChangeIdContinuity
           ? index === 0 ? pushResult.url.replace(provider.changeId, commits[0]!.changeId) : ""
           : pushResult.url);
-      }
-      if (!provider.useChangeIdContinuity) {
-        const task = await store.getTask(makeTask().taskId);
-        if (!task) throw new Error("Expected persisted task");
-        const reviewConnector: ReviewConnector = {
-          getChange: vi.fn<ReviewConnector["getChange"]>(),
-          getChangeStatus: vi.fn<ReviewConnector["getChangeStatus"]>().mockResolvedValue("OPEN"),
-          getUnresolvedComments: vi.fn<ReviewConnector["getUnresolvedComments"]>().mockResolvedValue([]),
-          addChangeComment: vi.fn<ReviewConnector["addChangeComment"]>(),
-          resolveComments: vi.fn<ReviewConnector["resolveComments"]>(),
-        };
-        const reviewProgress = new ReviewProgressService({
-          getChangesForTask: (taskId) => store.getChangesForTask(taskId),
-          transition: vi.fn().mockImplementation((_taskId, state: Task["state"]) => Promise.resolve({ ...task, state })),
-          updateChangeStatus: (taskId, rowId, status) => store.updateChangePerRepositoryStatusById(taskId, rowId, status),
-          getTask: (taskId) => store.getTask(taskId),
-          resolveReviewConnector: () => Promise.resolve(reviewConnector),
-          resolveVcsConnector: () => Promise.resolve(connector),
-          getDefaultVcsConnector: () => undefined,
-          extractNewFeedback: vi.fn().mockResolvedValue([[], []]),
-          reactsToCiFailures: () => Promise.resolve(false),
-          getMaxAgentCycles: () => 3,
-          runAgentCycle: vi.fn().mockResolvedValue(undefined),
-          closeTicket: vi.fn().mockResolvedValue(undefined),
-          abandonTask: vi.fn().mockResolvedValue(undefined),
-        });
-
-        await reviewProgress.check({ ...task, state: "IN_REVIEW" });
-
-        expect(connector.getChangeStatus).toHaveBeenCalledExactlyOnceWith("42");
-        expect(reviewConnector.getUnresolvedComments).toHaveBeenCalledExactlyOnceWith("42");
       }
     });
   });

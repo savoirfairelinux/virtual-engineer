@@ -31,7 +31,9 @@ interface VcsConnector {
 }
 ```
 
-The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit`, `gitlab`, or `github`); the orchestrator emits human review feedback with the generic `review_comment` source.
+The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit` or `gitlab`); the orchestrator emits human review feedback with the generic `review_comment` source. GitHub's VCS connector omits both comment methods, so review progress reads and resolves PR comments (and CI check failures) through the `code_review` connector bound to the change row's own repository — never through a task-level connector that could belong to another repository.
+
+`getChangeStatus()` returns the normalized `OPEN` / `MERGED` / `ABANDONED` vocabulary that review progress acts on (GitLab `opened`/`locked` → `OPEN`, `closed` → `ABANDONED`). When the status cannot be determined it throws, so pollers keep the recorded row status instead of persisting a provider-specific value.
 
 There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
 
@@ -78,11 +80,13 @@ Application revalidates complete task, integration, push-target, and change-row 
 - Returns the MR web URL.
 - Reviewer emails are looked up through the Users API and matched exactly, case-insensitively, against visible `email` or `public_email` values. Matched IDs are included as `reviewer_ids`; unmatched or inaccessible addresses are logged and skipped. A 409 existing-MR path updates the existing MR when at least one reviewer resolves.
 - `pushDirect(repoDir, ref, topic, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
+- `getChangeStatus(iid)` normalizes MR states (`opened`/`locked` → `OPEN`, `merged` → `MERGED`, `closed` → `ABANDONED`) and propagates API errors or unknown states instead of reporting `UNKNOWN`.
 
 ### `githubVcsConnector.ts`
 - HTTP-based clone and push for GitHub, mirroring the GitLab design: clones via HTTPS with the token in the remote URL, pushes a feature branch, and creates or updates a Pull Request via the GitHub REST API (`apiBaseUrl` supports both `api.github.com` and GHE `/api/v3`).
 - `reviewSystemLabel = "github"`, `useChangeIdContinuity = false`.
 - `buildPushSpec(baseBranch, taskId, ticketTitle)` derives the branch ref via `buildFeatureBranchRef` (no Gerrit topic).
+- Does not implement `getUnresolvedComments` / `resolveComments`: PR review comments, CI check runs, and thread resolution come from the repository-bound `GitHubPullRequestReviewConnector`.
 - Reviewer-email configuration is not supported because GitHub's request-reviewers API requires usernames. The admin API rejects non-empty reviewer-email lists for GitHub push targets.
 - Config: `apiBaseUrl`, `host`, `owner`, `repo`, `token`, git author identity, optional `targetBranch` (default `main`).
 

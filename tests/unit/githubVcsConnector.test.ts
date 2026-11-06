@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
+import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 
@@ -286,13 +287,13 @@ describe("GitHubVcsConnector", () => {
     });
   });
 
-  describe("getUnresolvedComments / resolveComments", () => {
-    it("getUnresolvedComments always returns [] (handled by ReviewConnector)", async () => {
-      expect(await makeConnector().getUnresolvedComments("42")).toEqual([]);
-    });
+  describe("review comments", () => {
+    it("leaves PR comments to the repository-bound review connector", () => {
+      // An empty-result implementation would hide feedback from ReviewProgressService.
+      const connector: VcsConnector = makeConnector();
 
-    it("resolveComments is a no-op (handled by ReviewConnector)", async () => {
-      await expect(makeConnector().resolveComments("42", [])).resolves.toBeUndefined();
+      expect(connector.getUnresolvedComments).toBeUndefined();
+      expect(connector.resolveComments).toBeUndefined();
     });
   });
 

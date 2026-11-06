@@ -4,6 +4,7 @@ import type { StateStore } from "../interfaces.js";
 import type {
   IntegrationBindingContext,
   DomainCapability,
+  ExternalChangeId,
   ProjectRecord,
   ProjectTicketSourceRecord,
   ProjectReviewConfig,
@@ -14,7 +15,7 @@ import type {
   ReviewAssignmentDiscovery,
   ReviewTriggerCause,
 } from "../interfaces.js";
-import { makeTicketId } from "../interfaces.js";
+import { makeExternalChangeId, makeTicketId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("polling-loop");
@@ -526,31 +527,36 @@ export class PollingLoop {
 
   /**
    * For each active code-gen task stuck in `IN_REVIEW`, re-check the review
-   * system for new CHANGES_REQUESTED feedback. This is the polling equivalent
-   * of the Gerrit stream-events trigger for GitHub / GitLab integrations.
+   * system for status changes and new CHANGES_REQUESTED feedback. This is the
+   * polling equivalent of the Gerrit stream-events trigger and the fallback for
+   * missed GitHub / GitLab webhooks. Project pushes record changes only per
+   * repository, so a task without a task-level id is polled when it has an
+   * active `change_per_repository` row.
    */
   async pollInReviewTasks(): Promise<void> {
     const activeTasks = await this.stateStore.getActiveTasks();
-    const inReviewTasks = activeTasks.filter(
-      (t) => t.taskType === "code-gen" && t.state === "IN_REVIEW" && t.externalChangeId != null
+    const candidates = activeTasks.filter((t) => t.taskType === "code-gen" && t.state === "IN_REVIEW");
+    const trackedChangeIds = await this.findTrackedChangeIds(
+      candidates.filter((t) => t.externalChangeId == null).map((t) => t.taskId),
     );
+    const inReviewTasks = candidates.flatMap((task) => {
+      const changeId = task.externalChangeId ?? trackedChangeIds.get(task.taskId);
+      return changeId === undefined ? [] : [{ task, changeId }];
+    });
     log.debug({ count: inReviewTasks.length }, "polling in-review code-gen tasks");
 
     const now = Date.now();
     const cooldownMs = this.config.ticketIntervalMs;
 
     // Evict stale cooldown entries for tasks that are no longer IN_REVIEW.
-    const activeTaskIds = new Set(inReviewTasks.map((t) => t.taskId));
+    const activeTaskIds = new Set(inReviewTasks.map(({ task }) => task.taskId));
     for (const key of this.reviewPollCooldowns.keys()) {
       if (!activeTaskIds.has(key)) {
         this.reviewPollCooldowns.delete(key);
       }
     }
 
-    for (const task of inReviewTasks) {
-      // externalChangeId is guaranteed non-null by the filter above
-      const changeId = task.externalChangeId!;
-
+    for (const { task, changeId } of inReviewTasks) {
       // Skip tasks already polled within the current interval to avoid
       // flooding the review API when many tasks are IN_REVIEW simultaneously.
       const lastPolled = this.reviewPollCooldowns.get(task.taskId);
@@ -566,6 +572,18 @@ export class PollingLoop {
           log.error({ taskId: task.taskId, changeId, err }, "failed to check in-review task progress")
         );
     }
+  }
+
+  /** First active per-repository change id of each task, used to identify its poll. */
+  private async findTrackedChangeIds(taskIds: TaskId[]): Promise<Map<TaskId, ExternalChangeId>> {
+    const tracked = new Map<TaskId, ExternalChangeId>();
+    if (taskIds.length === 0) return tracked;
+    const changes = await this.stateStore.getChangesForTasks(taskIds);
+    for (const change of [...changes].sort((left, right) => left.commitIndex - right.commitIndex)) {
+      if (change.status === "NO_CHANGE" || change.status === "ORPHANED" || change.changeId === "") continue;
+      if (!tracked.has(change.taskId)) tracked.set(change.taskId, makeExternalChangeId(change.changeId));
+    }
+    return tracked;
   }
 
   // ─── REVIEW_WATCHING fallback polling ─────────────────────────────────────
