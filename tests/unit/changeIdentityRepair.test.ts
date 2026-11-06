@@ -64,7 +64,7 @@ describe("repairHostedChangeIdentities", () => {
     repoKey = "team42/repo",
   ): Promise<VcsPushResult> {
     const now = new Date(0);
-    const result = {
+    const result: VcsPushResult = {
       changeId: "42",
       url: `https://review.example.test/${repoKey}/${provider === "gitlab" ? "-/merge_requests" : "pull"}/42`,
       status: "OPEN",

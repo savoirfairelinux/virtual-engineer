@@ -136,15 +136,15 @@ Status polling uses the separate per-task `reviewPollCooldowns` map for `IN_REVI
 
 ## `feedbackProcessor.ts`
 
-- `extractNewFeedback()` filters out comments/notes already recorded in `processed_comments`
+- `extractNewFeedback()` filters out comments/notes already recorded in `processed_comments`. Integration-backed change rows use a JSON tuple of integration id, repository key, native change id, and native comment id as the stored key, so independent instances or repositories cannot mask each other's feedback. Historical raw keys remain honored; legacy rows without an integration keep raw keys.
 - `isCiFeedbackComment()` recognizes GitHub check-run and Gerrit build-failure IDs so the orchestrator can apply the per-project CI retry setting before deduplication
 - Human review comments are emitted with the generic `FeedbackItem.source = "review_comment"`; the explicit `ReviewComment.reviewSystem` (`gerrit`, `gitlab`, or `github`) is copied through when a built-in connector supplies it, so provider identity is not guessed from comment ID formats. CI failures remain `source = "ci_failure"`.
-- `markProcessed()` persists processed IDs once feedback has been consumed
+- New processed keys are persisted during extraction, before the retry starts, to prevent replay after a restart. Returned comments retain their native IDs for provider-side resolution and CI classification.
 - used on the `IN_REVIEW → FEEDBACK_PROCESSING` path
 
 ## `reviewProgressService.ts`
 
-- polls legacy single-repository changes and `change_per_repository` rows through provider-neutral review/VCS contracts
+- polls legacy single-repository changes and `change_per_repository` rows through provider-neutral review/VCS contracts sharing the closed `ReviewChangeStatus` vocabulary
 - converges to `MERGED` when every active repository is merged (or all rows are `NO_CHANGE` / `ORPHANED`) and abandons the task when any active repository is abandoned
 - aggregates repository-tagged feedback, applies the project `reactToCiFailures` policy before deduplication, enforces the current runtime cycle limit, and invokes the orchestrator-owned retry callback
 - preserves each comment's `reviewSystem` while aggregating mixed-provider feedback and prefixing content with its repository key

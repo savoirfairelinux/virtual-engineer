@@ -19,6 +19,7 @@ The VCS layer is host-owned. The agent sandbox may edit files and create local c
 
 ```ts
 interface VcsConnector {
+  getChangeStatus(changeId: string): Promise<ReviewChangeStatus>;
   /** Push agent-created commits directly without a host commit step. */
   pushDirect?(
     repoDir: string,
@@ -33,7 +34,7 @@ interface VcsConnector {
 
 The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit` or `gitlab`); the orchestrator emits human review feedback with the generic `review_comment` source. GitHub's VCS connector omits both comment methods, so review progress reads and resolves PR comments (and CI check failures) through the `code_review` connector bound to the change row's own repository — never through a task-level connector that could belong to another repository.
 
-`getChangeStatus()` returns the normalized `OPEN` / `MERGED` / `ABANDONED` vocabulary that review progress acts on (GitLab `opened`/`locked` → `OPEN`, `closed` → `ABANDONED`). When the status cannot be determined it throws, so pollers keep the recorded row status instead of persisting a provider-specific value.
+`getChangeStatus()` and `VcsPushResult.status` use the shared, closed `ReviewChangeStatus` type (`OPEN` / `MERGED` / `ABANDONED`), also used by `ReviewConnector`. GitLab `opened`/`locked` map to `OPEN`, `closed` to `ABANDONED`. GitHub validates both the native `state` and boolean `merged` flag before normalization. GitHub/GitLab reject malformed or unknown statuses and propagate lookup failures, so pollers keep the recorded row status instead of fabricating an open or terminal result.
 
 There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
 
