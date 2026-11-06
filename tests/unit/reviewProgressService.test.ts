@@ -505,6 +505,29 @@ describe("ReviewProgressService", () => {
     expect(gitlabConnector.resolveComments).toHaveBeenCalledWith("7", [gitlabComment]);
   });
 
+  it("uses the task-level review connector only for legacy rows recorded without an integration", async () => {
+    const task = makeTask();
+    const comment = makeComment({ id: "legacy-1" });
+    const ciComment = makeComment({ id: "ci-run-1", message: "Build failed" });
+    const taskLevel = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
+      getCICheckFailures: vi.fn().mockResolvedValue([ciComment]),
+    } as unknown as ReviewConnector;
+    const dependencies = makeDependencies(task, taskLevel, {
+      getChangesForTask: vi.fn().mockResolvedValue([makeChange(task, { integrationId: "" })]),
+      reactsToCiFailures: vi.fn().mockResolvedValue(true),
+    });
+
+    await new ReviewProgressService(dependencies).check(task);
+
+    expect(dependencies.resolveReviewConnector).toHaveBeenCalledOnce();
+    expect(dependencies.resolveRepositoryReviewConnector).not.toHaveBeenCalled();
+    expect(taskLevel.getChangeStatus).toHaveBeenCalledWith("I123");
+    expect(taskLevel.getCICheckFailures).toHaveBeenCalledWith("I123");
+    expect(dependencies.extractNewFeedback).toHaveBeenCalledWith(task.taskId, "I123", [comment, ciComment]);
+  });
+
   describe("hosted rows with the real GitHub VCS connector", () => {
     function githubVcs(repo: string): GitHubVcsConnector {
       return new GitHubVcsConnector({
