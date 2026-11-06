@@ -107,6 +107,13 @@ export async function repairHostedChangeIdentities(input: {
         throw new Error("Mixed integration or review-system rows; manual reconciliation required");
       }
       if (!task.pushRef) throw new Error("No recorded push branch; refusing to guess");
+      // Every target of a task shares one push ref, and a mixed-provider cycle
+      // can leave another target's ref there (e.g. a non-unique `refs/for/main`).
+      // Only the branch this repository's connector derives for the task proves
+      // which review the repository opened.
+      if (task.pushRef !== connector.buildPushSpec(target.targetBranch, task.taskId, task.ticketTitle).ref) {
+        throw new Error("Recorded push branch is not this repository's branch for the task; refusing to guess");
+      }
       if (!connector.findExistingReview) throw new Error("Connector does not support read-only review lookup");
       // Search every target branch: the URL may have lost the number, and the
       // project target can change after the push, so only one review may exist.

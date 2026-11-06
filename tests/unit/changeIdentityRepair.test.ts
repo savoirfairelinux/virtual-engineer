@@ -26,7 +26,8 @@ function makeConnector(result: VcsPushResult, useChangeIdContinuity = false): Vc
     clone: vi.fn().mockResolvedValue(undefined),
     pushDirect: vi.fn().mockResolvedValue(result),
     getChangeStatus: vi.fn().mockResolvedValue(result.status),
-    buildPushSpec: () => ({ ref: "feature-task-1" }),
+    // Mirrors buildFeatureBranchRef() for the untitled tasks seeded below.
+    buildPushSpec: (_baseBranch: string, taskId: string) => ({ ref: `feature-${taskId}` }),
     findExistingReview: vi.fn().mockResolvedValue({ ...result, targetBranch: "main" }),
     reviewSystemLabel: "github",
     useChangeIdContinuity,
@@ -216,6 +217,28 @@ describe("repairHostedChangeIdentities", () => {
 
     expect(report).toMatchObject({ applied: 0, blocked: 1 });
     expect(report.targets[0]?.detail).toContain(detail);
+    expect(snapshot()).toBe(before);
+  });
+
+  it.each([
+    { name: "a Gerrit target's ref", pushRef: "refs/for/main" },
+    { name: "another task's branch", pushRef: "feature-task-2" },
+    { name: "a branch derived from a different title", pushRef: "feature/task-1-other-title" },
+  ])("blocks a recorded push ref that is $name, before any lookup or write", async ({ pushRef }) => {
+    // One push ref is shared by every target of a task; only this repository's
+    // derived branch proves which review it opened.
+    const result = await seed();
+    drizzle(raw).update(tasks).set({ pushRef }).run();
+    const connector = makeConnector(result);
+    const before = snapshot();
+
+    const report = await repairHostedChangeIdentities({
+      database: raw, createConnector: () => connector, apply: true,
+    });
+
+    expect(report).toMatchObject({ repairable: 0, applied: 0, blocked: 1 });
+    expect(report.targets[0]?.detail).toContain("branch");
+    expect(connector.findExistingReview).not.toHaveBeenCalled();
     expect(snapshot()).toBe(before);
   });
 
@@ -425,6 +448,53 @@ describe("repairHostedChangeIdentities", () => {
       expect((await store.getChangesForTask(makeTaskId("task-1")))[0]).toMatchObject({
         changeId: "42", reviewUrl: `${PR_URL}/42`,
       });
+    });
+  });
+
+  describe("with the real GitHub connector in a mixed Gerrit/GitHub project", () => {
+    it("blocks a shared Gerrit push ref even when a PR exists from that branch, without writes", async () => {
+      await seed("github", 1, "task-1", "octocat/hello-world");
+      await seed("gerrit", 1, "task-1", "gerrit/root");
+      const db = drizzle(raw);
+      // The first mixed cycle persisted the last target's ref; the corrupted URL lost its number.
+      db.update(tasks).set({ pushRef: "refs/for/main" }).run();
+      db.update(changePerRepository)
+        .set({ reviewUrl: `https://github.com/octocat/hello-world/pull/${FIRST_CHANGE_ID}` })
+        .where(eq(changePerRepository.repoKey, "octocat/hello-world")).run();
+      const before = snapshot();
+      // A later push from another task opened PR 77 from the same non-unique ref.
+      const fetchMock = vi.fn(() => Promise.resolve(jsonResponse([{
+        number: 77, html_url: "https://github.com/octocat/hello-world/pull/77", state: "open", merged_at: null,
+        head: { ref: "refs/for/main", repo: { full_name: "octocat/hello-world" } },
+        base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+      }])));
+      vi.stubGlobal("fetch", fetchMock);
+      onTestFinished(() => {
+        vi.unstubAllGlobals();
+      });
+      const github = new GitHubVcsConnector({
+        apiBaseUrl: "https://api.github.com", host: "github.com", owner: "octocat", repo: "hello-world",
+        token: "test-token", gitAuthorName: "VE", gitAuthorEmail: "ve@example.test",
+      }, new RecordingGitRunner());
+      const gerrit: VcsConnector = {
+        ...makeConnector({ changeId: FIRST_CHANGE_ID, url: "", status: "OPEN" }, true), reviewSystemLabel: "gerrit",
+      };
+
+      const report = await repairHostedChangeIdentities({
+        database: raw,
+        createConnector: (integration) => integration.id === "gerrit-1" ? gerrit : github,
+        apply: true,
+      });
+
+      expect(report).toMatchObject({ repairable: 0, applied: 0, blocked: 1 });
+      expect(report.targets).toEqual([
+        expect.objectContaining({ repoKey: "gerrit/root", status: "skipped" }),
+        expect.objectContaining({
+          repoKey: "octocat/hello-world", status: "blocked", detail: expect.stringContaining("branch"),
+        }),
+      ]);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(snapshot()).toBe(before);
     });
   });
 
