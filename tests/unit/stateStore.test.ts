@@ -1448,6 +1448,49 @@ describe("SqliteStateStore", () => {
       });
     });
 
+    it("enumerates all exact review watchers without crossing integration, change or deletion boundaries", async () => {
+      const changeId = makeExternalChangeId("owner/a#42");
+      const firstProjectId = makeProjectId("review-project-a");
+      const secondProjectId = makeProjectId("review-project-b");
+      const fixtures = [
+        { name: "first", sourceLabel: "github:github-1", changeId, projectId: firstProjectId },
+        { name: "second", sourceLabel: "github:github-1", changeId, projectId: secondProjectId },
+        { name: "terminal", sourceLabel: "github:github-1", changeId, projectId: firstProjectId },
+        { name: "deleted", sourceLabel: "github:github-1", changeId, projectId: secondProjectId },
+        { name: "other-integration", sourceLabel: "github:github-2", changeId, projectId: firstProjectId },
+        { name: "integration-prefix", sourceLabel: "github:github-1-extra", changeId, projectId: firstProjectId },
+        { name: "unscoped", sourceLabel: "github", changeId, projectId: firstProjectId },
+        { name: "other-repository", sourceLabel: "github:github-1", changeId: makeExternalChangeId("owner/b#42"), projectId: firstProjectId },
+        { name: "other-number", sourceLabel: "github:github-1", changeId: makeExternalChangeId("owner/a#43"), projectId: firstProjectId },
+        { name: "bare-number", sourceLabel: "github:github-1", changeId: makeExternalChangeId("42"), projectId: firstProjectId },
+      ];
+      const raw = (store as unknown as { raw: Database.Database }).raw;
+      for (const [index, fixture] of fixtures.entries()) {
+        await store.createReviewTask({
+          taskId: makeTaskId(fixture.name),
+          ticketId: makeTicketId(`ticket-${fixture.name}`),
+          subject: fixture.name,
+          sourceLabel: fixture.sourceLabel,
+          changeId: fixture.changeId,
+          projectId: fixture.projectId,
+          patchset: 1,
+        });
+        raw.prepare("UPDATE tasks SET created_at = ? WHERE task_id = ?").run(100 + index, fixture.name);
+      }
+      raw.prepare("UPDATE tasks SET state = 'REVIEW_DONE' WHERE task_id = 'terminal'").run();
+      raw.prepare("UPDATE tasks SET deleted_at = 200 WHERE task_id = 'deleted'").run();
+      await store.createTask(makeTaskId("coding"), makeTicketId("coding"));
+      await store.updateExternalChangeId(makeTaskId("coding"), changeId, 1);
+      await store.saveChangePerRepository(makeTaskId("coding"), "owner/a", changeId, null, "OPEN", "github-1", "github");
+
+      const watchers = await store.findReviewTasksByExternalChangeId("github-1", changeId);
+
+      expect(watchers.map((task) => task.taskId)).toEqual(["terminal", "second", "first"]);
+      expect(watchers.map((task) => task.projectId)).toEqual([firstProjectId, secondProjectId, firstProjectId]);
+      await expect(store.findReviewTasksByExternalChangeId("unknown", changeId)).resolves.toEqual([]);
+      await expect(store.findReviewTasksByExternalChangeId("github-1", "owner/a#99")).resolves.toEqual([]);
+    });
+
     it("scopes native hosted change numbers to the event repository", async () => {
       const firstTaskId = makeTaskId(randomUUID());
       const secondTaskId = makeTaskId(randomUUID());

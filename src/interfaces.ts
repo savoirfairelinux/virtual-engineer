@@ -1733,6 +1733,13 @@ export interface StateStore {
   ): Promise<Task | null>;
 
   /**
+   * List all non-deleted code-review tasks with this exact change id and
+   * integration in ticketSourceLabel, across every project. Terminal tasks are
+   * included; lifecycle callers decide whether each task can handle the event.
+   */
+  findReviewTasksByExternalChangeId(integrationId: string, externalChangeId: string): Promise<Task[]>;
+
+  /**
    * Find the most recent code-review task for a given change+project that has
    * already completed a review pass (reviewed_patchset IS NOT NULL). Used to
    * prevent duplicate reviews when an integration is deleted and recreated with

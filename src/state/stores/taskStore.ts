@@ -117,6 +117,7 @@ export interface TaskStoreApi {
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
   findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string, repository?: string): Promise<Task | null>;
+  findReviewTasksByExternalChangeId(integrationId: string, externalChangeId: string): Promise<Task[]>;
   findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null>;
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
   setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
@@ -1093,6 +1094,20 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     }));
   }
 
+  async function findReviewTasksByExternalChangeId(integrationId: string, externalChangeId: string): Promise<Task[]> {
+    const rows = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.taskType, "code-review"),
+        isNull(tasks.deletedAt),
+        eq(tasks.gerritChangeId, externalChangeId),
+        sql`instr(${tasks.ticketSourceLabel}, ':') > 0
+          AND substr(${tasks.ticketSourceLabel}, instr(${tasks.ticketSourceLabel}, ':') + 1) = ${integrationId}`,
+      ),
+      orderBy: (table, { desc }) => [desc(table.createdAt)],
+    });
+    return rows.map((row) => rowToTask(row));
+  }
+
   async function findTaskByExternalChangeId(
     integrationId: string | null,
     externalChangeId: string,
@@ -1118,17 +1133,10 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         if (scopedTask) return rowToTask(scopedTask);
       }
 
-      const reviewTaskRow = repositoryScope !== null ? undefined : raw
-        .prepare(
-          "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND deleted_at IS NULL AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
-        )
-        .get(externalChangeId, integrationId) as { task_id: string } | undefined;
-      if (reviewTaskRow) {
-        const reviewTask = await db.query.tasks.findFirst({
-          where: and(eq(tasks.taskId, reviewTaskRow.task_id as TaskId), isNull(tasks.deletedAt)),
-        });
-        if (reviewTask) return rowToTask(reviewTask);
-      }
+      const reviewTask = repositoryScope === null
+        ? (await findReviewTasksByExternalChangeId(integrationId, externalChangeId))[0]
+        : undefined;
+      if (reviewTask) return reviewTask;
 
       // Task-level ids predate per-repository tracking. Once a task has rows, they
       // are the authoritative repository/status evidence; a current binding must
@@ -1316,6 +1324,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getChangesForTask,
     getChangesForTasks,
     findTaskByExternalChangeId,
+    findReviewTasksByExternalChangeId,
     findReviewedCodeReviewTask,
     getLatestTaskByTicketSource,
     setTaskProjectId,

@@ -436,16 +436,17 @@ export class Orchestrator {
   }
 
   /**
-   * Resolve every task tracking an external change, independently: the exact id
-   * (Gerrit Change-Id, a review task's qualified id) and a repository-qualified
-   * hosted id's native number within that repository. A review task for
+   * Resolve every exact-ID review task across projects, independently from the
+   * uniquely resolved coding task and a repository-qualified hosted id's native
+   * number within that repository. A review task for
    * `owner/repo#42` therefore never hides the coding task that opened PR 42, and
    * `B#42` can never select repository A's PR/MR 42.
    */
   private async findTasksForExternalChange(integrationId: string, externalChangeId: string): Promise<Task[]> {
-    const tasks: Task[] = [];
+    const reviewTasks = await this.stateStore.findReviewTasksByExternalChangeId(integrationId, externalChangeId);
+    const tasks = new Map(reviewTasks.map((task) => [task.taskId, task]));
     const exact = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
-    if (exact !== null) tasks.push(exact);
+    if (exact !== null) tasks.set(exact.taskId, exact);
     const qualified = parseQualifiedChangeId(externalChangeId);
     if (qualified !== null) {
       const native = await this.stateStore.findTaskByExternalChangeId(
@@ -453,9 +454,9 @@ export class Orchestrator {
         qualified.changeId,
         qualified.repository,
       );
-      if (native !== null && native.taskId !== exact?.taskId) tasks.push(native);
+      if (native !== null) tasks.set(native.taskId, native);
     }
-    return tasks;
+    return [...tasks.values()];
   }
 
   /** Apply a webhook step to each task; a failure for one task never skips the others. */

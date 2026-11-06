@@ -13,6 +13,7 @@ import {
 import type { ChangePerRepository } from "../../src/domain/tasks.js";
 import type {
   Integration,
+  ProjectId,
   StateStore,
   Task,
   WorkspaceRunner,
@@ -89,6 +90,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
     orphanExcessChanges: vi.fn().mockResolvedValue(0),
     getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
     findTaskByExternalChangeId: vi.fn().mockResolvedValue(null),
+    findReviewTasksByExternalChangeId: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as StateStore;
 }
@@ -449,15 +451,22 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       return taskId;
     }
 
-    async function trackReviewTask(taskName: string, changeId: string, state: Task["state"]): Promise<Task["taskId"]> {
+    async function trackReviewTask(
+      taskName: string,
+      changeId: string,
+      state: Task["state"],
+      sourceLabel = "github:github-1",
+      projectId?: ProjectId,
+    ): Promise<Task["taskId"]> {
       const taskId = makeTaskId(taskName);
       await store.createReviewTask({
         taskId,
         ticketId: makeTicketId(`ticket-${taskName}`),
         subject: "Review",
-        sourceLabel: "github:github-1",
+        sourceLabel,
         changeId: makeExternalChangeId(changeId),
         patchset: 1,
+        ...(projectId === undefined ? {} : { projectId }),
       });
       (store as unknown as { raw: Database.Database }).raw
         .prepare("UPDATE tasks SET state = ? WHERE task_id = ?")
@@ -468,6 +477,86 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
     async function transitionTargets(taskId: Task["taskId"]): Promise<string[]> {
       return (await store.getStateTransitions(taskId)).map((transition) => transition.toState);
     }
+
+    describe.each([
+      { provider: "github", integrationId: "github-1", changeId: "owner/a#42", repoKey: "owner/a", otherChangeId: "owner/b#42" },
+      { provider: "gitlab", integrationId: "gitlab-1", changeId: "group/a#42", repoKey: "group/a", otherChangeId: "group/b#42" },
+      { provider: "gerrit", integrationId: "gerrit-1", changeId: "42", repoKey: "team/a", otherChangeId: "43" },
+    ] as const)("$provider multiple review projects", ({ provider, integrationId, changeId, repoKey, otherChangeId }) => {
+      it.each([
+        { entryPoint: "markChangeMerged", expectedState: "REVIEW_DONE" },
+        { entryPoint: "markChangeAbandoned", expectedState: "ABANDONED" },
+      ] as const)("$entryPoint updates every watcher despite a newer terminal task", async ({ entryPoint, expectedState }) => {
+        await store.upsertIntegration({ id: integrationId, provider, name: provider, configJson: "{}", enabled: true });
+        const agent = await store.createAgent({
+          name: "Review Agent",
+          type: "review",
+          modelConfigJson: "{}",
+          systemPromptId: "system_review",
+          instructionsPromptId: "instructions_review",
+          enabled: true,
+        });
+        const watchers: Task["taskId"][] = [];
+        const raw = (store as unknown as { raw: Database.Database }).raw;
+        for (const [index, name] of ["first", "second"].entries()) {
+          const project = await store.createProject({ name, type: "review", agentId: agent.id, enabled: true });
+          await store.setProjectReviewConfig(project.id, integrationId, [repoKey]);
+          const watcher = await trackReviewTask(name, changeId, "REVIEW_WATCHING", `${provider}:${integrationId}`, project.id);
+          raw.prepare("UPDATE tasks SET created_at = ? WHERE task_id = ?").run(100 + index, watcher);
+          watchers.push(watcher);
+        }
+        const terminal = await trackReviewTask("terminal", changeId, "REVIEW_DONE", `${provider}:${integrationId}`);
+        raw.prepare("UPDATE tasks SET created_at = 200 WHERE task_id = ?").run(terminal);
+        const foreignIntegration = await trackReviewTask("foreign-integration", changeId, "REVIEW_WATCHING", `${provider}:other-1`);
+        const foreignChange = await trackReviewTask("foreign-change", otherChangeId, "REVIEW_WATCHING", `${provider}:${integrationId}`);
+
+        await makeOrchestrator(store)[entryPoint](integrationId, changeId);
+
+        for (const watcher of watchers) {
+          expect((await store.getTask(watcher))?.state).toBe(expectedState);
+          expect(await transitionTargets(watcher)).toContain(expectedState);
+        }
+        expect((await store.getTask(terminal))?.state).toBe("REVIEW_DONE");
+        expect(await transitionTargets(terminal)).toEqual([]);
+        for (const unrelated of [foreignIntegration, foreignChange]) {
+          expect((await store.getTask(unrelated))?.state).toBe("REVIEW_WATCHING");
+          expect(await transitionTargets(unrelated)).toEqual([]);
+        }
+      });
+    });
+
+    it("updates the other review project and coding task when one watcher fails", async () => {
+      const coding = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const surviving = await trackReviewTask("review-surviving", "owner/a#42", "REVIEW_WATCHING");
+      const failing = await trackReviewTask("review-failing", "owner/a#42", "REVIEW_WATCHING");
+      const transition = store.transition.bind(store);
+      vi.spyOn(store, "transition").mockImplementation((taskId, toState, ...rest) => taskId === failing
+        ? Promise.reject(new Error("review store unavailable"))
+        : transition(taskId, toState, ...rest));
+
+      await expect(makeOrchestrator(store).markChangeMerged("github-1", "owner/a#42")).rejects.toThrow("review store unavailable");
+
+      expect((await store.getTask(surviving))?.state).toBe("REVIEW_DONE");
+      expect((await store.getTask(coding))?.state).toBe("DONE");
+      expect((await store.getTask(failing))?.state).toBe("REVIEW_WATCHING");
+    });
+
+    it("updates all review watchers without choosing an ambiguous native coding task", async () => {
+      const firstCoding = await trackHostedChange("coding-first", [{ repoKey: "owner/a" }]);
+      const secondCoding = await trackHostedChange("coding-second", [{ repoKey: "owner/a" }]);
+      const firstReview = await trackReviewTask("review-first", "owner/a#42", "REVIEW_WATCHING");
+      const secondReview = await trackReviewTask("review-second", "owner/a#42", "REVIEW_WATCHING");
+
+      await makeOrchestrator(store).markChangeMerged("github-1", "owner/a#42");
+
+      for (const watcher of [firstReview, secondReview]) {
+        expect((await store.getTask(watcher))?.state).toBe("REVIEW_DONE");
+      }
+      for (const ambiguous of [firstCoding, secondCoding]) {
+        expect((await store.getTask(ambiguous))?.state).toBe("IN_REVIEW");
+        expect((await store.getChangesForTask(ambiguous))[0]?.status).toBe("OPEN");
+      }
+    });
 
     it.each(["REVIEW_WATCHING", "REVIEW_DONE"] as const)(
       "merges the coding task even when a %s review task tracks the same PR",
