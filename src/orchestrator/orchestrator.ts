@@ -43,6 +43,7 @@ import { toRejectionError } from "../utils/rejection.js";
 import { describeContextOverflow, isInfrastructureError } from "../utils/errorClassifier.js";
 import {
   buildAgentTaskContext,
+  resolveChangeIdContinuityRepoKeys,
   type ProjectAgentRuntime,
 } from "./agentContextBuilder.js";
 import { AgentRuntimeResolver } from "./agentRuntimeResolver.js";
@@ -816,6 +817,13 @@ export class Orchestrator {
       );
 
       const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, activeHandle, root, rootConnector);
+      const changeIdContinuityRepoKeys = await resolveChangeIdContinuityRepoKeys(
+        projectPushTargets,
+        (target) => this.tryResolveVcsConnectorForTarget(target.integrationId, {
+          repoKey: target.repoKey,
+          targetBranch: target.targetBranch,
+        }),
+      );
       const context = await buildAgentTaskContext({
         task,
         ticket,
@@ -831,6 +839,7 @@ export class Orchestrator {
         resolvedCopilotModel,
         providerOptions,
         useChangeIdContinuity: rootConnector.useChangeIdContinuity,
+        changeIdContinuityRepoKeys,
         projectPushTargets,
         vendorComponents,
         projectRecord,
