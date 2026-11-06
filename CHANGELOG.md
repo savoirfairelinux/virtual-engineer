@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.0](https://github.com/savoirfairelinux/virtual-engineer/compare/v0.3.0...v0.4.0) (2026-11-06)
+
+
+### Features
+
+* **admin:** match task queue search against project name ([e147d54](https://github.com/savoirfairelinux/virtual-engineer/commit/e147d548e0951ebdefaf01012404875d8a942335))
+* **admin:** match task queue search against project name ([1c9a706](https://github.com/savoirfairelinux/virtual-engineer/commit/1c9a70635b8cb6527fba9c7dc0707969e2d151ce))
+
+
+### Bug Fixes
+
+* **admin:** bound copy scan and ambiguous resume ([7c7fbc3](https://github.com/savoirfairelinux/virtual-engineer/commit/7c7fbc31b7a29a0082d5b565adf3ddffb073fbc1))
+* **admin:** count mirrored log events once ([180c9ea](https://github.com/savoirfairelinux/virtual-engineer/commit/180c9ea1ada19e56667c0a3a41e121bd622ad682))
+* **admin:** keep stream status out of log window ([4163b8e](https://github.com/savoirfairelinux/virtual-engineer/commit/4163b8effd477493cd6ed3bd9c2f41e1c868c0f5))
+* **admin:** resume log streams only from buffer ([fcf002a](https://github.com/savoirfairelinux/virtual-engineer/commit/fcf002aa27d72a67959f9d21b9b836f181981aaf))
+* **gerrit:** prevent SSH option injection ([31cfd50](https://github.com/savoirfairelinux/virtual-engineer/commit/31cfd50b0381ebfde4e9fc4628e4b8b58eda2768))
+* **gerrit:** prevent SSH option injection ([7af44e5](https://github.com/savoirfairelinux/virtual-engineer/commit/7af44e591a991c3c08582a2ed1cd189a5cc4dd1e))
+* **orchestrator:** dispatch events to every task ([6d61540](https://github.com/savoirfairelinux/virtual-engineer/commit/6d61540880cfe20c08e9ec3146af1b40080d7632))
+* **orchestrator:** handle missing GitHub tickets ([3ba5a98](https://github.com/savoirfairelinux/virtual-engineer/commit/3ba5a9846242449b36a6e3aec7bc57a87e37cd21))
+* **orchestrator:** poll native hosted reviews ([9a25cc2](https://github.com/savoirfairelinux/virtual-engineer/commit/9a25cc2468e481c888cc54bbbd6aa9fec8c750f2))
+* **orchestrator:** reuse Change-Ids per target ([c561ed7](https://github.com/savoirfairelinux/virtual-engineer/commit/c561ed793fc4fd6a7b18b7f6c962787bd71aa680))
+* **orchestrator:** scope hosted webhooks by repo ([51c26eb](https://github.com/savoirfairelinux/virtual-engineer/commit/51c26eb7cfc9b8f806a5f53a6d56df394d18a11a))
+* **orchestrator:** update all review watchers ([8f14002](https://github.com/savoirfairelinux/virtual-engineer/commit/8f14002a0e090ddfaba76ee2b65e0e16c2d0e458))
+* **state:** keep recorded rows over legacy ids ([8ef21bb](https://github.com/savoirfairelinux/virtual-engineer/commit/8ef21bbb6cbfdfff773bdd3c8b890ac27f2d2daf))
+* **vcs:** harden hosted identity repair lookups ([8585804](https://github.com/savoirfairelinux/virtual-engineer/commit/85858049e531f00c8b26a2fca4a8af1b18a27ebd))
+* **vcs:** preserve native PR and MR identities ([285654e](https://github.com/savoirfairelinux/virtual-engineer/commit/285654e9e5b947884ed80f52a549cbd89e29b516))
+* **vcs:** prove repair branch per repository ([fd972c4](https://github.com/savoirfairelinux/virtual-engineer/commit/fd972c4b67b0146f619271fafc4bdfe0692c2013))
+* **workspace:** accept Unicode whitespace in HEAD ([66af644](https://github.com/savoirfairelinux/virtual-engineer/commit/66af644442c5640d57ee1da40e179152c229776b))
+* **workspace:** bound HEAD reads and check access ([cefbd43](https://github.com/savoirfairelinux/virtual-engineer/commit/cefbd43c4a109bea5d84659cc8c4d276a7577928))
+* **workspace:** reject shared Git metadata ([5412418](https://github.com/savoirfairelinux/virtual-engineer/commit/5412418050bd28a735b6f657b25265fa2d95e389))
+* **workspace:** strip leftover linked worktrees ([80331ec](https://github.com/savoirfairelinux/virtual-engineer/commit/80331ecf60924d65fb051ed8980258417b583037))
+
+
+### Performance Improvements
+
+* **admin:** bound task log stream replay ([59fa949](https://github.com/savoirfairelinux/virtual-engineer/commit/59fa9490b8111f65202401ebe83b38020aa77558))
+* **admin:** defer and bound task log replay ([aa5dc83](https://github.com/savoirfairelinux/virtual-engineer/commit/aa5dc833b68bd3879bb67db9cba1c5d9de43d1c7))
+* **admin:** open task logs on demand ([cf9fdee](https://github.com/savoirfairelinux/virtual-engineer/commit/cf9fdeee684b5bd2f14b356d7ab64b3c9165f04e))
+
 ## [0.3.0](https://github.com/savoirfairelinux/virtual-engineer/compare/v0.2.0...v0.3.0) (2026-10-29)
 
 
