@@ -1,4 +1,5 @@
 import type { ExternalChangeId, TaskId } from "../domain/identifiers.js";
+import { isSameRepository, parseQualifiedChangeId } from "../domain/identifiers.js";
 import type { ChangePerRepository, Task, TaskState } from "../domain/tasks.js";
 import type {
   FeedbackItem,
@@ -14,10 +15,25 @@ const log = getLogger("review-progress");
 
 type ReviewProgressConnector = ReviewConnector | VcsConnector;
 
+/** Comments processed for one change row, resolved later on that row's own connector. */
+interface ProcessedChangeComments {
+  change: ChangePerRepository;
+  comments: ReviewComment[];
+}
+
+/** Legacy task-level ids carry no repository; the store already scoped the task to the event repository. */
 function matchesExternalChangeId(recordedChangeId: string, eventChangeId: string): boolean {
-  if (recordedChangeId === eventChangeId) return true;
-  const separator = eventChangeId.lastIndexOf("#");
-  return separator > 0 && recordedChangeId === eventChangeId.slice(separator + 1);
+  return recordedChangeId === eventChangeId
+    || parseQualifiedChangeId(eventChangeId)?.changeId === recordedChangeId;
+}
+
+/** A qualified hosted event matches a change row only for the same native number and repository. */
+function matchesChangeRow(change: ChangePerRepository, eventChangeId: string): boolean {
+  if (change.changeId === eventChangeId) return true;
+  const qualified = parseQualifiedChangeId(eventChangeId);
+  return qualified !== null
+    && change.changeId === qualified.changeId
+    && isSameRepository(change.repoKey, qualified.repository);
 }
 
 export interface ReviewProgressDependencies {
@@ -30,6 +46,8 @@ export interface ReviewProgressDependencies {
     integrationId: string,
     context: IntegrationBindingContext
   ): Promise<VcsConnector | undefined>;
+  /** Review connector bound to one repository of an integration, or null when unavailable. */
+  resolveRepositoryReviewConnector(integrationId: string, repoKey: string): Promise<ReviewConnector | null>;
   getDefaultVcsConnector(): VcsConnector | undefined;
   extractNewFeedback(
     taskId: TaskId,
@@ -86,7 +104,7 @@ export class ReviewProgressService {
         && (repoKey === undefined || change.repoKey === repoKey)
         && change.status !== "NO_CHANGE"
         && change.status !== "ORPHANED"
-        && matchesExternalChangeId(change.changeId, externalChangeId)
+        && matchesChangeRow(change, externalChangeId)
     );
     if (matchingChanges.length !== 1) {
       log.warn(
@@ -229,7 +247,7 @@ export class ReviewProgressService {
     let anyAbandoned = false;
     const abandonedRepos: string[] = [];
     const allFeedback: FeedbackItem[] = [];
-    const allProcessedComments: ReviewComment[] = [];
+    const processedByChange: ProcessedChangeComments[] = [];
 
     for (const change of activeChanges) {
       if (change.status === "MERGED") continue;
@@ -285,7 +303,7 @@ export class ReviewProgressService {
             streamChangeId,
             streamComments,
             allFeedback,
-            allProcessedComments,
+            processedByChange,
           });
         }
       } catch (err) {
@@ -341,12 +359,7 @@ export class ReviewProgressService {
     const updatedTask = await this.dependencies.getTask(task.taskId);
     if (updatedTask?.state !== "IN_REVIEW") return;
 
-    await this.resolveProcessedComments(
-      task,
-      activeChanges,
-      allProcessedComments,
-      getFallbackReviewConnector
-    );
+    await this.resolveProcessedComments(task, processedByChange, getFallbackReviewConnector);
   }
 
   private async collectFeedback(input: {
@@ -358,17 +371,17 @@ export class ReviewProgressService {
     streamChangeId: string | undefined;
     streamComments: ReviewComment[] | undefined;
     allFeedback: FeedbackItem[];
-    allProcessedComments: ReviewComment[];
+    processedByChange: ProcessedChangeComments[];
   }): Promise<void> {
     try {
       const comments = await this.getUnresolvedComments(
         input.changeConnector,
-        input.change.changeId,
+        input.change,
         input.getFallbackReviewConnector
       );
       let ciComments: ReviewComment[] = [];
       try {
-        const ciSource = await input.getFallbackReviewConnector();
+        const ciSource = await this.resolveRowReviewConnector(input.change, input.getFallbackReviewConnector);
         if (ciSource.getCICheckFailures) {
           ciComments = await ciSource.getCICheckFailures(
             input.change.changeId as ExternalChangeId
@@ -401,7 +414,9 @@ export class ReviewProgressService {
           content: `[${input.change.repoKey}] ${item.content}`,
         });
       }
-      input.allProcessedComments.push(...processed);
+      if (processed.length > 0) {
+        input.processedByChange.push({ change: input.change, comments: processed });
+      }
     } catch (err) {
       log.warn(
         { taskId: input.task.taskId, repoKey: input.change.repoKey, err },
@@ -410,20 +425,13 @@ export class ReviewProgressService {
     }
   }
 
+  /** Resolve each change row's processed comments on that row's own connector and change id. */
   private async resolveProcessedComments(
     task: Task,
-    activeChanges: ChangePerRepository[],
-    processedComments: ReviewComment[],
+    processedByChange: ProcessedChangeComments[],
     getFallbackReviewConnector: () => Promise<ReviewConnector>
   ): Promise<void> {
-    for (const change of activeChanges) {
-      const repoComments = processedComments.filter(
-        (comment) => !comment.filePath
-          || comment.filePath.startsWith(`${change.repoKey}/`)
-          || comment.filePath === change.repoKey
-      );
-      if (repoComments.length === 0) continue;
-
+    for (const { change, comments } of processedByChange) {
       const changeConnector = await this.resolveChangeConnector(change, getFallbackReviewConnector);
       if (!changeConnector) {
         log.warn(
@@ -435,11 +443,11 @@ export class ReviewProgressService {
 
       try {
         if ("resolveComments" in changeConnector && typeof changeConnector.resolveComments === "function") {
-          await changeConnector.resolveComments(change.changeId as ExternalChangeId, repoComments);
+          await changeConnector.resolveComments(change.changeId as ExternalChangeId, comments);
         } else {
-          await (await getFallbackReviewConnector()).resolveComments(
+          await (await this.resolveRowReviewConnector(change, getFallbackReviewConnector)).resolveComments(
             change.changeId as ExternalChangeId,
-            repoComments
+            comments
           );
         }
       } catch (err) {
@@ -474,13 +482,31 @@ export class ReviewProgressService {
 
   private async getUnresolvedComments(
     connector: ReviewProgressConnector,
-    changeId: string,
+    change: ChangePerRepository,
     getFallbackReviewConnector: () => Promise<ReviewConnector>
   ): Promise<ReviewComment[]> {
     if ("getUnresolvedComments" in connector && typeof connector.getUnresolvedComments === "function") {
-      return connector.getUnresolvedComments(changeId as ExternalChangeId);
+      return connector.getUnresolvedComments(change.changeId as ExternalChangeId);
     }
-    return (await getFallbackReviewConnector()).getUnresolvedComments(changeId as ExternalChangeId);
+    return (await this.resolveRowReviewConnector(change, getFallbackReviewConnector))
+      .getUnresolvedComments(change.changeId as ExternalChangeId);
+  }
+
+  /**
+   * Rows recorded with an integration read their review connector for their
+   * own repository. Only legacy rows without one use the task-level connector,
+   * which cannot select a repository in a multi-repository project.
+   */
+  private async resolveRowReviewConnector(
+    change: ChangePerRepository,
+    getFallbackReviewConnector: () => Promise<ReviewConnector>
+  ): Promise<ReviewConnector> {
+    if (!change.integrationId) return getFallbackReviewConnector();
+    const connector = await this.dependencies.resolveRepositoryReviewConnector(change.integrationId, change.repoKey);
+    if (!connector) {
+      throw new Error(`No review connector is available for repository ${change.repoKey}`);
+    }
+    return connector;
   }
 
   private async scopeCiComments(task: Task, comments: ReviewComment[]): Promise<ReviewComment[]> {

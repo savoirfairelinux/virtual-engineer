@@ -2185,6 +2185,75 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.agentSession.perRepoChangeIds).toEqual({ root: { "0": "Ifirst", "1": "Ilast" } });
   });
 
+  describe("Change-Id continuity per push target", () => {
+    function connectorFor(useChangeIdContinuity: boolean): VcsConnector {
+      return {
+        clone: vi.fn(),
+        pushDirect: vi.fn().mockResolvedValue({ changeId: "Inew", url: "", status: "OPEN" }),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: useChangeIdContinuity ? "refs/for/main" : "feature/task" }),
+        useChangeIdContinuity,
+        reviewSystemLabel: useChangeIdContinuity ? "gerrit" : "github",
+      } as unknown as VcsConnector;
+    }
+
+    async function runRetry(rootUsesContinuity: boolean): Promise<import("../../src/interfaces.js").TaskContext> {
+      const task = makeTask({ state: "RETRY_CYCLE", externalChangeId: null });
+      const hostedKey = rootUsesContinuity ? "owner/sub" : "owner/root";
+      const gerritKey = rootUsesContinuity ? "gerrit/root" : "gerrit/sub";
+      const stateStore = makeStateStore({
+        getChangesForTask: vi.fn().mockResolvedValue([
+          { repoKey: gerritKey, changeId: "Igerrit", commitIndex: 0, status: "OPEN", integrationId: "gerrit-int" },
+          { repoKey: hostedKey, changeId: "42", commitIndex: 0, status: "OPEN", integrationId: "github-int" },
+        ]),
+        transition: vi.fn(async (_id, to) => makeTask({ taskId: task.taskId, state: to })),
+      });
+      const ws = makeWorkspaceRunner();
+      const projectMode: ProjectModeDeps = {
+        projectStore: {
+          getProjectById: vi.fn(async () => makeProject()),
+          listProjectPushTargets: vi.fn(async () => [
+            makePushTarget({
+              id: 1, commitOrder: 1, localPath: ".",
+              integrationId: rootUsesContinuity ? "gerrit-int" : "github-int",
+              repoKey: rootUsesContinuity ? gerritKey : hostedKey,
+            }),
+            makePushTarget({
+              id: 2, commitOrder: 2, localPath: "sub",
+              integrationId: rootUsesContinuity ? "github-int" : "gerrit-int",
+              repoKey: rootUsesContinuity ? hostedKey : gerritKey,
+            }),
+          ]),
+          getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+          getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+          getAgentById: makeProjectAgentLookup(),
+        },
+        pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) =>
+          id === "redmine-int" ? makeRedmine() : null) },
+        resolveVcsForIntegration: vi.fn(async (integrationId: string) => connectorFor(integrationId === "gerrit-int")),
+      };
+      const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+      (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+      await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+      return vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
+    }
+
+    it("never offers a hosted sub-repository's native PR/MR number as a Gerrit trailer", async () => {
+      const context = await runRetry(true);
+
+      expect(context.agentSession.perRepoChangeIds).toEqual({ "gerrit/root": "Igerrit" });
+    });
+
+    it("keeps a Gerrit sub-repository's Change-Id under a hosted root", async () => {
+      const context = await runRetry(false);
+
+      expect(context.agentSession.perRepoChangeIds).toEqual({ "gerrit/sub": "Igerrit" });
+      expect(context.agentSession.existingChangeId).toBeUndefined();
+    });
+  });
+
   it("retry cycle checks out existing patchset via applyPriorPatchset", async () => {
     const task = makeTask({
       state: "AGENT_RUNNING",

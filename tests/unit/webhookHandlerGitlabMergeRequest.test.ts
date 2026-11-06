@@ -136,4 +136,75 @@ describe("gitlabMergeRequestWebhookHandler", () => {
     expect(r.status).toBe(202);
     expect((r.body as { ignored: boolean }).ignored).toBe(true);
   });
+
+  describe("project identities", () => {
+    // GitLab bindings may record a repository by path or by numeric project id.
+    const project = { id: 7, path_with_namespace: "group/project" };
+
+    it.each([
+      { action: "merge", entryPoint: "markChangeMerged" },
+      { action: "close", entryPoint: "markChangeAbandoned" },
+      { action: "update", entryPoint: "triggerFeedbackForChange" },
+    ] as const)("routes '$action' under the project path and its numeric id", async ({ action, entryPoint }) => {
+      const { ctx, orch } = makeCtx("merge_request", { object_attributes: { iid: 42, action }, project });
+
+      const r = await gitlabMergeRequestWebhookHandler(ctx);
+
+      expect(r.status).toBe(202);
+      expect(vi.mocked(orch[entryPoint]).mock.calls).toEqual([
+        ["mr-1", "group/project#42"],
+        ["mr-1", "7#42"],
+      ]);
+    });
+
+    it("routes Note Hook feedback under both project identities", async () => {
+      const { ctx, orch } = makeCtx("note", { merge_request: { iid: 42 }, project });
+
+      await gitlabMergeRequestWebhookHandler(ctx);
+
+      expect(vi.mocked(orch.triggerFeedbackForChange).mock.calls).toEqual([
+        ["mr-1", "group/project#42"],
+        ["mr-1", "7#42"],
+      ]);
+    });
+
+    it("keeps review triggers on the project path only", async () => {
+      const { ctx, orch } = makeCtx("merge_request", {
+        object_attributes: { iid: 42, action: "update", oldrev: "abc123" },
+        project,
+      });
+
+      await gitlabMergeRequestWebhookHandler(ctx);
+
+      expect(orch.triggerReviewForChange).toHaveBeenCalledExactlyOnceWith("mr-1", "group/project#42");
+    });
+
+    it.each([0, -7, 7.5, "7", null])("ignores an invalid numeric project id (%s)", async (id) => {
+      const { ctx, orch } = makeCtx("merge_request", {
+        object_attributes: { iid: 42, action: "merge" },
+        project: { id, path_with_namespace: "group/project" },
+      });
+
+      await gitlabMergeRequestWebhookHandler(ctx);
+
+      expect(orch.markChangeMerged).toHaveBeenCalledExactlyOnceWith("mr-1", "group/project#42");
+    });
+
+    it("does not add a numeric identity to an unqualified IID", async () => {
+      const { ctx, orch } = makeCtx("merge_request", { object_attributes: { iid: 42, action: "merge" }, project: { id: 7 } });
+
+      await gitlabMergeRequestWebhookHandler(ctx);
+
+      expect(orch.markChangeMerged).toHaveBeenCalledExactlyOnceWith("mr-1", "42");
+    });
+
+    it("still routes the numeric identity when the path identity fails", async () => {
+      const { ctx, orch } = makeCtx("merge_request", { object_attributes: { iid: 42, action: "merge" }, project });
+      vi.mocked(orch.markChangeMerged).mockRejectedValueOnce(new Error("path routing failed"));
+
+      await expect(gitlabMergeRequestWebhookHandler(ctx)).rejects.toThrow("path routing failed");
+
+      expect(orch.markChangeMerged).toHaveBeenLastCalledWith("mr-1", "7#42");
+    });
+  });
 });

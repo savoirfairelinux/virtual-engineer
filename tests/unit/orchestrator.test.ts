@@ -224,6 +224,7 @@ describe("Orchestrator", () => {
       updateChangePerRepositoryStatus: vi.fn().mockResolvedValue(undefined),
       orphanExcessChanges: vi.fn().mockResolvedValue(0),
       findTaskByExternalChangeId: vi.fn().mockResolvedValue(null),
+      findReviewTasksByExternalChangeId: vi.fn().mockResolvedValue([]),
       getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
       ...overrides,
     } as unknown as StateStore;

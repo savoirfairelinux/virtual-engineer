@@ -16,6 +16,7 @@ import type { IntegrationStore } from "../interfaces.js";
 import {
   makeTaskId,
   makeTicketId,
+  parseQualifiedChangeId,
   type ExternalChangeId,
   type TicketId,
 } from "../domain/identifiers.js";
@@ -42,6 +43,7 @@ import { toRejectionError } from "../utils/rejection.js";
 import { describeContextOverflow, isInfrastructureError } from "../utils/errorClassifier.js";
 import {
   buildAgentTaskContext,
+  resolveChangeIdContinuityRepoKeys,
   type ProjectAgentRuntime,
 } from "./agentContextBuilder.js";
 import { AgentRuntimeResolver } from "./agentRuntimeResolver.js";
@@ -156,6 +158,11 @@ export class Orchestrator {
         this.resolveReviewConnector(task),
       resolveVcsConnector: (integrationId, context): ReturnType<ReviewProgressDependencies["resolveVcsConnector"]> =>
         this.tryResolveVcsConnectorForTarget(integrationId, context),
+      resolveRepositoryReviewConnector: (
+        integrationId,
+        repoKey,
+      ): ReturnType<ReviewProgressDependencies["resolveRepositoryReviewConnector"]> =>
+        this.projectConnectorResolver.resolveRepositoryReviewConnector(integrationId, repoKey),
       getDefaultVcsConnector: (): ReturnType<ReviewProgressDependencies["getDefaultVcsConnector"]> =>
         this.vcsConnector,
       extractNewFeedback: (taskId, changeId, comments): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>
@@ -354,17 +361,18 @@ export class Orchestrator {
   }
 
   /**
-   * Webhook entry points — look up the task for a review-system change id and
-   * apply the appropriate lifecycle step. All three are no-ops for unknown or terminal tasks;
-   * the polling loop remains the source-of-truth fallback.
+   * Webhook entry points — look up every task tracking a review-system change id
+   * and apply the appropriate lifecycle step to each independently. All three are
+   * no-ops for unknown or terminal tasks; the polling loop remains the
+   * source-of-truth fallback.
    */
   async triggerFeedbackForChange(integrationId: string, externalChangeId: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       if (current.state !== "IN_REVIEW") {
@@ -373,17 +381,17 @@ export class Orchestrator {
       }
       log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
       await this.checkReviewProgress(current, externalChangeId, streamComments);
-    });
+    }));
   }
 
-  /** Webhook handler: mark the associated task's change as merged and close its ticket. */
+  /** Webhook handler: mark the associated tasks' change as merged and close their tickets. */
   async markChangeMerged(integrationId: string, externalChangeId: string, gerritProject?: string): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       if (current.state === "REVIEW_WATCHING") {
@@ -409,31 +417,60 @@ export class Orchestrator {
       }
       log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook merged: checking change convergence");
       await this.reviewProgressService.markChangeMerged(current, integrationId, externalChangeId, repoKey);
-    });
+    }));
   }
 
-  /** Webhook handler: mark the associated task as abandoned when a change is externally abandoned. */
+  /** Webhook handler: mark the associated tasks as abandoned when a change is externally abandoned. */
   async markChangeAbandoned(integrationId: string, externalChangeId: string): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       log.info({ taskId: current.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
       await this.handleAbandoned(current, "change was abandoned externally (webhook)");
-    });
+    }));
   }
 
-  /** Resolve qualified review ids first, then legacy bare ids used by coding tasks. */
-  private async findTaskForExternalChange(integrationId: string, externalChangeId: string): Promise<Task | null> {
+  /**
+   * Resolve every exact-ID review task across projects, independently from the
+   * uniquely resolved coding task and a repository-qualified hosted id's native
+   * number within that repository. A review task for
+   * `owner/repo#42` therefore never hides the coding task that opened PR 42, and
+   * `B#42` can never select repository A's PR/MR 42.
+   */
+  private async findTasksForExternalChange(integrationId: string, externalChangeId: string): Promise<Task[]> {
+    const reviewTasks = await this.stateStore.findReviewTasksByExternalChangeId(integrationId, externalChangeId);
+    const tasks = new Map(reviewTasks.map((task) => [task.taskId, task]));
     const exact = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
-    if (exact !== null) return exact;
-    const separator = externalChangeId.indexOf("#");
-    if (separator <= 0 || separator === externalChangeId.length - 1) return null;
-    return this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId.slice(separator + 1));
+    if (exact !== null) tasks.set(exact.taskId, exact);
+    const qualified = parseQualifiedChangeId(externalChangeId);
+    if (qualified !== null) {
+      const native = await this.stateStore.findTaskByExternalChangeId(
+        integrationId,
+        qualified.changeId,
+        qualified.repository,
+      );
+      if (native !== null) tasks.set(native.taskId, native);
+    }
+    return [...tasks.values()];
+  }
+
+  /** Apply a webhook step to each task; a failure for one task never skips the others. */
+  private async dispatchToTasks(tasks: Task[], step: (task: Task) => Promise<void>): Promise<void> {
+    const failures: unknown[] = [];
+    for (const task of tasks) {
+      try {
+        await step(task);
+      } catch (err) {
+        log.error({ taskId: task.taskId, err }, "webhook step failed for one task");
+        failures.push(err);
+      }
+    }
+    if (failures.length > 0) throw failures[0];
   }
 
   private async resolveGerritRepoKey(
@@ -781,6 +818,13 @@ export class Orchestrator {
       );
 
       const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, activeHandle, root, rootConnector);
+      const changeIdContinuityRepoKeys = await resolveChangeIdContinuityRepoKeys(
+        projectPushTargets,
+        (target) => this.tryResolveVcsConnectorForTarget(target.integrationId, {
+          repoKey: target.repoKey,
+          targetBranch: target.targetBranch,
+        }),
+      );
       const context = await buildAgentTaskContext({
         task,
         ticket,
@@ -796,6 +840,7 @@ export class Orchestrator {
         resolvedCopilotModel,
         providerOptions,
         useChangeIdContinuity: rootConnector.useChangeIdContinuity,
+        changeIdContinuityRepoKeys,
         projectPushTargets,
         vendorComponents,
         projectRecord,

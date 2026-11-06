@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
+import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 
@@ -33,6 +34,12 @@ const PR_RESPONSE = {
 
 const PR_MERGED = { ...PR_RESPONSE, state: "closed", merged: true };
 const PR_CLOSED = { ...PR_RESPONSE, state: "closed", merged: false };
+const BRANCH_PR_RESPONSE = {
+  ...PR_RESPONSE,
+  merged_at: null,
+  head: { ref: "feature-task-1", repo: { full_name: `${OWNER}/${REPO}` } },
+  base: { ref: "main", repo: { full_name: `${OWNER}/${REPO}` } },
+};
 
 function makeConnector(
   overrides?: Partial<ConstructorParameters<typeof GitHubVcsConnector>[0]>,
@@ -159,6 +166,104 @@ describe("GitHubVcsConnector", () => {
       expect(await makeConnector().getChangeStatus("42")).toBe("OPEN");
     });
 
+    describe("findExistingReview", () => {
+      it.each([
+        { state: "open", merged_at: null, status: "OPEN" },
+        { state: "closed", merged_at: "2026-11-01T12:00:00Z", status: "MERGED" },
+        { state: "closed", merged_at: null, status: "ABANDONED" },
+      ])("recovers a $status PR without a push", async ({ state, merged_at, status }) => {
+        const gitRunner = makeGitRunner();
+        fetchMock.mockResolvedValueOnce(jsonResponse([{ ...BRANCH_PR_RESPONSE, state, merged_at }]));
+
+        expect(await makeConnector(undefined, gitRunner).findExistingReview("feature-task-1"))
+          .toEqual({ changeId: "42", url: PR_RESPONSE.html_url, status, targetBranch: "main" });
+        expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+          `${API_BASE_URL}/repos/${OWNER}/${REPO}/pulls?state=all&head=octocat%3Afeature-task-1&per_page=2`,
+          expect.objectContaining({ headers: expect.any(Object) }),
+        );
+        expect(gitRunner.run).not.toHaveBeenCalled();
+      });
+
+      it("returns the target branch the PR was actually opened against", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([
+          { ...BRANCH_PR_RESPONSE, base: { ref: "release", repo: { full_name: `${OWNER}/${REPO}` } } },
+        ]));
+
+        expect(await makeConnector().findExistingReview("feature-task-1"))
+          .toMatchObject({ changeId: "42", targetBranch: "release" });
+      });
+
+      it("returns null when no PR exists instead of creating one", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+        expect(await makeConnector().findExistingReview("feature-task-1")).toBeNull();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(["main", "release"])("refuses several PRs from the branch (second targets %s)", async (base) => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([
+          BRANCH_PR_RESPONSE,
+          { ...BRANCH_PR_RESPONSE, number: 43, base: { ref: base, repo: { full_name: `${OWNER}/${REPO}` } } },
+        ]));
+
+        await expect(makeConnector().findExistingReview("feature-task-1")).rejects.toThrow("Ambiguous");
+      });
+
+      it.each([
+        { ...BRANCH_PR_RESPONSE, head: { ref: "other", repo: { full_name: `${OWNER}/${REPO}` } } },
+        { ...BRANCH_PR_RESPONSE, base: { ref: "main", repo: { full_name: `fork/${REPO}` } } },
+        { ...BRANCH_PR_RESPONSE, head: { ref: "feature-task-1", repo: { full_name: `fork/${REPO}` } } },
+        { ...BRANCH_PR_RESPONSE, number: 0 },
+        { ...BRANCH_PR_RESPONSE, html_url: "invalid" },
+        PR_RESPONSE,
+      ])("refuses mismatched or malformed recovery responses", async (response) => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([response]));
+
+        await expect(makeConnector().findExistingReview("feature-task-1")).rejects.toThrow();
+      });
+
+      it("compares repository slugs case-insensitively but source branches exactly", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([{
+          ...BRANCH_PR_RESPONSE,
+          head: { ref: "feature-task-1", repo: { full_name: "Octocat/Hello-World" } },
+          base: { ref: "main", repo: { full_name: "OCTOCAT/hello-world" } },
+        }]));
+        expect(await makeConnector().findExistingReview("feature-task-1")).toMatchObject({ changeId: "42" });
+
+        fetchMock.mockResolvedValueOnce(jsonResponse([{
+          ...BRANCH_PR_RESPONSE,
+          head: { ref: "Feature-Task-1", repo: { full_name: `${OWNER}/${REPO}` } },
+        }]));
+        await expect(makeConnector().findExistingReview("feature-task-1")).rejects.toThrow("does not match");
+      });
+
+      it("refuses a PR whose head repository was deleted", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([
+          { ...BRANCH_PR_RESPONSE, head: { ref: "feature-task-1", repo: null } },
+        ]));
+
+        await expect(makeConnector().findExistingReview("feature-task-1")).rejects.toThrow("does not match");
+      });
+
+      it("uses the enterprise API and escapes the source branch", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+        await makeConnector({ apiBaseUrl: "https://ghe.example.test/api/v3" })
+          .findExistingReview("feature/fix & test");
+
+        expect(fetchMock).toHaveBeenCalledWith(
+          "https://ghe.example.test/api/v3/repos/octocat/hello-world/pulls?state=all&head=octocat%3Afeature%2Ffix%20%26%20test&per_page=2",
+          expect.any(Object),
+        );
+      });
+
+      it("propagates API errors without returning an empty successful result", async () => {
+        fetchMock.mockResolvedValueOnce(errorResponse(403, "Forbidden"));
+
+        await expect(makeConnector().findExistingReview("feature-task-1")).rejects.toThrow();
+      });
+    });
+
     it("returns MERGED for merged PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_MERGED));
       expect(await makeConnector().getChangeStatus("42")).toBe("MERGED");
@@ -182,13 +287,13 @@ describe("GitHubVcsConnector", () => {
     });
   });
 
-  describe("getUnresolvedComments / resolveComments", () => {
-    it("getUnresolvedComments always returns [] (handled by ReviewConnector)", async () => {
-      expect(await makeConnector().getUnresolvedComments("42")).toEqual([]);
-    });
+  describe("review comments", () => {
+    it("leaves PR comments to the repository-bound review connector", () => {
+      // An empty-result implementation would hide feedback from ReviewProgressService.
+      const connector: VcsConnector = makeConnector();
 
-    it("resolveComments is a no-op (handled by ReviewConnector)", async () => {
-      await expect(makeConnector().resolveComments("42", [])).resolves.toBeUndefined();
+      expect(connector.getUnresolvedComments).toBeUndefined();
+      expect(connector.resolveComments).toBeUndefined();
     });
   });
 

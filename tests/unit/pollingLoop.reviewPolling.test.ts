@@ -7,6 +7,7 @@ import type {
   ProjectId,
   AgentId,
   Task,
+  ChangePerRepository,
   ProjectReviewConfig,
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
@@ -74,14 +75,33 @@ function makeTask(
   };
 }
 
-function makeStore(activeTasks: Task[] = []): StateStore {
+function makeStore(activeTasks: Task[] = [], changes: ChangePerRepository[] = []): StateStore {
   return {
     getActiveTasks: vi.fn().mockResolvedValue(activeTasks),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
+    getChangesForTasks: vi.fn().mockResolvedValue(changes),
     isTaskPaused: vi.fn().mockResolvedValue(false),
   } as unknown as StateStore;
+}
+
+function makeChange(taskId: string, overrides: Partial<ChangePerRepository> = {}): ChangePerRepository {
+  return {
+    id: `${taskId}:repo`,
+    taskId: makeTaskId(taskId),
+    repoKey: "octocat/repo",
+    changeId: "42",
+    reviewUrl: "https://github.com/octocat/repo/pull/42",
+    status: "OPEN",
+    integrationId: "github-1",
+    reviewSystem: "github",
+    commitIndex: 0,
+    subjectHash: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
 }
 
 function makeOrchestrator() {
@@ -169,9 +189,12 @@ describe("PollingLoop — pollInReviewTasks", () => {
     expect(orchestrator.handleReviewEvent).not.toHaveBeenCalled();
   });
 
-  it("skips code-gen IN_REVIEW tasks with null externalChangeId", async () => {
+  it("skips code-gen IN_REVIEW tasks with neither an external change id nor an active change row", async () => {
     const task = makeTask({ taskId: "t-4", state: "IN_REVIEW", externalChangeId: null });
-    const stateStore = makeStore([task]);
+    const stateStore = makeStore([task], [
+      makeChange("t-4", { id: "t-4:none", changeId: "", status: "NO_CHANGE" }),
+      makeChange("t-4", { id: "t-4:orphan", changeId: "41", status: "ORPHANED" }),
+    ]);
     const orchestrator = makeOrchestrator();
 
     const loop = new PollingLoop(
@@ -184,6 +207,31 @@ describe("PollingLoop — pollInReviewTasks", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(orchestrator.handleReviewEvent).not.toHaveBeenCalled();
+  });
+
+  it("polls code-gen IN_REVIEW tasks tracked only by per-repository changes", async () => {
+    // Project pushes record native PR/MR ids per repository, never a task-level id.
+    const tracked = makeTask({ taskId: "t-8", externalChangeId: null });
+    const legacy = makeTask({ taskId: "t-9", externalChangeId: "I123" });
+    const stateStore = makeStore([tracked, legacy], [
+      makeChange("t-8", { id: "t-8:old", changeId: "41", status: "ORPHANED" }),
+      makeChange("t-8", { id: "t-8:pr", changeId: "42", status: "OPEN" }),
+    ]);
+    const orchestrator = makeOrchestrator();
+
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      stateStore,
+    );
+
+    await loop.pollInReviewTasks();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(stateStore.getChangesForTasks).toHaveBeenCalledExactlyOnceWith([tracked.taskId]);
+    expect(orchestrator.handleReviewEvent).toHaveBeenCalledTimes(2);
+    expect(orchestrator.handleReviewEvent).toHaveBeenCalledWith(makeExternalChangeId("42"), tracked.taskId);
+    expect(orchestrator.handleReviewEvent).toHaveBeenCalledWith(makeExternalChangeId("I123"), legacy.taskId);
   });
 
   it("processes multiple IN_REVIEW tasks independently and logs errors without throwing", async () => {

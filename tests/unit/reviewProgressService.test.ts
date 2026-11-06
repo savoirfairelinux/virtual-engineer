@@ -1,12 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/domain/identifiers.js";
 import type { ChangePerRepository, Task } from "../../src/domain/tasks.js";
 import type { FeedbackItem, ReviewComment, ReviewConnector } from "../../src/interfaces.js";
 import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
+import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
 import {
   ReviewProgressService,
   type ReviewProgressDependencies,
 } from "../../src/orchestrator/reviewProgressService.js";
+import { jsonResponse } from "./helpers/fixtures.js";
 
 const { logger } = vi.hoisted(() => ({
   logger: {
@@ -91,6 +93,7 @@ function makeDependencies(
     getTask: vi.fn().mockResolvedValue(task),
     resolveReviewConnector: vi.fn().mockResolvedValue(reviewConnector),
     resolveVcsConnector: vi.fn().mockResolvedValue(undefined),
+    resolveRepositoryReviewConnector: vi.fn().mockResolvedValue(null),
     getDefaultVcsConnector: vi.fn().mockReturnValue(undefined),
     extractNewFeedback: vi.fn().mockResolvedValue([[], []]),
     reactsToCiFailures: vi.fn().mockResolvedValue(false),
@@ -228,6 +231,26 @@ describe("ReviewProgressService", () => {
     expect(updateChangeStatus).toHaveBeenLastCalledWith(task.taskId, "change-ui", "MERGED");
     expect(dependencies.transition).toHaveBeenCalledWith(task.taskId, "MERGED");
     expect(dependencies.closeTicket).toHaveBeenCalledOnce();
+  });
+
+  it("selects a qualified merge event's row by repository as well as native number", async () => {
+    const task = makeTask();
+    const hosted = { integrationId: "github-1", reviewSystem: "github", changeId: "42" };
+    const changes = [
+      makeChange(task, { ...hosted, id: "change-a", repoKey: "owner/a" }),
+      makeChange(task, { ...hosted, id: "change-b", repoKey: "owner/b" }),
+    ];
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn(async () => changes),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.markChangeMerged(task, "github-1", "owner/c#42");
+    expect(dependencies.updateChangeStatus).not.toHaveBeenCalled();
+
+    await service.markChangeMerged(task, "github-1", "OWNER/B#42");
+    expect(dependencies.updateChangeStatus).toHaveBeenCalledExactlyOnceWith(task.taskId, "change-b", "MERGED");
+    expect(dependencies.transition).not.toHaveBeenCalled();
   });
 
   it("accepts qualified legacy merge event ids", async () => {
@@ -480,5 +503,128 @@ describe("ReviewProgressService", () => {
     );
     expect(gerritConnector.resolveComments).toHaveBeenCalledWith("Iapi", [gerritComment]);
     expect(gitlabConnector.resolveComments).toHaveBeenCalledWith("7", [gitlabComment]);
+  });
+
+  it("uses the task-level review connector only for legacy rows recorded without an integration", async () => {
+    const task = makeTask();
+    const comment = makeComment({ id: "legacy-1" });
+    const ciComment = makeComment({ id: "ci-run-1", message: "Build failed" });
+    const taskLevel = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
+      getCICheckFailures: vi.fn().mockResolvedValue([ciComment]),
+    } as unknown as ReviewConnector;
+    const dependencies = makeDependencies(task, taskLevel, {
+      getChangesForTask: vi.fn().mockResolvedValue([makeChange(task, { integrationId: "" })]),
+      reactsToCiFailures: vi.fn().mockResolvedValue(true),
+    });
+
+    await new ReviewProgressService(dependencies).check(task);
+
+    expect(dependencies.resolveReviewConnector).toHaveBeenCalledOnce();
+    expect(dependencies.resolveRepositoryReviewConnector).not.toHaveBeenCalled();
+    expect(taskLevel.getChangeStatus).toHaveBeenCalledWith("I123");
+    expect(taskLevel.getCICheckFailures).toHaveBeenCalledWith("I123");
+    expect(dependencies.extractNewFeedback).toHaveBeenCalledWith(task.taskId, "I123", [comment, ciComment]);
+  });
+
+  describe("hosted rows with the real GitHub VCS connector", () => {
+    function githubVcs(repo: string): GitHubVcsConnector {
+      return new GitHubVcsConnector({
+        apiBaseUrl: "https://api.github.com", host: "github.com", owner: "owner", repo,
+        token: "test-token", gitAuthorName: "VE", gitAuthorEmail: "ve@example.test",
+      });
+    }
+
+    function stubOpenPullRequests(): void {
+      vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ state: "open", merged: false }))));
+      onTestFinished(() => {
+        vi.unstubAllGlobals();
+      });
+    }
+
+    function makeReviewConnector(comments: ReviewComment[]): ReviewConnector {
+      return {
+        getChange: vi.fn<ReviewConnector["getChange"]>(),
+        getChangeStatus: vi.fn<ReviewConnector["getChangeStatus"]>(),
+        getUnresolvedComments: vi.fn<ReviewConnector["getUnresolvedComments"]>().mockResolvedValue(comments),
+        getCICheckFailures: vi.fn<NonNullable<ReviewConnector["getCICheckFailures"]>>().mockResolvedValue([]),
+        addChangeComment: vi.fn<ReviewConnector["addChangeComment"]>(),
+        resolveComments: vi.fn<ReviewConnector["resolveComments"]>().mockResolvedValue(undefined),
+      };
+    }
+
+    it("routes feedback, CI checks, and resolution through each row's repository review connector", async () => {
+      stubOpenPullRequests();
+      const task = makeTask({ externalChangeId: null });
+      const changes = [
+        makeChange(task, {
+          id: "change-api", repoKey: "owner/api", changeId: "42", integrationId: "github-1", reviewSystem: "github",
+        }),
+        makeChange(task, {
+          id: "change-ui", repoKey: "owner/ui", changeId: "7", integrationId: "github-1", reviewSystem: "github",
+        }),
+      ];
+      // GitHub paths are repository-relative, so provenance cannot be derived from them.
+      const apiComment = makeComment({ id: "101", filePath: "src/index.ts", message: "Validate input" });
+      const uiComment = makeComment({ id: "202", filePath: "src/index.ts", message: "Fix state" });
+      const reviewConnectors = new Map([
+        ["owner/api", makeReviewConnector([apiComment])],
+        ["owner/ui", makeReviewConnector([uiComment])],
+      ]);
+      const dependencies = makeDependencies(task, {} as ReviewConnector, {
+        getChangesForTask: vi.fn().mockResolvedValue(changes),
+        resolveReviewConnector: vi.fn().mockRejectedValue(new Error("No active review connector found")),
+        resolveVcsConnector: vi.fn().mockImplementation((_integrationId: string, context: { repoKey: string }) =>
+          Promise.resolve(githubVcs(context.repoKey.slice("owner/".length)))),
+        resolveRepositoryReviewConnector: vi.fn().mockImplementation((_integrationId: string, repoKey: string) =>
+          Promise.resolve(reviewConnectors.get(repoKey) ?? null)),
+        extractNewFeedback: vi.fn().mockImplementation(
+          (_taskId: string, _changeId: string, comments: ReviewComment[]) => Promise.resolve([
+            comments.map((comment) => ({ source: "review_comment" as const, content: comment.message })),
+            comments,
+          ]),
+        ),
+        getTask: vi.fn().mockResolvedValue({ ...task, state: "IN_REVIEW" }),
+      });
+
+      await new ReviewProgressService(dependencies).check(task);
+
+      const api = reviewConnectors.get("owner/api")!;
+      const ui = reviewConnectors.get("owner/ui")!;
+      expect(api.getUnresolvedComments).toHaveBeenCalledExactlyOnceWith("42");
+      expect(ui.getUnresolvedComments).toHaveBeenCalledExactlyOnceWith("7");
+      expect(api.getCICheckFailures).toHaveBeenCalledExactlyOnceWith("42");
+      expect(ui.getCICheckFailures).toHaveBeenCalledExactlyOnceWith("7");
+      expect(dependencies.runAgentCycle).toHaveBeenCalledWith(
+        expect.objectContaining({ state: "RETRY_CYCLE" }),
+        [
+          expect.objectContaining({ content: "[owner/api] Validate input" }),
+          expect.objectContaining({ content: "[owner/ui] Fix state" }),
+        ],
+      );
+      expect(api.resolveComments).toHaveBeenCalledExactlyOnceWith("42", [apiComment]);
+      expect(ui.resolveComments).toHaveBeenCalledExactlyOnceWith("7", [uiComment]);
+      expect(dependencies.resolveReviewConnector).not.toHaveBeenCalled();
+    });
+
+    it("never reads another repository's feedback when a row's review connector is unavailable", async () => {
+      stubOpenPullRequests();
+      const task = makeTask({ externalChangeId: null });
+      const fallback = makeReviewConnector([makeComment()]);
+      const dependencies = makeDependencies(task, fallback, {
+        getChangesForTask: vi.fn().mockResolvedValue([
+          makeChange(task, { repoKey: "owner/api", changeId: "42", integrationId: "github-1", reviewSystem: "github" }),
+        ]),
+        resolveVcsConnector: vi.fn().mockResolvedValue(githubVcs("api")),
+      });
+
+      await new ReviewProgressService(dependencies).check(task);
+
+      expect(fallback.getUnresolvedComments).not.toHaveBeenCalled();
+      expect(fallback.getCICheckFailures).not.toHaveBeenCalled();
+      expect(dependencies.extractNewFeedback).not.toHaveBeenCalled();
+      expect(dependencies.transition).toHaveBeenLastCalledWith(task.taskId, "IN_REVIEW");
+    });
   });
 });

@@ -1448,6 +1448,171 @@ describe("SqliteStateStore", () => {
       });
     });
 
+    it("enumerates all exact review watchers without crossing integration, change or deletion boundaries", async () => {
+      const changeId = makeExternalChangeId("owner/a#42");
+      const firstProjectId = makeProjectId("review-project-a");
+      const secondProjectId = makeProjectId("review-project-b");
+      const fixtures = [
+        { name: "first", sourceLabel: "github:github-1", changeId, projectId: firstProjectId },
+        { name: "second", sourceLabel: "github:github-1", changeId, projectId: secondProjectId },
+        { name: "terminal", sourceLabel: "github:github-1", changeId, projectId: firstProjectId },
+        { name: "deleted", sourceLabel: "github:github-1", changeId, projectId: secondProjectId },
+        { name: "other-integration", sourceLabel: "github:github-2", changeId, projectId: firstProjectId },
+        { name: "integration-prefix", sourceLabel: "github:github-1-extra", changeId, projectId: firstProjectId },
+        { name: "unscoped", sourceLabel: "github", changeId, projectId: firstProjectId },
+        { name: "other-repository", sourceLabel: "github:github-1", changeId: makeExternalChangeId("owner/b#42"), projectId: firstProjectId },
+        { name: "other-number", sourceLabel: "github:github-1", changeId: makeExternalChangeId("owner/a#43"), projectId: firstProjectId },
+        { name: "bare-number", sourceLabel: "github:github-1", changeId: makeExternalChangeId("42"), projectId: firstProjectId },
+      ];
+      const raw = (store as unknown as { raw: Database.Database }).raw;
+      for (const [index, fixture] of fixtures.entries()) {
+        await store.createReviewTask({
+          taskId: makeTaskId(fixture.name),
+          ticketId: makeTicketId(`ticket-${fixture.name}`),
+          subject: fixture.name,
+          sourceLabel: fixture.sourceLabel,
+          changeId: fixture.changeId,
+          projectId: fixture.projectId,
+          patchset: 1,
+        });
+        raw.prepare("UPDATE tasks SET created_at = ? WHERE task_id = ?").run(100 + index, fixture.name);
+      }
+      raw.prepare("UPDATE tasks SET state = 'REVIEW_DONE' WHERE task_id = 'terminal'").run();
+      raw.prepare("UPDATE tasks SET deleted_at = 200 WHERE task_id = 'deleted'").run();
+      await store.createTask(makeTaskId("coding"), makeTicketId("coding"));
+      await store.updateExternalChangeId(makeTaskId("coding"), changeId, 1);
+      await store.saveChangePerRepository(makeTaskId("coding"), "owner/a", changeId, null, "OPEN", "github-1", "github");
+
+      const watchers = await store.findReviewTasksByExternalChangeId("github-1", changeId);
+
+      expect(watchers.map((task) => task.taskId)).toEqual(["terminal", "second", "first"]);
+      expect(watchers.map((task) => task.projectId)).toEqual([firstProjectId, secondProjectId, firstProjectId]);
+      await expect(store.findReviewTasksByExternalChangeId("unknown", changeId)).resolves.toEqual([]);
+      await expect(store.findReviewTasksByExternalChangeId("github-1", "owner/a#99")).resolves.toEqual([]);
+    });
+
+    it("scopes native hosted change numbers to the event repository", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      await store.createTask(firstTaskId, makeTicketId("hosted-a"));
+      await store.createTask(secondTaskId, makeTicketId("hosted-b"));
+      await store.saveChangePerRepository(firstTaskId, "owner/a", "42", null, "OPEN", "github-1", "github");
+      await store.saveChangePerRepository(secondTaskId, "Owner/B", "42", null, "OPEN", "github-1", "github");
+
+      await expect(store.findTaskByExternalChangeId("github-1", "42")).resolves.toBeNull();
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/b")).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/c")).resolves.toBeNull();
+    });
+
+    it("does not resolve bare review or legacy task ids outside the event repository", async () => {
+      const reviewTaskId = makeTaskId(randomUUID());
+      await store.createReviewTask({
+        taskId: reviewTaskId,
+        ticketId: makeTicketId("bare-review"),
+        subject: "Bare review",
+        sourceLabel: "github:github-1",
+        changeId: makeExternalChangeId("42"),
+        patchset: 1,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42")).resolves.toMatchObject({
+        taskId: reviewTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toBeNull();
+
+      const agent = await store.createAgent({
+        name: "Legacy Hosted Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      await store.upsertIntegration({
+        id: "github-1", provider: "github", name: "github-1", configJson: "{}", enabled: true,
+      });
+      const project = await store.createProject({
+        id: makeProjectId(randomUUID()), name: "legacy-hosted", type: "coding", agentId: agent.id, enabled: true,
+      });
+      await store.addProjectPushTarget(project.id, {
+        integrationId: "github-1",
+        repoKey: "owner/a",
+        cloneUrl: "https://github.com/owner/a.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 1,
+        localPath: ".",
+      });
+      const legacyTaskId = makeTaskId(randomUUID());
+      await store.createTask(legacyTaskId, makeTicketId("legacy-hosted"));
+      await store.setTaskProjectId(legacyTaskId, project.id);
+      await store.updateExternalChangeId(legacyTaskId, makeExternalChangeId("7"), 1);
+
+      await expect(store.findTaskByExternalChangeId("github-1", "7", "OWNER/A")).resolves.toMatchObject({
+        taskId: legacyTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("github-1", "7", "owner/b")).resolves.toBeNull();
+    });
+
+    it("never lets the current binding override a task's recorded change rows", async () => {
+      const agent = await store.createAgent({
+        name: "Rebound Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      const createSingleTargetProject = async (
+        integrationId: string,
+        provider: "github" | "gerrit",
+        repoKey: string,
+      ) => {
+        await store.upsertIntegration({ id: integrationId, provider, name: integrationId, configJson: "{}", enabled: true });
+        const project = await store.createProject({
+          id: makeProjectId(randomUUID()), name: repoKey, type: "coding", agentId: agent.id, enabled: true,
+        });
+        await store.addProjectPushTarget(project.id, {
+          integrationId,
+          repoKey,
+          cloneUrl: `https://example.test/${repoKey}.git`,
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+        });
+        return project;
+      };
+
+      // Recorded on owner/a (task-level id mirrored), project later rebound to owner/b.
+      const rebound = await createSingleTargetProject("github-1", "github", "owner/b");
+      const reboundTaskId = makeTaskId(randomUUID());
+      await store.createTask(reboundTaskId, makeTicketId("rebound"));
+      await store.setTaskProjectId(reboundTaskId, rebound.id);
+      await store.updateExternalChangeId(reboundTaskId, makeExternalChangeId("42"), 1);
+      await store.saveChangePerRepository(reboundTaskId, "owner/a", "42", null, "OPEN", "github-1", "github");
+
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/b")).resolves.toBeNull();
+      await expect(store.findTaskByExternalChangeId("github-1", "42", "owner/a")).resolves.toMatchObject({
+        taskId: reboundTaskId,
+      });
+
+      // An inactive (orphaned) recorded change must not resurface through the task-level id either.
+      const gerrit = await createSingleTargetProject("gerrit-1", "gerrit", "team/repo");
+      const orphanedTaskId = makeTaskId(randomUUID());
+      const orphanedChangeId = makeExternalChangeId("Iorphaned");
+      await store.createTask(orphanedTaskId, makeTicketId("orphaned"));
+      await store.setTaskProjectId(orphanedTaskId, gerrit.id);
+      await store.updateExternalChangeId(orphanedTaskId, orphanedChangeId, 1);
+      await store.saveChangePerRepository(orphanedTaskId, "team/repo", orphanedChangeId, null, "ORPHANED", "gerrit-1", "gerrit");
+
+      await expect(store.findTaskByExternalChangeId("gerrit-1", orphanedChangeId)).resolves.toBeNull();
+    });
+
     it("upserts existing per-repo change", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("repo-2"));

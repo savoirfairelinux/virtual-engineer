@@ -14,6 +14,7 @@ import type {
   WorkspaceHandle,
 } from "../interfaces.js";
 import { formatTicketFooter } from "../utils/ticketFooterFormatter.js";
+import type { VcsConnector } from "../vcs/vcsConnector.js";
 
 /** Resolved agent adapter + config for a project's configured agent. */
 export interface ProjectAgentRuntime {
@@ -48,6 +49,22 @@ export function buildRepositoryMap(pushTargets: ProjectPushTargetRecord[]): Repo
   };
 }
 
+/**
+ * Repositories whose own push target uses Change-Id continuity. Targets are
+ * resolved individually because one project may mix Gerrit and branch-based
+ * (GitHub/GitLab) repositories; an unresolvable target gets no continuity.
+ */
+export async function resolveChangeIdContinuityRepoKeys(
+  pushTargets: ProjectPushTargetRecord[],
+  resolveConnector: (target: ProjectPushTargetRecord) => Promise<Pick<VcsConnector, "useChangeIdContinuity"> | undefined>,
+): Promise<Set<string>> {
+  const repoKeys = new Set<string>();
+  for (const target of pushTargets) {
+    if ((await resolveConnector(target))?.useChangeIdContinuity === true) repoKeys.add(target.repoKey);
+  }
+  return repoKeys;
+}
+
 /** Inputs required to assemble the {@link TaskContext} passed to the agent adapter for one cycle. */
 export interface BuildAgentTaskContextParams {
   task: Task;
@@ -63,7 +80,10 @@ export interface BuildAgentTaskContextParams {
   projectAgentRuntime: ProjectAgentRuntime;
   resolvedCopilotModel: string | undefined;
   providerOptions: Record<string, unknown>;
+  /** Whether the root target uses Change-Id continuity (gates `existingChangeId`). */
   useChangeIdContinuity: boolean;
+  /** Repositories whose own push target uses Change-Id continuity (gates `perRepoChangeIds`). */
+  changeIdContinuityRepoKeys: ReadonlySet<string>;
   projectPushTargets: ProjectPushTargetRecord[];
   vendorComponents: VendorComponentPromptEntry[];
   projectRecord: ProjectRecord;
@@ -95,6 +115,7 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
     resolvedCopilotModel,
     providerOptions,
     useChangeIdContinuity,
+    changeIdContinuityRepoKeys,
     projectPushTargets,
     vendorComponents,
     projectRecord,
@@ -129,14 +150,16 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
       pushRef,
       existingChangeId: useChangeIdContinuity ? (task.externalChangeId ?? undefined) : undefined,
       perRepoChangeIds: await (async (): Promise<Record<string, string | Record<string, string>> | undefined> => {
-        if (!useChangeIdContinuity) return undefined;
+        if (changeIdContinuityRepoKeys.size === 0) return undefined;
         const storedChanges = await getChangesForTask(task.taskId);
         if (storedChanges.length === 0) return undefined;
         // Pass ALL commit Change-Ids per repo, keyed by commit index.
         // Single-commit repos produce a flat string (backward compat).
         // Multi-commit repos produce { "0": "I...", "1": "I..." }.
+        // Branch-based targets are excluded: the worker reuses these values as
+        // Change-Id trailers, and a native PR/MR number is not a Change-Id.
         const validChanges = storedChanges.filter(
-          (c) => c.status !== "NO_CHANGE" && c.changeId !== ""
+          (c) => c.status !== "NO_CHANGE" && c.changeId !== "" && changeIdContinuityRepoKeys.has(c.repoKey)
         );
         if (validChanges.length === 0) return undefined;
         const byRepo = new Map<string, Map<number, string>>();

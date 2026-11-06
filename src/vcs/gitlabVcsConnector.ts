@@ -4,7 +4,7 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
+import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
@@ -13,8 +13,28 @@ import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
+import { z } from "zod";
 
 const log = getLogger("gitlab-vcs");
+/** GitLab MR states in VE's review vocabulary; `locked` is GitLab's transient merging state. */
+const MERGE_REQUEST_STATUSES = {
+  opened: "OPEN",
+  locked: "OPEN",
+  merged: "MERGED",
+  closed: "ABANDONED",
+} as const;
+const mergeRequestStateSchema = z.object({
+  state: z.enum(["opened", "locked", "merged", "closed"]),
+});
+const branchMergeRequestsSchema = z.array(z.object({
+  iid: z.number().int().positive(),
+  web_url: z.url(),
+  state: z.enum(["opened", "merged", "closed"]),
+  source_branch: z.string(),
+  target_branch: z.string(),
+  source_project_id: z.number().int().positive(),
+  target_project_id: z.number().int().positive(),
+}));
 
 export interface GitLabVcsConnectorConfig {
   baseUrl: string;
@@ -137,23 +157,33 @@ export class GitLabVcsConnector implements VcsConnector {
   }
 
   /**
-   * Get the current status of a GitLab Merge Request.
+   * Get the current status of a GitLab Merge Request as OPEN, MERGED, or
+   * ABANDONED. Lookup failures and unknown states throw, so callers keep the
+   * recorded status instead of persisting a provider-specific value.
    */
   async getChangeStatus(changeId: string): Promise<string> {
-    try {
-      const mrIid = String(changeId);
-      const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${mrIid}`;
-      const mr = await this.httpClient.fetchJson<{ state: string }>(url);
+    const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${encodeURIComponent(changeId)}`;
+    const mr = mergeRequestStateSchema.parse(await this.httpClient.fetchJson<unknown>(url));
+    return MERGE_REQUEST_STATUSES[mr.state];
+  }
 
-      const state = mr.state;
-      return state.toUpperCase();
-    } catch (err: unknown) {
-      log.warn(
-        { changeId, err: err instanceof Error ? err.message : String(err) },
-        "failed to fetch MR status"
-      );
-      return "UNKNOWN";
+  async findExistingReview(sourceBranch: string): Promise<ExistingReview | null> {
+    const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(
+      String(this.config.projectId),
+    )}/merge_requests?state=all&scope=all&source_branch=${encodeURIComponent(sourceBranch)}&per_page=2`;
+    const mrs = branchMergeRequestsSchema.parse(await this.httpClient.fetchJson<unknown>(url));
+    if (mrs.length > 1) throw new Error("Ambiguous merge requests from the pushed branch across target branches");
+    const mr = mrs[0];
+    if (!mr) return null;
+    if (mr.source_branch !== sourceBranch || mr.source_project_id !== mr.target_project_id) {
+      throw new Error("Merge request does not match the bound project and source branch");
     }
+    return {
+      changeId: String(mr.iid),
+      url: mr.web_url,
+      status: MERGE_REQUEST_STATUSES[mr.state],
+      targetBranch: mr.target_branch,
+    };
   }
 
   /**

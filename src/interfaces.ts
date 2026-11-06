@@ -1720,11 +1720,24 @@ export interface StateStore {
   /** Get all per-repo change records for a batch of tasks in one query. */
   getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
 
-  /** Resolve a task by gerritChangeId or change_per_repository.changeId. */
+  /**
+   * Resolve a task by gerritChangeId or change_per_repository.changeId. With
+   * `repository`, an integration-scoped lookup only matches change rows (or a
+   * legacy task's single push target) for that repository, case-insensitively,
+   * and skips bare review-task ids, which cannot prove their repository.
+   */
   findTaskByExternalChangeId(
     integrationId: string | null,
-    externalChangeId: string
+    externalChangeId: string,
+    repository?: string
   ): Promise<Task | null>;
+
+  /**
+   * List all non-deleted code-review tasks with this exact change id and
+   * integration in ticketSourceLabel, across every project. Terminal tasks are
+   * included; lifecycle callers decide whether each task can handle the event.
+   */
+  findReviewTasksByExternalChangeId(integrationId: string, externalChangeId: string): Promise<Task[]>;
 
   /**
    * Find the most recent code-review task for a given change+project that has

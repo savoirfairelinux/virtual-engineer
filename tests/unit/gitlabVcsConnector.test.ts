@@ -41,6 +41,15 @@ const mockConfig: GitLabVcsConnectorConfig = {
   gitAuthorName: "Virtual Engineer",
   gitAuthorEmail: "ve@example.com",
 };
+const BRANCH_MR_RESPONSE = {
+  iid: 42,
+  web_url: "https://gitlab.example.com/my-project/-/merge_requests/42",
+  state: "opened",
+  source_branch: "feature-task-1",
+  target_branch: "main",
+  source_project_id: 7,
+  target_project_id: 7,
+};
 
 /** Access the private httpClient mock on a connector instance. */
 function getHttpClient(c: GitLabVcsConnector) {
@@ -125,20 +134,107 @@ describe("GitLabVcsConnector", () => {
   });
 
   describe("getChangeStatus", () => {
-    it("returns the uppercased MR state on success", async () => {
+    it.each([
+      { state: "opened", status: "OPEN" },
+      { state: "locked", status: "OPEN" },
+      { state: "merged", status: "MERGED" },
+      { state: "closed", status: "ABANDONED" },
+    ])("normalizes the $state MR state to $status", async ({ state, status }) => {
       const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockResolvedValue({ state: "opened" });
+      httpClient.fetchJson.mockResolvedValue({ state });
 
-      const status = await connector.getChangeStatus("42");
-      expect(status).toBe("OPENED");
+      expect(await connector.getChangeStatus("42")).toBe(status);
+      expect(httpClient.fetchJson).toHaveBeenCalledExactlyOnceWith(
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/42",
+      );
     });
 
-    it("returns UNKNOWN on API error", async () => {
-      const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockRejectedValue(new ReviewApiError(404, "/api/v4/projects/x/merge_requests/99", "Not Found"));
+    it("rejects an unrecognized MR state instead of persisting it", async () => {
+      getHttpClient(connector).fetchJson.mockResolvedValue({ state: "draft" });
 
-      const status = await connector.getChangeStatus("99");
-      expect(status).toBe("UNKNOWN");
+      await expect(connector.getChangeStatus("42")).rejects.toThrow();
+    });
+
+    describe("findExistingReview", () => {
+      it.each([
+        { state: "opened", status: "OPEN" },
+        { state: "merged", status: "MERGED" },
+        { state: "closed", status: "ABANDONED" },
+      ])("recovers a $status MR without a push", async ({ state, status }) => {
+        const httpClient = getHttpClient(connector);
+        httpClient.fetchJson.mockResolvedValueOnce([{ ...BRANCH_MR_RESPONSE, state }]);
+
+        expect(await connector.findExistingReview("feature-task-1"))
+          .toEqual({ changeId: "42", url: BRANCH_MR_RESPONSE.web_url, status, targetBranch: "main" });
+        expect(httpClient.fetchJson).toHaveBeenCalledExactlyOnceWith(
+          "https://gitlab.example.com/api/v4/projects/my-project/merge_requests?state=all&scope=all&source_branch=feature-task-1&per_page=2",
+        );
+        expect(gitRunner.run).not.toHaveBeenCalled();
+        expect(httpClient.fetchJsonVoid).not.toHaveBeenCalled();
+      });
+
+      it("returns the target branch the MR was actually opened against", async () => {
+        getHttpClient(connector).fetchJson.mockResolvedValueOnce([
+          { ...BRANCH_MR_RESPONSE, target_branch: "release" },
+        ]);
+
+        expect(await connector.findExistingReview("feature-task-1"))
+          .toMatchObject({ changeId: "42", targetBranch: "release" });
+      });
+
+      it("returns null when no MR exists instead of creating one", async () => {
+        const httpClient = getHttpClient(connector);
+        httpClient.fetchJson.mockResolvedValueOnce([]);
+
+        expect(await connector.findExistingReview("feature-task-1")).toBeNull();
+        expect(httpClient.fetchJson).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(["main", "release"])("refuses several MRs from the branch (second targets %s)", async (target) => {
+        getHttpClient(connector).fetchJson.mockResolvedValueOnce([
+          BRANCH_MR_RESPONSE, { ...BRANCH_MR_RESPONSE, iid: 43, target_branch: target },
+        ]);
+
+        await expect(connector.findExistingReview("feature-task-1")).rejects.toThrow("Ambiguous");
+      });
+
+      it.each([
+        { ...BRANCH_MR_RESPONSE, source_branch: "other" },
+        { ...BRANCH_MR_RESPONSE, source_project_id: 8 },
+        { ...BRANCH_MR_RESPONSE, iid: 0 },
+        { ...BRANCH_MR_RESPONSE, web_url: "invalid" },
+        { iid: 42 },
+      ])("refuses mismatched or malformed recovery responses", async (response) => {
+        getHttpClient(connector).fetchJson.mockResolvedValueOnce([response]);
+
+        await expect(connector.findExistingReview("feature-task-1")).rejects.toThrow();
+      });
+
+      it("escapes project and source-branch selectors", async () => {
+        const other = new GitLabVcsConnector({ ...mockConfig, projectId: "team/repo" }, gitRunner);
+        const httpClient = getHttpClient(other);
+        httpClient.fetchJson.mockResolvedValueOnce([]);
+
+        await other.findExistingReview("feature/fix & test");
+
+        expect(httpClient.fetchJson).toHaveBeenCalledWith(
+          "https://gitlab.example.com/api/v4/projects/team%2Frepo/merge_requests?state=all&scope=all&source_branch=feature%2Ffix%20%26%20test&per_page=2",
+        );
+      });
+
+      it("propagates API errors without returning UNKNOWN", async () => {
+        const failure = new ReviewApiError(403, "/merge_requests", "Forbidden");
+        getHttpClient(connector).fetchJson.mockRejectedValueOnce(failure);
+
+        await expect(connector.findExistingReview("feature-task-1")).rejects.toBe(failure);
+      });
+    });
+
+    it("propagates API errors so pollers keep the recorded status", async () => {
+      const failure = new ReviewApiError(404, "/api/v4/projects/x/merge_requests/99", "Not Found");
+      getHttpClient(connector).fetchJson.mockRejectedValue(failure);
+
+      await expect(connector.getChangeStatus("99")).rejects.toBe(failure);
     });
   });
 

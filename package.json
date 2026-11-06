@@ -24,6 +24,7 @@
     "build:agent": "npm --prefix agent-worker run build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/state/migrate.ts",
+    "repair:change-identities": "tsx src/vcs/repairChangeIdentities.ts",
     "reset:instance": "./scripts/reset-instance.sh"
   },
   "dependencies": {

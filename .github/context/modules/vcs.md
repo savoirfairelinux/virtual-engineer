@@ -26,10 +26,14 @@ interface VcsConnector {
     topic?: string,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
+  /** Read-only source-branch lookup across all targets/states; null if absent, error if several. */
+  findExistingReview?(sourceBranch: string): Promise<ExistingReview | null>;
 }
 ```
 
-The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit`, `gitlab`, or `github`); the orchestrator emits human review feedback with the generic `review_comment` source.
+The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit` or `gitlab`); the orchestrator emits human review feedback with the generic `review_comment` source. GitHub's VCS connector omits both comment methods, so review progress reads and resolves PR comments (and CI check failures) through the `code_review` connector bound to the change row's own repository — never through a task-level connector that could belong to another repository.
+
+`getChangeStatus()` returns the normalized `OPEN` / `MERGED` / `ABANDONED` vocabulary that review progress acts on (GitLab `opened`/`locked` → `OPEN`, `closed` → `ABANDONED`). When the status cannot be determined it throws, so pollers keep the recorded row status instead of persisting a provider-specific value.
 
 There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
 
@@ -39,7 +43,26 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 
 After coding-workspace download, all recorded repositories must pass filesystem-only standalone-layout validation before any metadata is rebuilt or host Git runs. Shared-directory markers (`commondir`, `gitdir`), gitfiles, symlinks, missing/bare layouts, malformed or oversized (over 4 KiB) `HEAD` files, and metadata Git itself could not recognize (unreadable `HEAD`, non-searchable `objects`/`refs`, which would make discovery fall back to a parent repository) fail the coding run. Rebuilding then restores each repository's own credential-free origin and removes sandbox-controlled push URLs, URL rewrites, hooks, alternates, attributes, worktree configuration, and leftover linked-worktree registrations (`worktrees`). See [modules/workspace.md](workspace.md#sandbox-lifecycle-per-cycle).
 
-`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR identifier. Per-repository results are stored in `change_per_repository`; the legacy task-level `tasks.gerrit_change_id` and `tasks.review_url` fields retain the primary result.
+`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR number (the hosted identifiers are native numeric strings, not commit trailers or repository-qualified IDs). `useChangeIdContinuity` controls persistence: Gerrit keeps one row per commit; GitHub/GitLab keep one row per pushed repository and the exact returned URL. `reviewSystemLabel` remains an opaque stored label.
+
+## Historical hosted change repair
+
+`npm run repair:change-identities` inspects an existing, migrated `DATABASE_PATH` using its database-managed integrations. The default connection is read-only: it does not create a database, run migrations, seed data, push, or create reviews. Optional `--task <id>` restricts the scan.
+
+The npm script runs the TypeScript source through `tsx`, which exists only in a development checkout. The orchestrator image contains the compiled `dist/` output and production dependencies only, so run the compiled entry point from `/app` with the deployment's own environment, e.g. `kubectl -n virtual-engineer exec deploy/virtual-engineer-orchestrator -- node dist/src/vcs/repairChangeIdentities.js` (or `docker exec <container> node dist/src/vcs/repairChangeIdentities.js`), appending `--task <id>` and/or `--apply`. Both forms accept the same options and exit codes.
+
+The tool recognizes legacy `I<40 hex digits>` rows, resolves the recorded integration and current project target, and respects the connector's continuity capability. Because every target of a task shares one `push_ref`, and a first mixed-provider cycle can leave another target's ref there (for example a non-unique Gerrit `refs/for/main`), the recorded ref must equal the branch this repository's connector derives for the task (`buildPushSpec()`); otherwise the target is blocked before any provider lookup. GitHub/GitLab `findExistingReview()` then queries **all** review states from that branch across **every** target branch: the corrupted URL usually lost the number (`/pull/43` and `/pull/42` corrupt to the same `/pull/I…`), and the project target may have changed since the push, so a filter on the current target could hide the original review. More than one review from the branch blocks the target; a unique review is accepted and its `resolvedTargetBranch` is reported, with a note when it differs from the current target. The lookup validates native identifiers, the exact (case-sensitive) source branch and the bound repository (case-insensitive owner/repository on GitHub), and refuses forks or deleted head repositories rather than selecting a result.
+
+Every non-empty URL on an active row must equal the recovered URL or reproduce the known faulty identifier replacement exactly for that row's own identifier; the primary row must carry such a URL. Missing or unproven branches, missing integrations, changed bindings, mixed review systems, conflicting native IDs/terminal statuses, and unproven URLs (including a secondary row pointing to a different review) block application. No ID is inferred from a malformed URL.
+
+Rollout:
+
+1. Deploy the fix, stop VE intake, and back up the database.
+2. Run the dry run (`npm run repair:change-identities`, or `node dist/src/vcs/repairChangeIdentities.js` in the orchestrator image; optionally restricted with `--task <id>`) and review the JSON report.
+3. Resolve every blocked target in the selected scope, then rerun the same command with `--apply` (`npm run repair:change-identities -- --apply`), retaining `--task <id>` if selected.
+4. Restart intake and verify status/feedback polling uses the native review identifiers.
+
+Application revalidates complete task, integration, push-target, and change-row snapshots in one immediate SQLite transaction before any writes. It fixes the primary row and marks proven duplicate hosted rows `ORPHANED`, retaining their IDs and history. A task's legacy mirrored review fields are corrected only when their URL independently proves the same corruption; task state and push reference never change. Genuine Gerrit rows are untouched. Any blocked target prevents all selected repairs; a stale snapshot or write failure rolls back the whole transaction. Exit codes are 0 for a successful scan/application, 2 for blocked targets, and 1 for execution failures.
 
 ## Implementations
 
@@ -59,11 +82,13 @@ After coding-workspace download, all recorded repositories must pass filesystem-
 - Returns the MR web URL.
 - Reviewer emails are looked up through the Users API and matched exactly, case-insensitively, against visible `email` or `public_email` values. Matched IDs are included as `reviewer_ids`; unmatched or inaccessible addresses are logged and skipped. A 409 existing-MR path updates the existing MR when at least one reviewer resolves.
 - `pushDirect(repoDir, ref, topic, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
+- `getChangeStatus(iid)` normalizes MR states (`opened`/`locked` → `OPEN`, `merged` → `MERGED`, `closed` → `ABANDONED`) and propagates API errors or unknown states instead of reporting `UNKNOWN`.
 
 ### `githubVcsConnector.ts`
 - HTTP-based clone and push for GitHub, mirroring the GitLab design: clones via HTTPS with the token in the remote URL, pushes a feature branch, and creates or updates a Pull Request via the GitHub REST API (`apiBaseUrl` supports both `api.github.com` and GHE `/api/v3`).
 - `reviewSystemLabel = "github"`, `useChangeIdContinuity = false`.
 - `buildPushSpec(baseBranch, taskId, ticketTitle)` derives the branch ref via `buildFeatureBranchRef` (no Gerrit topic).
+- Does not implement `getUnresolvedComments` / `resolveComments`: PR review comments, CI check runs, and thread resolution come from the repository-bound `GitHubPullRequestReviewConnector`.
 - Reviewer-email configuration is not supported because GitHub's request-reviewers API requires usernames. The admin API rejects non-empty reviewer-email lists for GitHub push targets.
 - Config: `apiBaseUrl`, `host`, `owner`, `repo`, `token`, git author identity, optional `targetBranch` (default `main`).
 

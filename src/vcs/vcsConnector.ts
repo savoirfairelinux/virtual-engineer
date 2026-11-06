@@ -16,12 +16,19 @@ import type { PatchsetCheckoutOptions, ReviewComment, ReviewSystem } from "../in
  * Represents the change/MR that was created or updated.
  */
 export interface VcsPushResult {
-  /** The change or merge request identifier (Gerrit Change-Id or GitLab MR IID) */
+  /** Native review identifier: Gerrit Change-Id, GitHub PR number, or GitLab MR IID. */
   changeId: string;
   /** HTTP URL to view the change/MR */
   url: string;
   /** Current status: "OPEN" or "MERGED" or other */
   status: string;
+}
+
+/**
+ * A review found by its source branch, with the target branch it was opened against.
+ */
+export interface ExistingReview extends VcsPushResult {
+  targetBranch: string;
 }
 
 /**
@@ -58,22 +65,33 @@ export interface VcsConnector {
   ): Promise<VcsPushResult>;
 
   /**
+   * Read-only lookup of the review opened from `sourceBranch` in the bound
+   * repository, across every target branch and state; never pushes or creates
+   * one. Returns null if none exists and throws when several exist, since a
+   * target-branch filter could otherwise hide the original review.
+   */
+  findExistingReview?(sourceBranch: string): Promise<ExistingReview | null>;
+
+  /**
    * Get the current status of a change/MR.
-   * @param changeId The Gerrit Change-Id or GitLab MR IID
-   * @returns Status string: "OPEN", "MERGED", "ABANDONED", etc.
+   * @param changeId The Gerrit Change-Id, GitHub PR number, or GitLab MR IID
+   * @returns Normalized status: "OPEN", "MERGED", or "ABANDONED"
    * @throws {Error} If status cannot be determined
    */
   getChangeStatus(changeId: string): Promise<string>;
 
   /**
    * Fetch unresolved review comments for a change.
-   * Optional — only implemented by connectors that support inline comments (Gerrit, GitLab MR).
+   * Optional — only implemented by connectors that support inline comments
+   * (Gerrit, GitLab MR). Without it, review progress reads comments through the
+   * code_review connector bound to the change's repository (GitHub).
    */
   getUnresolvedComments?(changeId: string): Promise<ReviewComment[]>;
 
   /**
    * Mark review comments as resolved.
-   * Optional — only implemented by connectors that support it (Gerrit, GitLab MR).
+   * Optional — only implemented by connectors that support it (Gerrit, GitLab MR);
+   * otherwise the repository-bound code_review connector resolves them.
    */
   resolveComments?(changeId: string, comments: ReviewComment[]): Promise<void>;
 
@@ -93,7 +111,8 @@ export interface VcsConnector {
    * change continuity across amend/rebase cycles (Gerrit) vs. branch-based
    * identity (GitLab MR). When true the orchestrator populates
    * existingChangeId and perRepoChangeIds in the agent session; when false
-   * it omits them.
+   * it omits them. Push persistence follows the same capability: true stores
+   * one change per commit; false stores the single native push result.
    */
   readonly useChangeIdContinuity: boolean;
 

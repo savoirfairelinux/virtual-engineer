@@ -23,3 +23,21 @@ export function makeAgentId(value: string): AgentId {
 export function makeProjectId(value: string): ProjectId {
   return value as ProjectId;
 }
+
+/** A hosted review id qualified by its repository, e.g. `owner/repo#42` or `group/project#7`. */
+export interface QualifiedChangeId {
+  repository: string;
+  changeId: string;
+}
+
+/** Split a repository-qualified hosted review id; unqualified ids (Gerrit Change-Ids) return null. */
+export function parseQualifiedChangeId(value: string): QualifiedChangeId | null {
+  const separator = value.lastIndexOf("#");
+  if (separator <= 0 || separator === value.length - 1) return null;
+  return { repository: value.slice(0, separator), changeId: value.slice(separator + 1) };
+}
+
+/** GitHub and GitLab resolve repository paths case-insensitively. */
+export function isSameRepository(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
