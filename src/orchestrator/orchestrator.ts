@@ -360,17 +360,18 @@ export class Orchestrator {
   }
 
   /**
-   * Webhook entry points — look up the task for a review-system change id and
-   * apply the appropriate lifecycle step. All three are no-ops for unknown or terminal tasks;
-   * the polling loop remains the source-of-truth fallback.
+   * Webhook entry points — look up every task tracking a review-system change id
+   * and apply the appropriate lifecycle step to each independently. All three are
+   * no-ops for unknown or terminal tasks; the polling loop remains the
+   * source-of-truth fallback.
    */
   async triggerFeedbackForChange(integrationId: string, externalChangeId: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       if (current.state !== "IN_REVIEW") {
@@ -379,17 +380,17 @@ export class Orchestrator {
       }
       log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
       await this.checkReviewProgress(current, externalChangeId, streamComments);
-    });
+    }));
   }
 
-  /** Webhook handler: mark the associated task's change as merged and close its ticket. */
+  /** Webhook handler: mark the associated tasks' change as merged and close their tickets. */
   async markChangeMerged(integrationId: string, externalChangeId: string, gerritProject?: string): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       if (current.state === "REVIEW_WATCHING") {
@@ -415,35 +416,59 @@ export class Orchestrator {
       }
       log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook merged: checking change convergence");
       await this.reviewProgressService.markChangeMerged(current, integrationId, externalChangeId, repoKey);
-    });
+    }));
   }
 
-  /** Webhook handler: mark the associated task as abandoned when a change is externally abandoned. */
+  /** Webhook handler: mark the associated tasks as abandoned when a change is externally abandoned. */
   async markChangeAbandoned(integrationId: string, externalChangeId: string): Promise<void> {
-    const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
-    if (!task) {
+    const tasks = await this.findTasksForExternalChange(integrationId, externalChangeId);
+    if (tasks.length === 0) {
       log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
-    await this.runTaskLifecycle(task.taskId, async () => {
+    await this.dispatchToTasks(tasks, (task) => this.runTaskLifecycle(task.taskId, async () => {
       const current = await this.stateStore.getTask(task.taskId) ?? task;
       if (TERMINAL_STATES.has(current.state)) return;
       log.info({ taskId: current.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
       await this.handleAbandoned(current, "change was abandoned externally (webhook)");
-    });
+    }));
   }
 
   /**
-   * Resolve exact ids first (Gerrit Change-Ids, qualified review-task ids). A
-   * repository-qualified hosted id then matches its native number only within
-   * that repository, so `B#42` can never select repository A's PR/MR 42.
+   * Resolve every task tracking an external change, independently: the exact id
+   * (Gerrit Change-Id, a review task's qualified id) and a repository-qualified
+   * hosted id's native number within that repository. A review task for
+   * `owner/repo#42` therefore never hides the coding task that opened PR 42, and
+   * `B#42` can never select repository A's PR/MR 42.
    */
-  private async findTaskForExternalChange(integrationId: string, externalChangeId: string): Promise<Task | null> {
+  private async findTasksForExternalChange(integrationId: string, externalChangeId: string): Promise<Task[]> {
+    const tasks: Task[] = [];
     const exact = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
-    if (exact !== null) return exact;
+    if (exact !== null) tasks.push(exact);
     const qualified = parseQualifiedChangeId(externalChangeId);
-    if (qualified === null) return null;
-    return this.stateStore.findTaskByExternalChangeId(integrationId, qualified.changeId, qualified.repository);
+    if (qualified !== null) {
+      const native = await this.stateStore.findTaskByExternalChangeId(
+        integrationId,
+        qualified.changeId,
+        qualified.repository,
+      );
+      if (native !== null && native.taskId !== exact?.taskId) tasks.push(native);
+    }
+    return tasks;
+  }
+
+  /** Apply a webhook step to each task; a failure for one task never skips the others. */
+  private async dispatchToTasks(tasks: Task[], step: (task: Task) => Promise<void>): Promise<void> {
+    const failures: unknown[] = [];
+    for (const task of tasks) {
+      try {
+        await step(task);
+      } catch (err) {
+        log.error({ taskId: task.taskId, err }, "webhook step failed for one task");
+        failures.push(err);
+      }
+    }
+    if (failures.length > 0) throw failures[0];
   }
 
   private async resolveGerritRepoKey(

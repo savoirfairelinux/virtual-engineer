@@ -12,8 +12,11 @@ import type { WebhookHandler } from "../webhookServer.js";
  *  - note                          — Note Hook on an MR
  *
  * Routing key: payload.object_attributes.iid (the MR IID is the changeId in
- * `change_per_repository`). The handler dispatches to the orchestrator's
- * webhook entry points; it does NOT itself read `change_per_repository`.
+ * `change_per_repository`), qualified by the project's `path_with_namespace`.
+ * Lifecycle and feedback events are also routed under the payload's numeric
+ * `project.id`, since bindings may record a repository by either identity. The
+ * handler dispatches to the orchestrator's webhook entry points; it does NOT
+ * itself read `change_per_repository`.
  */
 
 export const SUPPORTED_GITLAB_MR_EVENTS = [
@@ -42,15 +45,16 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
   const action = mr.action ?? eventToAction(ctx.event);
   const changeId = String(mr.iid);
   const reviewChangeId = qualifyReviewChangeId(ctx.payload, changeId);
+  const lifecycleChangeIds = qualifyLifecycleChangeIds(ctx.payload, changeId, reviewChangeId);
   const reviewerChanged = hasReviewerChange(ctx.payload);
 
   if (action === "merge" || action === "merged") {
-    await ctx.orchestrator.markChangeMerged(ctx.integrationId, reviewChangeId);
+    await routeEachIdentity(lifecycleChangeIds, (id) => ctx.orchestrator.markChangeMerged(ctx.integrationId, id));
     return { status: 202, body: { queued: true, action: "merged", changeId } };
   }
 
   if (action === "close" || action === "closed") {
-    await ctx.orchestrator.markChangeAbandoned(ctx.integrationId, reviewChangeId);
+    await routeEachIdentity(lifecycleChangeIds, (id) => ctx.orchestrator.markChangeAbandoned(ctx.integrationId, id));
     return { status: 202, body: { queued: true, action: "abandoned", changeId } };
   }
 
@@ -72,7 +76,7 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
   }
 
   // open / update / approved → re-poll feedback
-  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, reviewChangeId);
+  await routeEachIdentity(lifecycleChangeIds, (id) => ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, id));
   return { status: 202, body: { queued: true, action: action ?? "feedback", changeId } };
 };
 
@@ -91,7 +95,8 @@ const handleNote: WebhookHandler = async (ctx) => {
     return { status: 400, body: { error: "Note payload missing merge_request.iid" } };
   }
   const reviewChangeId = qualifyReviewChangeId(ctx.payload, String(iid));
-  await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, reviewChangeId);
+  const lifecycleChangeIds = qualifyLifecycleChangeIds(ctx.payload, String(iid), reviewChangeId);
+  await routeEachIdentity(lifecycleChangeIds, (id) => ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, id));
   return { status: 202, body: { queued: true, action: "feedback", changeId: reviewChangeId } };
 };
 
@@ -135,6 +140,41 @@ function qualifyReviewChangeId(payload: unknown, iid: string): string {
     if (typeof path === "string" && path.length > 0) return `${path}#${iid}`;
   }
   return iid;
+}
+
+/**
+ * Qualified ids for lifecycle and feedback routing. Project bindings may record
+ * a GitLab repository by path or by numeric project id, and the authenticated
+ * payload names both identities of the same project; each qualified id still
+ * matches only change rows recorded for that repository identity.
+ */
+function qualifyLifecycleChangeIds(payload: unknown, iid: string, pathChangeId: string): string[] {
+  const projectId = extractProjectId(payload);
+  return pathChangeId === iid || projectId === null ? [pathChangeId] : [pathChangeId, `${projectId}#${iid}`];
+}
+
+function extractProjectId(payload: unknown): number | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const project = (payload as Record<string, unknown>)["project"];
+  if (typeof project !== "object" || project === null) return null;
+  const id = (project as Record<string, unknown>)["id"];
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+/** Route one event under each project identity; a failure for one never skips another. */
+async function routeEachIdentity(
+  changeIds: readonly string[],
+  route: (changeId: string) => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const changeId of changeIds) {
+    try {
+      await route(changeId);
+    } catch (err) {
+      failures.push(err);
+    }
+  }
+  if (failures.length > 0) throw failures[0];
 }
 
 /** Detect GitLab reviewer-list changes without treating every metadata update as a revision. */

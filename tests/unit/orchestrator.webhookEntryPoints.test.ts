@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { gitlabMergeRequestWebhookHandler } from "../../src/webhooks/handlers/gitlab-merge-request.js";
+import { getLogger } from "../../src/logger.js";
 import {
   makeTaskId,
   makeTicketId,
@@ -10,6 +12,7 @@ import {
 } from "../../src/interfaces.js";
 import type { ChangePerRepository } from "../../src/domain/tasks.js";
 import type {
+  Integration,
   StateStore,
   Task,
   WorkspaceRunner,
@@ -446,6 +449,79 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       return taskId;
     }
 
+    async function trackReviewTask(taskName: string, changeId: string, state: Task["state"]): Promise<Task["taskId"]> {
+      const taskId = makeTaskId(taskName);
+      await store.createReviewTask({
+        taskId,
+        ticketId: makeTicketId(`ticket-${taskName}`),
+        subject: "Review",
+        sourceLabel: "github:github-1",
+        changeId: makeExternalChangeId(changeId),
+        patchset: 1,
+      });
+      (store as unknown as { raw: Database.Database }).raw
+        .prepare("UPDATE tasks SET state = ? WHERE task_id = ?")
+        .run(state, taskId);
+      return taskId;
+    }
+
+    async function transitionTargets(taskId: Task["taskId"]): Promise<string[]> {
+      return (await store.getStateTransitions(taskId)).map((transition) => transition.toState);
+    }
+
+    it.each(["REVIEW_WATCHING", "REVIEW_DONE"] as const)(
+      "merges the coding task even when a %s review task tracks the same PR",
+      async (reviewState) => {
+        const coding = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+        const reviewTask = await trackReviewTask("review-a", "owner/a#42", reviewState);
+        const orch = makeOrchestrator(store);
+
+        await orch.markChangeMerged("github-1", "owner/a#42");
+
+        expect((await store.getChangesForTask(coding))[0]?.status).toBe("MERGED");
+        expect((await store.getTask(coding))?.state).toBe("DONE");
+        expect((await store.getTask(reviewTask))?.state).toBe("REVIEW_DONE");
+      },
+    );
+
+    it("abandons both the review task and the coding task of the same closed PR", async () => {
+      const coding = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const reviewTask = await trackReviewTask("review-a", "owner/a#42", "REVIEW_WATCHING");
+      const orch = makeOrchestrator(store);
+
+      await orch.markChangeAbandoned("github-1", "owner/a#42");
+
+      expect((await store.getTask(coding))?.state).toBe("ABANDONED");
+      expect((await store.getTask(reviewTask))?.state).toBe("ABANDONED");
+    });
+
+    it("checks the coding task's feedback when a terminal review task matches the PR exactly", async () => {
+      const coding = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const reviewTask = await trackReviewTask("review-a", "owner/a#42", "REVIEW_DONE");
+      const orch = makeOrchestrator(store);
+
+      await orch.triggerFeedbackForChange("github-1", "owner/a#42");
+
+      expect(await transitionTargets(coding)).toEqual(
+        expect.arrayContaining(["FEEDBACK_PROCESSING", "IN_REVIEW"]),
+      );
+      expect((await store.getTask(reviewTask))?.state).toBe("REVIEW_DONE");
+    });
+
+    it("still dispatches to the coding task when the review task's handling fails", async () => {
+      const coding = await trackHostedChange("task-a", [{ repoKey: "owner/a" }]);
+      const reviewTask = await trackReviewTask("review-a", "owner/a#42", "REVIEW_WATCHING");
+      const transition = store.transition.bind(store);
+      vi.spyOn(store, "transition").mockImplementation((taskId, toState, ...rest) => taskId === reviewTask
+        ? Promise.reject(new Error("review store unavailable"))
+        : transition(taskId, toState, ...rest));
+      const orch = makeOrchestrator(store);
+
+      await expect(orch.markChangeMerged("github-1", "owner/a#42")).rejects.toThrow("review store unavailable");
+
+      expect((await store.getTask(coding))?.state).toBe("DONE");
+    });
+
     it.each(["markChangeMerged", "markChangeAbandoned", "triggerFeedbackForChange"] as const)(
       "%s for an untracked repository leaves another repository's native number untouched",
       async (entryPoint) => {
@@ -523,6 +599,77 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       await orch.markChangeAbandoned("github-1", "owner/b#42");
 
       expect(await store.getTask(tracked)).toMatchObject({ state: "IN_REVIEW", failureReason: null });
+    });
+
+    describe("GitLab merge request webhooks", () => {
+      const gitlabIntegration: Integration = {
+        id: "gitlab-1",
+        provider: "gitlab",
+        name: "GitLab",
+        configJson: "{}",
+        enabled: true,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      };
+
+      async function trackGitLabChange(taskName: string, repoKey: string): Promise<Task["taskId"]> {
+        const taskId = makeTaskId(taskName);
+        await store.createTask(taskId, makeTicketId(`ticket-${taskName}`));
+        (store as unknown as { raw: Database.Database }).raw
+          .prepare("UPDATE tasks SET state = 'IN_REVIEW', project_id = 'proj-1' WHERE task_id = ?")
+          .run(taskId);
+        await store.saveChangePerRepository(
+          taskId, repoKey, "42", "https://gitlab.example.test/group/project/-/merge_requests/42",
+          "OPEN", "gitlab-1", "gitlab", 0, null,
+        );
+        return taskId;
+      }
+
+      function deliver(
+        orch: Orchestrator,
+        action: string,
+        project: { id: number; path_with_namespace: string },
+      ): Promise<{ status: number; body?: unknown }> {
+        return gitlabMergeRequestWebhookHandler({
+          integrationId: "gitlab-1",
+          integration: gitlabIntegration,
+          event: "merge_request",
+          payload: { object_attributes: { iid: 42, action }, project },
+          rawBody: "",
+          headers: {},
+          projectStore: { findProjectByTicketSource: vi.fn().mockResolvedValue(null) },
+          orchestrator: orch,
+          log: getLogger("test"),
+        });
+      }
+
+      it.each(["7", "group/project"])(
+        "merges a task bound by repoKey %s from the project's merge event",
+        async (repoKey) => {
+          const taskId = await trackGitLabChange("task-a", repoKey);
+          const orch = makeOrchestrator(store);
+
+          await deliver(orch, "merge", { id: 7, path_with_namespace: "Group/Project" });
+
+          expect((await store.getChangesForTask(taskId))[0]?.status).toBe("MERGED");
+          expect((await store.getTask(taskId))?.state).toBe("DONE");
+        },
+      );
+
+      it.each(["merge", "close", "update"])(
+        "leaves a task bound by numeric id 7 untouched by another project's '%s' event",
+        async (action) => {
+          const taskId = await trackGitLabChange("task-a", "7");
+          const transitionsBefore = await store.getStateTransitions(taskId);
+          const orch = makeOrchestrator(store);
+
+          await deliver(orch, action, { id: 8, path_with_namespace: "group/other" });
+
+          expect(await store.getTask(taskId)).toMatchObject({ state: "IN_REVIEW", failureReason: null });
+          expect(await store.getStateTransitions(taskId)).toHaveLength(transitionsBefore.length);
+          expect((await store.getChangesForTask(taskId))[0]?.status).toBe("OPEN");
+        },
+      );
     });
   });
 });
