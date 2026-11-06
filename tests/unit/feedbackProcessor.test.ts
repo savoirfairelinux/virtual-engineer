@@ -70,6 +70,81 @@ describe("FeedbackProcessor", () => {
     expect(store.markCommentProcessed).toHaveBeenCalledWith(taskId, comment.id);
   });
 
+  it.each([
+    { integrationId: "github-2", repoKey: "team/api", changeId: "42" },
+    { integrationId: "github-1", repoKey: "team/ui", changeId: "42" },
+    { integrationId: "github-1", repoKey: "team/api", changeId: "43" },
+  ])("separates native comment IDs by integration, repository and change: %j", async (other) => {
+    const processedIds = new Set<string>();
+    const store = makeStateStoreMock(processedIds);
+    vi.mocked(store.markCommentProcessed).mockImplementation((_taskId, id) => {
+      processedIds.add(id);
+      return Promise.resolve();
+    });
+    const processor = new FeedbackProcessor(store);
+    const taskId = makeTaskId("task-1");
+    const comment = makeComment({ id: "101", reviewSystem: "github" });
+    const scope = { integrationId: "github-1", repoKey: "team/api" };
+
+    const [, firstComments] = await processor.extractNewFeedback(taskId, makeExternalChangeId("42"), [comment], scope);
+    const [, otherComments] = await processor.extractNewFeedback(
+      taskId, makeExternalChangeId(other.changeId), [comment], other,
+    );
+    const [repeatedItems] = await processor.extractNewFeedback(taskId, makeExternalChangeId("42"), [comment], scope);
+
+    expect(firstComments).toEqual([comment]);
+    expect(otherComments).toEqual([comment]);
+    expect(repeatedItems).toEqual([]);
+    expect(processedIds).toEqual(new Set([
+      JSON.stringify(["github-1", "team/api", "42", "101"]),
+      JSON.stringify([other.integrationId, other.repoKey, other.changeId, "101"]),
+    ]));
+  });
+
+  it("keeps historical unscoped comments deduplicated when repository scoping is enabled", async () => {
+    const comment = makeComment({ id: "101" });
+    const store = makeStateStoreMock(new Set([comment.id]));
+    const processor = new FeedbackProcessor(store);
+
+    const result = await processor.extractNewFeedback(
+      makeTaskId("task-1"), makeExternalChangeId("42"), [comment],
+      { integrationId: "github-1", repoKey: "team/api" },
+    );
+
+    expect(result).toEqual([[], []]);
+    expect(store.markCommentProcessed).not.toHaveBeenCalled();
+  });
+
+  it("keeps raw processed IDs for legacy rows recorded without an integration", async () => {
+    const comment = makeComment({ id: "legacy-101" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+    const taskId = makeTaskId("task-1");
+
+    await processor.extractNewFeedback(
+      taskId, makeExternalChangeId("I123"), [comment], { integrationId: "", repoKey: "team/api" },
+    );
+
+    expect(store.markCommentProcessed).toHaveBeenCalledExactlyOnceWith(taskId, comment.id);
+  });
+
+  it("preserves native CI identifiers and classification when storing scoped processed IDs", async () => {
+    const comment = makeComment({ id: "ci-run-9001", reviewSystem: "github" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+    const taskId = makeTaskId("task-1");
+
+    const [items, comments] = await processor.extractNewFeedback(
+      taskId, makeExternalChangeId("42"), [comment], { integrationId: "github-1", repoKey: "team/api" },
+    );
+
+    expect(items[0]).toMatchObject({ source: "ci_failure", reviewSystem: "github" });
+    expect(comments).toEqual([comment]);
+    expect(store.markCommentProcessed).toHaveBeenCalledExactlyOnceWith(
+      taskId, JSON.stringify(["github-1", "team/api", "42", "ci-run-9001"]),
+    );
+  });
+
   it("maps comment fields and review provenance to FeedbackItem", async () => {
     const comment = makeComment({
       message: "This function is wrong",

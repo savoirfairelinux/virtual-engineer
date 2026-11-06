@@ -525,7 +525,9 @@ describe("ReviewProgressService", () => {
     expect(dependencies.resolveRepositoryReviewConnector).not.toHaveBeenCalled();
     expect(taskLevel.getChangeStatus).toHaveBeenCalledWith("I123");
     expect(taskLevel.getCICheckFailures).toHaveBeenCalledWith("I123");
-    expect(dependencies.extractNewFeedback).toHaveBeenCalledWith(task.taskId, "I123", [comment, ciComment]);
+    expect(dependencies.extractNewFeedback).toHaveBeenCalledWith(
+      task.taskId, "I123", [comment, ciComment], { integrationId: "", repoKey: "team/repo" },
+    );
   });
 
   describe("hosted rows with the real GitHub VCS connector", () => {

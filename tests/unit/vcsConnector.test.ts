@@ -3,10 +3,22 @@
  * Verifies that the interface signature is well-formed and testable.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
+import type { ReviewChangeStatus } from "../../src/interfaces.js";
+import type { GerritVcsConnector } from "../../src/vcs/gerritVcsConnector.js";
+import type { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
+import type { GitLabVcsConnector } from "../../src/vcs/gitlabVcsConnector.js";
 import type { VcsConnector, VcsPushResult, VcsConnectorConfig } from "../../src/vcs/vcsConnector.js";
 
 describe("VcsConnector Interface", () => {
+  it("uses the closed review status contract at every VCS boundary", () => {
+    expectTypeOf<VcsConnector["getChangeStatus"]>().returns.toEqualTypeOf<Promise<ReviewChangeStatus>>();
+    expectTypeOf<GerritVcsConnector["getChangeStatus"]>().returns.toEqualTypeOf<Promise<ReviewChangeStatus>>();
+    expectTypeOf<GitHubVcsConnector["getChangeStatus"]>().returns.toEqualTypeOf<Promise<ReviewChangeStatus>>();
+    expectTypeOf<GitLabVcsConnector["getChangeStatus"]>().returns.toEqualTypeOf<Promise<ReviewChangeStatus>>();
+    expectTypeOf<VcsPushResult["status"]>().toEqualTypeOf<ReviewChangeStatus>();
+  });
+
   it("should define VcsConnector interface with required methods", () => {
     // This is a compile-time check; TypeScript will error if the interface is missing methods.
     // However, we can verify the interface exists and has the correct structure.
@@ -14,7 +26,7 @@ describe("VcsConnector Interface", () => {
       async clone(_repoUrl: string, _branch: string, _targetDir: string): Promise<void> {
         // Mock implementation
       },
-      async getChangeStatus(_changeId: string): Promise<string> {
+      async getChangeStatus(_changeId: string): Promise<ReviewChangeStatus> {
         return "OPEN";
       },
       buildPushSpec(_baseBranch: string, taskId: string) { return { ref: `refs/for/main`, topic: `VE-${taskId}` }; },
@@ -55,7 +67,7 @@ describe("VcsConnector Interface", () => {
           expect(branch).toBeTruthy();
           expect(targetDir).toBeTruthy();
         },
-        async getChangeStatus(): Promise<string> {
+        async getChangeStatus(): Promise<ReviewChangeStatus> {
           throw new Error("Not implemented");
         },
         buildPushSpec(_baseBranch: string, taskId: string) { return { ref: `refs/for/main`, topic: `VE-${taskId}` }; },
@@ -75,7 +87,7 @@ describe("VcsConnector Interface", () => {
     it("should accept changeId and return status string", async () => {
       const mockConnector: VcsConnector = {
         async clone(): Promise<void> {},
-        async getChangeStatus(_changeId: string): Promise<string> {
+        async getChangeStatus(_changeId: string): Promise<ReviewChangeStatus> {
           expect(_changeId).toBeTruthy();
           return "MERGED";
         },

@@ -9,7 +9,7 @@
  * Key principle: All VCS credentials stay on the host. The container
  * receives a pre-cloned repository and never interacts with the VCS.
  */
-import type { PatchsetCheckoutOptions, ReviewComment, ReviewSystem } from "../interfaces.js";
+import type { PatchsetCheckoutOptions, ReviewChangeStatus, ReviewComment, ReviewSystem } from "../interfaces.js";
 
 /**
  * Result of a push operation.
@@ -20,8 +20,8 @@ export interface VcsPushResult {
   changeId: string;
   /** HTTP URL to view the change/MR */
   url: string;
-  /** Current status: "OPEN" or "MERGED" or other */
-  status: string;
+  /** Current status in the shared review vocabulary. */
+  status: ReviewChangeStatus;
 }
 
 /**
@@ -78,7 +78,7 @@ export interface VcsConnector {
    * @returns Normalized status: "OPEN", "MERGED", or "ABANDONED"
    * @throws {Error} If status cannot be determined
    */
-  getChangeStatus(changeId: string): Promise<string>;
+  getChangeStatus(changeId: string): Promise<ReviewChangeStatus>;
 
   /**
    * Fetch unresolved review comments for a change.

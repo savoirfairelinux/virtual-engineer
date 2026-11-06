@@ -4,12 +4,13 @@ import type { ChangePerRepository, Task, TaskState } from "../domain/tasks.js";
 import type {
   FeedbackItem,
   IntegrationBindingContext,
+  ReviewChangeStatus,
   ReviewComment,
   ReviewConnector,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
-import { isCiFeedbackComment } from "./feedbackProcessor.js";
+import { isCiFeedbackComment, type ReviewFeedbackScope } from "./feedbackProcessor.js";
 
 const log = getLogger("review-progress");
 
@@ -39,7 +40,7 @@ function matchesChangeRow(change: ChangePerRepository, eventChangeId: string): b
 export interface ReviewProgressDependencies {
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   transition(taskId: TaskId, state: TaskState): Promise<Task>;
-  updateChangeStatus(taskId: TaskId, changeRowId: string, status: string): Promise<void>;
+  updateChangeStatus(taskId: TaskId, changeRowId: string, status: ReviewChangeStatus): Promise<void>;
   getTask(taskId: TaskId): Promise<Task | null>;
   resolveReviewConnector(task: Pick<Task, "taskId" | "projectId" | "externalChangeId">): Promise<ReviewConnector>;
   resolveVcsConnector(
@@ -52,7 +53,8 @@ export interface ReviewProgressDependencies {
   extractNewFeedback(
     taskId: TaskId,
     changeId: ExternalChangeId,
-    comments: ReviewComment[]
+    comments: ReviewComment[],
+    scope?: ReviewFeedbackScope,
   ): Promise<readonly [FeedbackItem[], ReviewComment[]]>;
   reactsToCiFailures(task: Task): Promise<boolean>;
   getMaxAgentCycles(): number;
@@ -145,7 +147,7 @@ export class ReviewProgressService {
 
     const reviewConnector = await this.dependencies.resolveReviewConnector(task);
 
-    let status: string;
+    let status: ReviewChangeStatus;
     try {
       status = await reviewConnector.getChangeStatus(changeId);
     } catch (err) {
@@ -268,11 +270,7 @@ export class ReviewProgressService {
       }
 
       try {
-        const currentStatus = await this.getChangeStatus(
-          changeConnector,
-          change.changeId,
-          getFallbackReviewConnector
-        );
+        const currentStatus = await changeConnector.getChangeStatus(change.changeId as ExternalChangeId);
 
         if (currentStatus !== change.status) {
           await this.dependencies.updateChangeStatus(
@@ -293,7 +291,7 @@ export class ReviewProgressService {
           allMerged = false;
         }
 
-        if (currentStatus === "OPEN" || currentStatus === "NEW") {
+        if (currentStatus === "OPEN") {
           await this.collectFeedback({
             task,
             change,
@@ -406,7 +404,8 @@ export class ReviewProgressService {
       const [feedback, processed] = await this.dependencies.extractNewFeedback(
         input.task.taskId,
         input.change.changeId as ExternalChangeId,
-        scopedComments
+        scopedComments,
+        { integrationId: input.change.integrationId, repoKey: input.change.repoKey },
       );
       for (const item of feedback) {
         input.allFeedback.push({
@@ -467,17 +466,6 @@ export class ReviewProgressService {
       return this.dependencies.resolveVcsConnector(change.integrationId, { repoKey: change.repoKey });
     }
     return this.dependencies.getDefaultVcsConnector() ?? getFallbackReviewConnector();
-  }
-
-  private async getChangeStatus(
-    connector: ReviewProgressConnector,
-    changeId: string,
-    getFallbackReviewConnector: () => Promise<ReviewConnector>
-  ): Promise<string> {
-    if ("getChangeStatus" in connector) {
-      return connector.getChangeStatus(changeId as ExternalChangeId);
-    }
-    return (await getFallbackReviewConnector()).getChangeStatus(changeId as ExternalChangeId);
   }
 
   private async getUnresolvedComments(

@@ -5,9 +5,12 @@ import type {
   StateStore,
   TaskId,
 } from "../interfaces.js";
+import type { ChangePerRepository } from "../domain/tasks.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("feedback-processor");
+
+export type ReviewFeedbackScope = Pick<ChangePerRepository, "integrationId" | "repoKey">;
 
 /** True when a comment's id marks it as CI-failure-originated (`ci-run-*` from GitHub checks, `ci-failure-*` from Gerrit build messages). */
 export function isCiFeedbackComment(comment: ReviewComment): boolean {
@@ -24,12 +27,17 @@ export class FeedbackProcessor {
   async extractNewFeedback(
     taskId: TaskId,
     changeId: ExternalChangeId,
-    comments: ReviewComment[]
+    comments: ReviewComment[],
+    scope?: ReviewFeedbackScope,
   ): Promise<readonly [FeedbackItem[], ReviewComment[]]> {
     const processedIds = await this.stateStore.getProcessedCommentIds(taskId);
+    const processedCommentId = (comment: ReviewComment): string => scope?.integrationId
+      ? JSON.stringify([scope.integrationId, scope.repoKey, changeId, comment.id])
+      : comment.id;
 
+    // Historical unscoped entries must remain effective after an upgrade.
     const newComments = comments.filter(
-      (c) => c.unresolved && !processedIds.has(c.id)
+      (c) => c.unresolved && !processedIds.has(c.id) && !processedIds.has(processedCommentId(c))
     );
 
     if (newComments.length === 0) {
@@ -47,7 +55,7 @@ export class FeedbackProcessor {
 
     // Mark all as processed before returning — prevents re-processing on restart
     for (const comment of newComments) {
-      await this.stateStore.markCommentProcessed(taskId, comment.id);
+      await this.stateStore.markCommentProcessed(taskId, processedCommentId(comment));
     }
 
     const feedbackItems = newComments.map((c) => this.toFeedbackItem(c));

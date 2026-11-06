@@ -165,8 +165,8 @@ export class Orchestrator {
         this.projectConnectorResolver.resolveRepositoryReviewConnector(integrationId, repoKey),
       getDefaultVcsConnector: (): ReturnType<ReviewProgressDependencies["getDefaultVcsConnector"]> =>
         this.vcsConnector,
-      extractNewFeedback: (taskId, changeId, comments): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>
-        this.feedbackProcessor.extractNewFeedback(taskId, changeId, comments),
+      extractNewFeedback: (taskId, changeId, comments, scope): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>
+        this.feedbackProcessor.extractNewFeedback(taskId, changeId, comments, scope),
       reactsToCiFailures: (task): ReturnType<ReviewProgressDependencies["reactsToCiFailures"]> =>
         this.projectReactsToCiFailures(task),
       getMaxAgentCycles: (): ReturnType<ReviewProgressDependencies["getMaxAgentCycles"]> =>
