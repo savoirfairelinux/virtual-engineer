@@ -108,11 +108,15 @@ database workflow.
 
 ## 📚 Documentation
 
+- [Documentation index](docs/index.rst)
 - [Architecture and data flow](docs/ARCHITECTURE.md)
 - [Kubernetes deployment](deploy/k8s/README.md)
 - [Security architecture and reporting](SECURITY.md)
 - [Detailed agent reference](.github/context/modules/agents.md)
 - [Configuration reference](.github/context/configuration.md)
+
+The documentation is built with Sphinx for Read the Docs. See
+[CONTRIBUTING.md](CONTRIBUTING.md#documentation) for local build instructions.
 
 ## 📄 License
 

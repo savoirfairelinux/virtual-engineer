@@ -7,6 +7,7 @@ Thank you for your interest in contributing! This document covers how to set up 
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Development Workflow](#development-workflow)
+- [Documentation](#documentation)
 - [Code Conventions](#code-conventions)
 - [Commit Messages](#commit-messages)
 - [Adding a New Integration](#adding-a-new-integration)
@@ -65,6 +66,25 @@ npm run db:migrate           # apply tracked migrations through the runtime runn
 Database changes start in `src/state/schema.ts`. Commit the newly generated SQL and metadata under `drizzle/` with the code change; never edit an already-applied migration.
 
 All three gates (`npm test`, `npm run typecheck`, `npm run lint`) must pass before opening a PR.
+
+---
+
+## Documentation
+
+The `docs/` directory is a Sphinx project using MyST Markdown and the Read the
+Docs theme. To build it locally with Python 3.13:
+
+```bash
+python3 -m venv .venv-docs
+. .venv-docs/bin/activate
+python -m pip install -r docs/requirements.txt
+make -C docs html SPHINXOPTS="-n -W --keep-going"
+```
+
+Open `docs/_build/html/index.html` to view the result. Add new pages to the
+table of contents in `docs/index.rst`. Read the Docs uses `.readthedocs.yaml`
+and the same requirements; the project must also be connected to the
+repository in the Read the Docs dashboard.
 
 ---
 
