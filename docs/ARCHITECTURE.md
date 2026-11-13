@@ -1,7 +1,5 @@
 # Virtual Engineer — Architecture
 
----
-
 ## 1. System overview
 
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a container) and drives two autonomous workflows:

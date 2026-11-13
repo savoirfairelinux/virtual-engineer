@@ -30,7 +30,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### High: External-change lookup is not integration-scoped
 
-**Evidence:** [taskStore.ts](../src/state/stores/taskStore.ts#L1017) first selects the newest task matching `gerrit_change_id` without using the supplied `integrationId`. The integration filter is applied only to the fallback `change_per_repository` query at [taskStore.ts](../src/state/stores/taskStore.ts#L1029).
+**Evidence:** [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L1017) first selects the newest task matching `gerrit_change_id` without using the supplied `integrationId`. The integration filter is applied only to the fallback `change_per_repository` query at [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L1029).
 
 **Impact:** The same change identifier can exist on different Gerrit instances, GitLab projects, GitHub repositories, or review integrations. A webhook or review event can therefore be routed to the newest unrelated task, causing feedback processing, merge handling, or abandonment against the wrong project.
 
@@ -38,7 +38,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### High: Interrupted review-commenting recovery is bypassed
 
-**Evidence:** [taskStore.ts](../src/state/stores/taskStore.ts#L329) includes `REVIEW_COMMENTING` in `reconcileOrphanedActiveTasks()`. That method is called at boot from [index.ts](../src/index.ts#L69), before `recoverActiveReviews()` is registered at [index.ts](../src/index.ts#L475).
+**Evidence:** [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L329) includes `REVIEW_COMMENTING` in `reconcileOrphanedActiveTasks()`. That method is called at boot from [index.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/index.ts#L69), before `recoverActiveReviews()` is registered at [index.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/index.ts#L475).
 
 **Impact:** A process restart during review posting immediately changes `REVIEW_COMMENTING` to `REVIEW_FAILED`. The state-aware recovery path cannot determine whether comments, replies, votes, or summaries were partially posted. This can lose a recoverable review or leave remote side effects ambiguous.
 
@@ -46,15 +46,15 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### High: Filesystem policy floor allows protected descendants
 
-**Evidence:** [runtimePolicyResolver.ts](../src/openshell/runtimePolicyResolver.ts#L39) defines protected trees, but [runtimePolicyResolver.ts](../src/openshell/runtimePolicyResolver.ts#L62) rejects only exact string matches after trimming trailing slashes.
+**Evidence:** [runtimePolicyResolver.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/openshell/runtimePolicyResolver.ts#L39) defines protected trees, but [runtimePolicyResolver.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/openshell/runtimePolicyResolver.ts#L62) rejects only exact string matches after trimming trailing slashes.
 
 **Impact:** Paths such as `/etc/ssh`, `/usr/local/bin`, `/app/config`, or normalized variants containing `.`/`..` can evade the floor while remaining inside trees that the comments describe as non-writable. The resulting policy could let an agent modify runtime configuration, executables, or credential-related files.
 
-**Recommendation:** Normalize absolute POSIX paths and reject a path when it equals a protected path or has that path as a directory-boundary prefix. Reject non-absolute and traversal-containing entries. Keep the resolver as the final enforcement point and mirror the validation in the admin API. Extend [runtimePolicyResolver.test.ts](../tests/unit/runtimePolicyResolver.test.ts#L131) with descendants and normalization cases.
+**Recommendation:** Normalize absolute POSIX paths and reject a path when it equals a protected path or has that path as a directory-boundary prefix. Reject non-absolute and traversal-containing entries. Keep the resolver as the final enforcement point and mirror the validation in the admin API. Extend [runtimePolicyResolver.test.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/tests/unit/runtimePolicyResolver.test.ts#L131) with descendants and normalization cases.
 
 ### High: Worker Git operations do not inherit repository hardening
 
-**Evidence:** The worker defines a plain Git helper at [index.ts](../agent-worker/src/index.ts#L187) and commit utilities define another at [commitUtils.ts](../agent-worker/src/commitUtils.ts#L21). These invoke Git without the host-side trusted configuration/environment controls. Rebase and abort paths also invoke Git directly at [commitUtils.ts](../agent-worker/src/commitUtils.ts#L319).
+**Evidence:** The worker defines a plain Git helper at [index.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/index.ts#L187) and commit utilities define another at [commitUtils.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/commitUtils.ts#L21). These invoke Git without the host-side trusted configuration/environment controls. Rebase and abort paths also invoke Git directly at [commitUtils.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/commitUtils.ts#L319).
 
 **Impact:** Repository-controlled Git configuration, hooks, or attributes can execute during worker-side status, commit, and rebase processing. Agent credentials are available in the worker execution environment, so a malicious hook can turn repository processing into credential or data exfiltration within whatever network policy the sandbox permits.
 
@@ -62,7 +62,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### High: Raw agent output is persisted and returned without a storage boundary
 
-**Evidence:** [taskStore.ts](../src/state/stores/taskStore.ts#L479) stores the complete `AgentResult`, and [taskStore.ts](../src/state/stores/taskStore.ts#L481) stores raw `agentEvents` separately. The cycle API returns `cycle.result` directly at [adminTaskRoutes.ts](../src/admin/adminTaskRoutes.ts#L249). Sanitization is applied while formatting SSE events at [adminStreamRoutes.ts](../src/admin/adminStreamRoutes.ts#L235), not before database persistence or cycle serialization.
+**Evidence:** [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L479) stores the complete `AgentResult`, and [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L481) stores raw `agentEvents` separately. The cycle API returns `cycle.result` directly at [adminTaskRoutes.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/admin/adminTaskRoutes.ts#L249). Sanitization is applied while formatting SSE events at [adminStreamRoutes.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/admin/adminStreamRoutes.ts#L235), not before database persistence or cycle serialization.
 
 **Impact:** Provider errors, tool payloads, URLs, or accidental credential material can remain in SQLite and be exposed through the cycle endpoint. The current pattern list also does not guarantee coverage for every provider-specific token format. Retention and database access therefore become part of the secret-protection boundary.
 
@@ -70,7 +70,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: Aider image installation is incompatible with the sandbox user
 
-**Evidence:** [Dockerfile.agent](../Dockerfile.agent#L20) creates the unprivileged `sandbox` user, while [Dockerfile.agent](../Dockerfile.agent#L32) installs Aider under `/root/.local` and [Dockerfile.agent](../Dockerfile.agent#L33) symlinks `/usr/local/bin/aider` back into that root-owned tree.
+**Evidence:** [Dockerfile.agent](https://github.com/savoirfairelinux/virtual-engineer/blob/main/Dockerfile.agent#L20) creates the unprivileged `sandbox` user, while [Dockerfile.agent](https://github.com/savoirfairelinux/virtual-engineer/blob/main/Dockerfile.agent#L32) installs Aider under `/root/.local` and [Dockerfile.agent](https://github.com/savoirfairelinux/virtual-engineer/blob/main/Dockerfile.agent#L33) symlinks `/usr/local/bin/aider` back into that root-owned tree.
 
 **Impact:** OpenShell runs the agent as `sandbox`. On a normal image where `/root` is not traversable by that user, the Aider symlink resolves to an inaccessible binary and the Aider provider fails at runtime.
 
@@ -78,7 +78,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: Polling cooldown keys are inconsistent and poll cycles can overlap
 
-**Evidence:** Review assignment polling stores `${integrationId}:${changeId}` at [pollingLoop.ts](../src/orchestrator/pollingLoop.ts#L381), while in-review eviction compares those entries to raw change IDs at [pollingLoop.ts](../src/orchestrator/pollingLoop.ts#L417). The timer invokes `runTicketPollCycle()` through `setInterval()` at [pollingLoop.ts](../src/orchestrator/pollingLoop.ts#L164), with no in-flight guard in [pollingLoop.ts](../src/orchestrator/pollingLoop.ts#L190).
+**Evidence:** Review assignment polling stores `${integrationId}:${changeId}` at [pollingLoop.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/orchestrator/pollingLoop.ts#L381), while in-review eviction compares those entries to raw change IDs at [pollingLoop.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/orchestrator/pollingLoop.ts#L417). The timer invokes `runTicketPollCycle()` through `setInterval()` at [pollingLoop.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/orchestrator/pollingLoop.ts#L164), with no in-flight guard in [pollingLoop.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/orchestrator/pollingLoop.ts#L190).
 
 **Impact:** Assignment cooldown entries are evicted as soon as the in-review eviction runs, so assignment polling can repeat provider calls within the intended cooldown. If a provider call exceeds the interval, multiple complete poll cycles can run concurrently, increasing API load and duplicate trigger pressure.
 
@@ -86,7 +86,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: Provider subprocess cleanup and buffers are not uniformly bounded
 
-**Evidence:** Provider cleanup calls `child.kill('SIGTERM')` directly, for example at [aider.ts](../agent-worker/src/providers/aider.ts#L300), rather than terminating the full process group. Output accumulators grow without a provider-local limit at [aider.ts](../agent-worker/src/providers/aider.ts#L332) and [aider.ts](../agent-worker/src/providers/aider.ts#L339), with the same pattern in Codex at [codex.ts](../agent-worker/src/providers/codex.ts#L346) and [codex.ts](../agent-worker/src/providers/codex.ts#L360).
+**Evidence:** Provider cleanup calls `child.kill('SIGTERM')` directly, for example at [aider.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/aider.ts#L300), rather than terminating the full process group. Output accumulators grow without a provider-local limit at [aider.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/aider.ts#L332) and [aider.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/aider.ts#L339), with the same pattern in Codex at [codex.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/codex.ts#L346) and [codex.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/codex.ts#L360).
 
 **Impact:** A CLI descendant can survive a timeout and retain CPU, files, or credentials. Large model output or verbose diagnostics can consume worker memory even though the host OpenShell command runner caps its own retained output.
 
@@ -94,7 +94,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: Worker result writes can be truncated by immediate exit
 
-**Evidence:** [agent-worker/src/index.ts](../agent-worker/src/index.ts#L615) and [agent-worker/src/index.ts](../agent-worker/src/index.ts#L629) call `process.stdout.write()` and then immediately call `process.exit(0)`.
+**Evidence:** [agent-worker/src/index.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/index.ts#L615) and [agent-worker/src/index.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/index.ts#L629) call `process.stdout.write()` and then immediately call `process.exit(0)`.
 
 **Impact:** For a large review or diagnostic result, the process can exit before stdout drains. The host then receives invalid or incomplete JSON and loses the cycle result.
 
@@ -102,7 +102,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: State transitions used by review polling do not update `updated_at`
 
-**Evidence:** The special polling transition branch at [taskStore.ts](../src/state/stores/taskStore.ts#L371) updates `state` but omits `updated_at`, unlike the normal transition branch.
+**Evidence:** The special polling transition branch at [taskStore.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/state/stores/taskStore.ts#L371) updates `state` but omits `updated_at`, unlike the normal transition branch.
 
 **Impact:** `IN_REVIEW` and `FEEDBACK_PROCESSING` changes can appear stale to admin sorting, recovery heuristics, and any logic using update time for deduplication or activity reporting.
 
@@ -110,7 +110,7 @@ Regression coverage was added for shared change IDs, task-preserving review poll
 
 ### Medium: Provider environment allowlists are inconsistent with gateway proxy requirements
 
-**Evidence:** Gemini explicitly preserves proxy and CA variables at [gemini.ts](../agent-worker/src/providers/gemini.ts#L72), including `HTTP_PROXY` and `NODE_EXTRA_CA_CERTS`. Aider, Goose, Codex, OpenCode, and Cursor define separate allowlists without those variables, for example [aider.ts](../agent-worker/src/providers/aider.ts#L119) and [codex.ts](../agent-worker/src/providers/codex.ts#L58).
+**Evidence:** Gemini explicitly preserves proxy and CA variables at [gemini.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/gemini.ts#L72), including `HTTP_PROXY` and `NODE_EXTRA_CA_CERTS`. Aider, Goose, Codex, OpenCode, and Cursor define separate allowlists without those variables, for example [aider.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/aider.ts#L119) and [codex.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/agent-worker/src/providers/codex.ts#L58).
 
 **Impact:** Providers can fail TLS validation or bypass the expected OpenShell gateway proxy depending on deployment environment. The behavior differs by provider even though they share the same sandbox contract.
 
@@ -123,12 +123,12 @@ These are lower-risk improvements that should follow the correctness and isolati
 1. **Batch project polling lookups.** `pollProjectTickets()` performs project and ticket state reads serially. Add store methods that fetch active/latest task state for a set of ticket IDs, then use bounded concurrency per project. This reduces SQLite round trips and shortens the interval during which duplicate webhook/poll work can race.
 2. **Narrow the concurrency lease.** The orchestrator acquires the agent lease before ticket resolution, repository preparation, and workspace setup. If host workspace preparation is allowed to run in parallel, acquire the lease immediately before agent execution so slow clones do not consume scarce provider capacity.
 3. **Centralize bounded retention.** Apply one limit policy to worker output, persisted `agentLogs`, structured events, and live buffers. Keep metrics and a diagnostic tail, while dropping verbose token deltas and repeated stderr lines after a threshold.
-4. **Bound lifecycle metadata.** `deletedTaskIds` in [taskLifecycleCoordinator.ts](../src/orchestrator/taskLifecycleCoordinator.ts#L11) grows for the lifetime of the process. Replace it with a bounded tombstone cache or a database-backed task existence check if task deletion markers are needed after cleanup.
-5. **Make image builds reproducible.** Codex and Gemini are installed without versions, and the Cursor installer is intentionally floating in [Dockerfile.agent](../Dockerfile.agent#L82). Pin package versions or verify immutable release artifacts in CI, with provider CLI smoke tests.
+4. **Bound lifecycle metadata.** `deletedTaskIds` in [taskLifecycleCoordinator.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/orchestrator/taskLifecycleCoordinator.ts#L11) grows for the lifetime of the process. Replace it with a bounded tombstone cache or a database-backed task existence check if task deletion markers are needed after cleanup.
+5. **Make image builds reproducible.** Codex and Gemini are installed without versions, and the Cursor installer is intentionally floating in [Dockerfile.agent](https://github.com/savoirfairelinux/virtual-engineer/blob/main/Dockerfile.agent#L82). Pin package versions or verify immutable release artifacts in CI, with provider CLI smoke tests.
 
 ## Positive Design Signals
 
-- Host-side OpenShell command execution already uses detached process groups, SIGTERM/SIGKILL escalation, and a 32 MiB retained-output cap in [openShellClient.ts](../src/openshell/openShellClient.ts#L65).
+- Host-side OpenShell command execution already uses detached process groups, SIGTERM/SIGKILL escalation, and a 32 MiB retained-output cap in [openShellClient.ts](https://github.com/savoirfairelinux/virtual-engineer/blob/main/src/openshell/openShellClient.ts#L65).
 - The state store uses explicit active-task uniqueness handling and documents why recovery must select active rows rather than merely newest rows.
 - Runtime policy tests cover exact protected paths and trailing slash normalization; the missing case is descendant/boundary matching.
 - Provider adapters are largely descriptor-driven, reducing central branching as new agent backends are added.
