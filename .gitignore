@@ -1,10 +1,12 @@
 .env
+.venv-docs/
 data/
 dist/
 node_modules/
 secrets/
 coverage/
 test-results/
+docs/_build/
 *.db
 *.db-shm
 *.db-wal
