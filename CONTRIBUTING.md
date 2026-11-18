@@ -81,8 +81,13 @@ python -m pip install -r docs/requirements.txt
 make -C docs html SPHINXOPTS="-n -W --keep-going"
 ```
 
-Open `docs/_build/html/index.html` to view the result. Add new pages to the
-table of contents in `docs/index.rst`. Read the Docs uses `.readthedocs.yaml`
+Open `docs/_build/html/index.html` to view the result. User and developer
+documentation lives in the topic directories under `docs/`, migrated from
+the website. Edit those Markdown files directly and add new pages to their
+section's `index.md` toctree; `docs/index.rst` lists the sections. Use relative
+Markdown links between pages, not the website's former hash routes. See
+[Writing docs](docs/develop/contributing-docs.md) for the documentation rules.
+Read the Docs uses `.readthedocs.yaml`
 and the same requirements; the project must also be connected to the
 repository in the Read the Docs dashboard.
 
