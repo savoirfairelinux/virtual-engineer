@@ -7,6 +7,7 @@ import {
   type ProjectsRouteStore,
 } from "../../src/admin/adminProjectsRoutes.js";
 import { Router } from "../../src/admin/router.js";
+import { setEffectivePermissions } from "../../src/admin/authContext.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -113,15 +114,22 @@ function makeAgentIntegrationStore(): IntegrationStore {
     createdAt: now,
     updatedAt: now,
   };
+  const gerrit: Integration = { ...integration, id: "gerrit-1", provider: "gerrit", name: "Gerrit" };
   return {
-    getIntegrations: vi.fn(async () => [integration]),
-    getIntegration: vi.fn(async (id: string) => id === integration.id ? integration : null),
+    getIntegrations: vi.fn(async () => [integration, gerrit]),
+    getIntegration: vi.fn(async (id: string) => [integration, gerrit].find((item) => item.id === id) ?? null),
   } as unknown as IntegrationStore;
 }
 
-function mockRequest(body: unknown): IncomingMessage {
-  const stream = Readable.from([Buffer.from(JSON.stringify(body))]);
-  return stream as unknown as IncomingMessage;
+function mockRequest(body: unknown, asSuperuser = false): IncomingMessage {
+  const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as IncomingMessage;
+  if (asSuperuser) {
+    setEffectivePermissions(req, {
+      isSuperuser: true, grants: new Map(), resourceOwnerGrants: new Set(),
+      projectOwnerGrants: new Set(), registeredUserGrants: new Set(),
+    });
+  }
+  return req;
 }
 
 function mockResponse(): { res: ServerResponse; done: Promise<void>; getStatus: () => number; getBody: () => string | undefined } {
@@ -395,11 +403,11 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
             localPath: ".",
           },
         ],
-      }),
+      }, true),
       res,
       "/api/admin/projects/proj-1",
       "PUT",
-      { projectStore: store, taskControl }
+      { projectStore: store, integrationStore: makeAgentIntegrationStore(), taskControl }
     );
     await done;
 

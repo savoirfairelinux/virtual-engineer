@@ -1540,7 +1540,7 @@ FetchContent_Declare(googletest
       },
     });
     expect(r.status).toBe(400);
-    expect(JSON.stringify(r.body)).toMatch(/SSH clone URL/i);
+    expect(JSON.stringify(r.body)).toMatch(/trusted HTTPS origin/i);
   });
 
   it("POST / review requires reviewConfig", async () => {

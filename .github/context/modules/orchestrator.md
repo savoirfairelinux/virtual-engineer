@@ -39,6 +39,10 @@ existing private methods remain compatibility facades:
 	connectors, including repository-qualified change IDs and binding context.
 - `agentRuntimeResolver.ts` resolves the project-linked coding adapter and its
 	provider-specific credentials and options, including fail-closed fallbacks.
+- `pushTargetEnrichment.ts` checks every saved GitHub/GitLab clone URL against the
+	linked integration's HTTPS Git origin using stored metadata. A refusal stops
+	the cycle before VCS credential resolution or workspace creation; there is
+	no unauthenticated or SSH fallback for a refused target.
 - `projectPushService.ts` performs trusted host-side multi-repository pushes,
 	direct push calls, Change-Id persistence, and orphan-row tracking. It does
 	not perform task transitions or provider-side workflow effects.

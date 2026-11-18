@@ -29,6 +29,7 @@ import {
 } from "../interfaces.js";
 import type { PolicyRuleInput } from "../state/stores/policyStore.js";
 import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
+import { checkPushTargetCloneOrigin } from "../utils/pushTargetCloneOrigin.js";
 import {
   getCodeReviewAssignmentModes,
   getProviderDescriptor,
@@ -549,31 +550,17 @@ export async function validateProjectReviewConfig(
   return null;
 }
 
-/** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
-const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
 const REVIEWER_EMAIL_VCS_TYPES = new Set(["gerrit", "gitlab"]);
 
-/**
- * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
- * not use SSH clone URLs (`git@...`). Returns an error message or null.
- */
+/** Validate push-target clone origins before saving them. */
 export async function validatePushTargetCloneUrls(
   targets: Array<{ integrationId: string; cloneUrl: string; repoKey: string }>,
-  integrationStore: IntegrationStore | undefined
+  integrationStore: Pick<IntegrationStore, "getIntegration"> | undefined
 ): Promise<string | null> {
-  if (!integrationStore) return null;
   for (const target of targets) {
-    let usesSsh = target.cloneUrl.startsWith("git@");
-    try {
-      usesSsh ||= new URL(target.cloneUrl).protocol === "ssh:";
-    } catch {
-      // Non-URL clone forms are handled by the explicit scp-style check.
-    }
-    if (!usesSsh) continue;
-    const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
-    if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
-      return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
-    }
+    const integration = await integrationStore?.getIntegration(target.integrationId).catch(() => null) ?? null;
+    const check = checkPushTargetCloneOrigin(target, integration);
+    if (check.kind === "refused") return check.reason;
   }
   return null;
 }

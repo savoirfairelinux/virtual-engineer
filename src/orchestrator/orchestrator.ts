@@ -48,10 +48,7 @@ import {
 } from "./agentContextBuilder.js";
 import { AgentRuntimeResolver } from "./agentRuntimeResolver.js";
 import { ProjectPushService } from "./projectPushService.js";
-import {
-  enrichPushTargets,
-  resolveCloneKnownHostsPath,
-} from "./pushTargetEnrichment.js";
+import { enrichPushTargets } from "./pushTargetEnrichment.js";
 import { ProjectConnectorResolver } from "./projectConnectorResolver.js";
 import { type ProjectModeDeps } from "./projectMode.js";
 export type { ProjectModeDeps } from "./projectMode.js";
@@ -726,8 +723,6 @@ export class Orchestrator {
 
       let handle: WorkspaceHandle | undefined;
       try {
-        const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
-        handle = activeHandle;
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -773,24 +768,21 @@ export class Orchestrator {
         "preparing project-mode workspace"
       );
 
-      // Resolve sshKnownHostsPath from root target's VCS connector (if available).
-      // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
-      const cloneKnownHostsPath = await resolveCloneKnownHostsPath(root, (integrationId, context) =>
-        this.resolveVcsConnectorForTarget(integrationId, context)
-      );
-
-      const enrichedPushTargets = await enrichPushTargets(projectPushTargets, {
+      const enrichment = await enrichPushTargets(projectPushTargets, {
         getIntegration: (integrationId) =>
           (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(integrationId),
         resolveIntegrationConfig: (integration) => this.projectConnectorResolver.resolveIntegrationConfig(integration),
         resolveVcsConnectorForTarget: (integrationId, context) => this.resolveVcsConnectorForTarget(integrationId, context),
       });
+      if (!enrichment.ok) throw new Error(enrichment.reason);
 
+      const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
+      handle = activeHandle;
       const cloneResult = await this.workspaceRunner.prepareProjectWorkspace(
         activeHandle,
-        enrichedPushTargets,
+        enrichment.targets,
         projectRecord.postCloneScript,
-        cloneKnownHostsPath
+        enrichment.targets.find((target) => target.id === root.id)?.sshKnownHostsPath
       );
       if (!cloneResult.success) {
         throw new Error(`Failed to prepare project workspace: ${cloneResult.error ?? "unknown error"}`);

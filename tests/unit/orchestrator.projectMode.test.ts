@@ -138,6 +138,10 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
     getRepositorySet: vi.fn().mockResolvedValue(null),
     findRepositorySetByTicketSourceId: vi.fn().mockResolvedValue(null),
     getTaskRepositoryContext: vi.fn().mockResolvedValue(undefined),
+    getIntegration: vi.fn(async (id: string) => ({
+      id, provider: "gerrit", name: id, configJson: "{}", enabled: true,
+      createdAt: new Date(), updatedAt: new Date(),
+    })),
     ...over,
   } as unknown as StateStore;
 }
@@ -620,18 +624,24 @@ describe("Orchestrator — Phase 4 project mode", () => {
   it.each([
     ["github", "https://github.com/acme/app.git", "x-access-token"],
     ["gitlab", "https://gitlab.example.com/acme/app.git", "oauth2"],
-    ["github", "git@github.com:acme/app.git", "x-access-token"],
-    ["gitlab", "git@gitlab.example.com:acme/app.git", "oauth2"],
+    ["github", "git@github.com:acme/app.git", undefined],
+    ["gitlab", "git@gitlab.example.com:acme/app.git", undefined],
     ["github", "ssh://git@github.com/acme/app.git", undefined],
     ["gitlab", "ssh://git@gitlab.example.com/acme/app.git", undefined],
-  ] as const)("prepares the %s clone URL authentication without warning", async (provider, cloneUrl, username) => {
+    ["github", "https://mirror.example/acme/app.git", undefined],
+    ["gitlab", "https://gitlab.example.com:8443/acme/app.git", undefined],
+    ["github", "http://github.com/acme/app.git", undefined],
+  ] as const)("checks the saved %s clone URL %s before authentication", async (provider, cloneUrl, username) => {
     const adminSecret = "authenticated-clone-test-secret";
     const token = `${provider}-token`;
     const integration = {
       id: `${provider}-vcs`,
       provider,
       name: provider,
-      configJson: JSON.stringify({ token: encryptToken(token, adminSecret) }),
+      configJson: JSON.stringify({
+        ...(provider === "gitlab" ? { baseUrl: "https://gitlab.example.com" } : { mode: "github.com" }),
+        ...(username === undefined ? {} : { token: encryptToken(token, adminSecret) }),
+      }),
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -645,6 +655,9 @@ describe("Orchestrator — Phase 4 project mode", () => {
       setIntegrationEnabled: vi.fn(),
     };
     const pluginManager = new PluginManager(integrationStore, { adminAuthSecret: adminSecret });
+    const decryptIntegrationConfig = vi.fn((value: Parameters<PluginManager["decryptIntegrationConfig"]>[0]) =>
+      pluginManager.decryptIntegrationConfig(value)
+    );
     const stateStore = makeStateStore();
     const ws = makeWorkspaceRunner();
     const target = makePushTarget({
@@ -655,6 +668,14 @@ describe("Orchestrator — Phase 4 project mode", () => {
       repoKey: "app",
       cloneUrl,
     });
+    const savedTargets = username === undefined ? [
+      makePushTarget({
+        id: 2, commitOrder: 1, localPath: ".", integrationId: integration.id, repoKey: "trusted",
+        cloneUrl: provider === "github"
+          ? "https://github.com/acme/trusted.git" : "https://gitlab.example.com/acme/trusted.git",
+      }),
+      { ...target, localPath: "secondary", commitOrder: 2 },
+    ] : [target];
     const vcs = {
       clone: vi.fn(),
       push: vi.fn(),
@@ -667,14 +688,14 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const projectMode: ProjectModeDeps = {
       projectStore: {
         getProjectById: vi.fn(async () => makeProject()),
-        listProjectPushTargets: vi.fn(async () => [target]),
+        listProjectPushTargets: vi.fn(async () => savedTargets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
         getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: {
         getConnectorForIntegration: vi.fn((id: string) => id === "redmine-int" ? makeRedmine() : null),
-        decryptIntegrationConfig: (value: Parameters<PluginManager["decryptIntegrationConfig"]>[0]) => pluginManager.decryptIntegrationConfig(value),
+        decryptIntegrationConfig,
       } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn(async () => vcs),
     };
@@ -687,18 +708,23 @@ describe("Orchestrator — Phase 4 project mode", () => {
       projectMode,
     );
 
-    await (orchestrator as unknown as { runAgentCycle(task: Task): Promise<void> }).runAgentCycle(makeTask());
+    const cycle = (orchestrator as unknown as { runAgentCycle(task: Task): Promise<void> }).runAgentCycle(makeTask());
+    if (username === undefined) {
+      await expect(cycle).rejects.toThrow(/trusted HTTPS origin/);
+      expect(decryptIntegrationConfig).not.toHaveBeenCalled();
+      expect(projectMode.resolveVcsForIntegration).not.toHaveBeenCalled();
+      expect(ws.createWorkspace).not.toHaveBeenCalled();
+      expect(ws.prepareProjectWorkspace).not.toHaveBeenCalled();
+      expect(ws.cloneRepo).not.toHaveBeenCalled();
+      return;
+    }
+    await cycle;
 
     const prepareProjectWorkspace = ws.prepareProjectWorkspace as ReturnType<typeof vi.fn>;
     const preparedTargets = prepareProjectWorkspace.mock.calls[0]?.[1] as ProjectPushTargetRecord[] | undefined;
     const preparedCloneUrl = preparedTargets?.[0]?.cloneUrl;
-    if (username === undefined) {
-      expect(preparedCloneUrl).toBe(cloneUrl);
-    } else {
-      const authenticatedUrl = new URL(preparedCloneUrl ?? "");
-      expect(authenticatedUrl.username).toBe(username);
-      expect(authenticatedUrl.password).toBe(token);
-    }
+    const authenticatedUrl = new URL(preparedCloneUrl ?? "");
+    expect(authenticatedUrl.username === username && authenticatedUrl.password === token).toBe(true);
     expect(orchestratorLog.warn).not.toHaveBeenCalled();
   });
 

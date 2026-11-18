@@ -316,6 +316,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           conflictingProjectId: conflict.id, conflictingProjectName: conflict.name,
         }); return;
       }
+      const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, integrationStore);
+      if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
     }
     let project: ProjectRecord;
     const skillSources = skillSourcesForCreate(data.skillSources);
@@ -347,12 +349,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     try {
       if (data.type === "coding") {
-        const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
-        if (cloneUrlError) {
-          try { await store.deleteProject(project.id); } catch { /* ignore */ }
-          writeJson(res, 400, { error: cloneUrlError });
-          return;
-        }
         const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
         if (reviewerEmailError) {
           try { await store.deleteProject(project.id); } catch { /* ignore */ }

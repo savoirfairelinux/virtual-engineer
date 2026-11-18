@@ -68,6 +68,10 @@ The project form identifies Copilot, Claude, Goose, Codex, and OpenCode as remot
 
 ## Route surface
 
+Project create and push-target replacement reject unverifiable integrations and
+GitHub/GitLab clone URLs outside the linked integration's trusted HTTPS Git
+origin before writing the project configuration. Refusals do not echo the URL.
+
 All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area route modules (see the **Files** table). This section summarizes them by **family**; for the exact method/path list read the owning route file, and for the authorization of each family see the **Route → permission map** in the Authentication section. Only the non-obvious per-route semantics are called out below.
 
 ### Public routes (no auth)
