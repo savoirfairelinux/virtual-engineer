@@ -3,112 +3,61 @@ import type {
   IntegrationBindingContext,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
+import { checkPushTargetCloneOrigin } from "../utils/pushTargetCloneOrigin.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 
-/** Integration types that clone via HTTPS and need a token injected into the clone URL. */
-const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
-
-/**
- * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
- * agent container can run `git clone` without interactive credential prompts.
- * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
- */
-export function buildAuthenticatedCloneUrlFromPlaintextToken(
-  rawCloneUrl: string,
-  integrationType: string,
-  plaintextToken: unknown,
-): string | undefined {
-  if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
-  if (typeof plaintextToken !== "string" || !plaintextToken) return undefined;
-  if (/^\*{4,}$/.test(plaintextToken)) return undefined;
-  const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
-  try {
-    const normalised = rawCloneUrl.startsWith("git@")
-      ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
-      : rawCloneUrl;
-    const parsed = new URL(normalised);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-    parsed.username = usernamePrefix;
-    parsed.password = plaintextToken;
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Resolve the SSH known-hosts path for the clone step from the root push
- * target's VCS connector. Returns undefined when none is configured or the
- * connector can't be resolved; SSH clones then fall back to trust-on-first-use
- * against the VE-managed known_hosts file.
- */
-export async function resolveCloneKnownHostsPath(
-  root: ProjectPushTargetRecord,
-  resolveVcsConnectorForTarget: (integrationId: string, context?: IntegrationBindingContext) => Promise<VcsConnector>,
-): Promise<string | undefined> {
-  try {
-    const connector = await resolveVcsConnectorForTarget(root.integrationId, {
-      repoKey: root.repoKey,
-      targetBranch: root.targetBranch,
-    });
-    return connector.sshKnownHostsPath ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Dependencies needed to enrich push targets with authenticated clone URLs and SSH key material. */
 export interface PushTargetEnrichmentDeps {
   getIntegration: (integrationId: string) => Promise<Integration | null>;
   resolveIntegrationConfig: (integration: Integration) => Record<string, unknown>;
   resolveVcsConnectorForTarget: (integrationId: string, context?: IntegrationBindingContext) => Promise<VcsConnector>;
 }
 
-/**
- * Enrich each push target with an authenticated HTTPS clone URL for
- * GitHub/GitLab targets, and fall back to its linked VCS connector's SSH key
- * (or agent public-key path) plus strict known-hosts path when the target
- * itself has no configured SSH key. Both enrichment steps are non-fatal —
- * failures fall through to the target's existing configuration.
- */
+type PushTargetEnrichment =
+  | { ok: true; targets: ProjectPushTargetRecord[] }
+  | { ok: false; reason: string };
+
+/** Preflight every target before resolving any clone credentials or SSH connector. */
 export async function enrichPushTargets(
-  pushTargets: ProjectPushTargetRecord[],
+  pushTargets: readonly ProjectPushTargetRecord[],
   deps: PushTargetEnrichmentDeps,
-): Promise<ProjectPushTargetRecord[]> {
-  return Promise.all(
-    pushTargets.map(async (pt) => {
-      let enrichedTarget = pt;
-      try {
-        // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
-        const integration = await deps.getIntegration(pt.integrationId);
-        if (integration) {
-          const cfg = deps.resolveIntegrationConfig(integration);
-          const authUrl = buildAuthenticatedCloneUrlFromPlaintextToken(pt.cloneUrl, integration.provider, cfg["token"]);
-          if (authUrl !== undefined) enrichedTarget = { ...enrichedTarget, cloneUrl: authUrl };
-        }
-      } catch {
-        // Non-fatal — fall through to SSH key enrichment
+): Promise<PushTargetEnrichment> {
+  const checkedTargets = await Promise.all(pushTargets.map(async (target) => {
+    const integration = await deps.getIntegration(target.integrationId).catch(() => null);
+    return { target, integration, check: checkPushTargetCloneOrigin(target, integration) };
+  }));
+  for (const { check } of checkedTargets) {
+    if (check.kind === "refused") return { ok: false, reason: check.reason };
+  }
+
+  const targets = await Promise.all(checkedTargets.map(async ({ target, integration, check }) => {
+    if (check.kind === "trusted" && integration) {
+      const token = deps.resolveIntegrationConfig(integration)["token"];
+      if (typeof token === "string" && token && !/^\*{4,}$/.test(token)) {
+        check.url.username = check.username;
+        check.url.password = token;
       }
-      try {
-        const connector = await deps.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
-        const hasSshAgentPubKeyPath = (
-          c: VcsConnector,
-        ): c is VcsConnector & { sshAgentPubKeyPath?: string | undefined } => "sshAgentPubKeyPath" in c;
-        const fallbackKey = connector.sshKeyPath ?? undefined;
-        const fallbackAgentPub = hasSshAgentPubKeyPath(connector) ? connector.sshAgentPubKeyPath ?? undefined : undefined;
-        const knownHostsPath = connector.sshKnownHostsPath ?? undefined;
-        if (pt.sshKeyPath === null && fallbackKey !== undefined) {
-          enrichedTarget = { ...enrichedTarget, sshKeyPath: fallbackKey };
-        } else if (pt.sshKeyPath === null && fallbackAgentPub !== undefined) {
-          enrichedTarget = { ...enrichedTarget, sshKeyPath: null, sshAgentPubKeyPath: fallbackAgentPub };
-        }
-        return {
-          ...enrichedTarget,
-          ...(knownHostsPath !== undefined ? { sshKnownHostsPath: knownHostsPath } : {}),
-        };
-      } catch {
-        return enrichedTarget;
-      }
-    })
-  );
+      return { ...target, cloneUrl: check.url.toString() };
+    }
+
+    // SSH enrichment for other providers remains best-effort.
+    try {
+      const connector = await deps.resolveVcsConnectorForTarget(target.integrationId, {
+        repoKey: target.repoKey, targetBranch: target.targetBranch,
+      });
+      const fallbackKey = connector.sshKeyPath ?? undefined;
+      const fallbackAgentPub = "sshAgentPubKeyPath" in connector && typeof connector.sshAgentPubKeyPath === "string"
+        ? connector.sshAgentPubKeyPath : undefined;
+      const knownHostsPath = connector.sshKnownHostsPath ?? undefined;
+      return {
+        ...target,
+        ...(target.sshKeyPath === null && fallbackKey !== undefined ? { sshKeyPath: fallbackKey } : {}),
+        ...(target.sshKeyPath === null && fallbackKey === undefined && fallbackAgentPub !== undefined
+          ? { sshAgentPubKeyPath: fallbackAgentPub } : {}),
+        ...(knownHostsPath !== undefined ? { sshKnownHostsPath: knownHostsPath } : {}),
+      };
+    } catch {
+      return target;
+    }
+  }));
+  return { ok: true, targets };
 }

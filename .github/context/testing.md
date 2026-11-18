@@ -25,6 +25,10 @@ tests/
 
 ### Test families by area
 
+`pushTargetCloneValidation` uses synthetic URLs and in-process project route
+mocks for save-time origin checks. `orchestrator.projectMode` verifies that a
+refused stored target never reaches credential resolution or workspace cloning.
+
 `tests/unit/` currently holds 150+ test files. This table lists the families; run `ls tests/unit/` for the authoritative, always-current list.
 
 | Area | Families (file-name stems) |
