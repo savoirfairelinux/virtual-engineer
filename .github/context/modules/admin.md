@@ -156,6 +156,8 @@ Two authenticated deployment states plus one explicit test/embed mode share the 
 
 Task and log SSE connections (`GET /api/admin/events/stream` and `GET /api/admin/logs/stream`, with or without `taskId`) revalidate the session and resolve current PBAC permissions before sending task snapshots, log replay, live logs, or heartbeats. Passive checks do not extend the session's idle expiry. On an idle stream, heartbeat checks run every 15 seconds; task snapshots run every five seconds. Invalid sessions (including logout or a disabled account), lost task access, or a narrowed collection read scope close the response server-side and clear authorization state, listeners, and timers. Collection streams continue to filter out tasks the caller has never had permission to read. Reconnects must pass the normal request gate before any replay. Data already written to the connection before revocation cannot be recalled.
 
+If overlapping checks finish out of order, an older result cannot override permissions already applied by a newer check. Pending writes still use those latest permissions, and a closed stream cannot be reopened by a delayed result.
+
 Each non-public route declares exactly one authorization mode in its `RouteMeta`:
 
 - `permission` — a `"<resourceType>.<action>"` string (catalog in `src/admin/authorization/permissions.ts`). Optional `resourceParam` scopes the check to a path-parameter resource id; `collection: true` marks a list route.

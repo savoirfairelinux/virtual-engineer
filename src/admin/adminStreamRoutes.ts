@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task, TaskId } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
+import { getLogger } from "../logger.js";
 import { writeJson } from "./adminRouteUtils.js";
 import {
   readLastEventId,
@@ -16,6 +17,8 @@ import { deduplicateByTicket } from "./adminTaskRoutes.js";
 import { clearRequestAuthorization, getEffectivePermissions, requestCanAccessResource, setEffectivePermissions } from "./authContext.js";
 import { ALL_RESOURCES, can, hasPotentialResourceAccess, type EffectivePermissions } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
+
+const log = getLogger("admin-stream-routes");
 
 /** Subset of state-store methods required by the stream routes. */
 export interface StreamRouteStore {
@@ -93,24 +96,25 @@ function streamGuard(req: IncomingMessage, res: ServerResponse, deps: StreamRout
     async refresh(): Promise<boolean> {
       if (!isOpen()) return false;
       const id = ++checkId;
+      let current: EffectivePermissions | null;
       try {
-        const current = await deps.refreshAuthorization(req);
-        if (!isOpen()) return false;
-        const previous = getEffectivePermissions(req);
-        if (!current || !hasPotentialResourceAccess(current, "task.read") ||
-            (collection && previous && !retainsReadScope(previous, current))) {
-          stop();
-          return false;
-        }
-        // A slower, overlapping check must not overwrite a newer decision.
-        if (id < appliedCheckId) return false;
-        appliedCheckId = id;
-        setEffectivePermissions(req, current);
-        return true;
+        current = await deps.refreshAuthorization(req);
       } catch {
+        log.warn("admin stream authorization refresh failed");
+        current = null;
+      }
+      if (!isOpen()) return false;
+      // Superseded callers use the newer permissions already on the request.
+      if (id < appliedCheckId) return true;
+      const previous = getEffectivePermissions(req);
+      if (!current || !hasPotentialResourceAccess(current, "task.read") ||
+          (collection && previous && !retainsReadScope(previous, current))) {
         stop();
         return false;
       }
+      appliedCheckId = id;
+      setEffectivePermissions(req, current);
+      return true;
     },
   };
 }

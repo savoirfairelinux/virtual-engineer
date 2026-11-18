@@ -62,7 +62,7 @@ function fixture(path: string) {
   registerStreamRoutes(router, deps);
   return {
     start: () => router.dispatch(req, res as unknown as ServerResponse, path.split("?")[0]!, "GET"),
-    req, res, write, getAllTasks, getAgentCycles,
+    req, res, write, getAllTasks, getAgentCycles, refreshAuthorization,
     setPermissions: (value: typeof perms) => { perms = value; },
   };
 }
@@ -108,6 +108,55 @@ describe("admin SSE authorization guards", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(stream.write).toHaveBeenCalledWith(expect.stringContaining("event: tasks"));
     expect(stream.res.end).not.toHaveBeenCalled();
+  });
+
+  it.each(["same scope", "narrower scope", "no session", "refresh error"] as const)(
+    "uses the newer heartbeat permission when a delayed log refresh returns %s",
+    async (outcome) => {
+      const stream = fixture("/api/admin/logs/stream");
+      await stream.start();
+      stream.write.mockClear();
+      let finish!: () => void;
+      stream.refreshAuthorization.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        finish = () => {
+          if (outcome === "refresh error") reject(new Error("Fixture refresh failure"));
+          else if (outcome === "no session") resolve(null);
+          else resolve(outcome === "same scope" ? scoped("p1", "p2", "p3") : scoped("p1", "p2"));
+        };
+      }));
+      agentLogBus.emit("event", logEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const latest = scoped("p1", "p2", "p3");
+      stream.setPermissions(latest);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(stream.write).toHaveBeenCalledWith(": heartbeat\n\n");
+
+      finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stream.res.end).not.toHaveBeenCalled();
+      expect(getEffectivePermissions(stream.req)).toBe(latest);
+      expect(stream.write).toHaveBeenCalledWith(expect.stringContaining("Local fixture log"));
+    },
+  );
+
+  it("does not deliver delayed logs after a newer heartbeat closes the stream", async () => {
+    const stream = fixture("/api/admin/logs/stream");
+    await stream.start();
+    stream.write.mockClear();
+    let finish!: (permissions: ReturnType<typeof scoped>) => void;
+    stream.refreshAuthorization.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    agentLogBus.emit("event", logEvent);
+    await vi.advanceTimersByTimeAsync(0);
+
+    stream.refreshAuthorization.mockRejectedValueOnce(new Error("Fixture refresh failure"));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(stream.res.end).toHaveBeenCalledOnce();
+
+    finish(scoped("p1", "p2"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stream.write).not.toHaveBeenCalled();
+    expect(getEffectivePermissions(stream.req)).toBeUndefined();
   });
 
   it("discards pending logs if access is revoked during replay preparation", async () => {
