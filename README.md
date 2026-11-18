@@ -109,7 +109,8 @@ database workflow.
 ## 📚 Documentation
 
 - [Documentation index](docs/index.rst)
-- [Architecture and data flow](docs/ARCHITECTURE.md)
+- [Architecture and data flow](docs/concepts/architecture.md)
+- [Module-level reference](.github/context/INDEX.md)
 - [Kubernetes deployment](deploy/k8s/README.md)
 - [Security architecture and reporting](SECURITY.md)
 - [Detailed agent reference](.github/context/modules/agents.md)
