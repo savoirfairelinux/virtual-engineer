@@ -196,6 +196,17 @@ describe("createAdminAuthService — validateSession", () => {
     expect(store.touchCalls).toHaveLength(0);
   });
 
+  it("does not extend idle expiry during passive stream checks", async () => {
+    const { service, store, token } = await loggedInService();
+    const session = store.sessions.get(hashSessionToken(token));
+    if (!session) throw new Error("missing session");
+    session.lastSeenAt = new Date(Date.now() - 120_000);
+    await expect(service.validateSession(token, { touch: false })).resolves.toMatchObject({ userId: "user-1" });
+    expect(store.touchCalls).toHaveLength(0);
+    session.expiresAt = new Date(Date.now() - 1);
+    await expect(service.validateSession(token, { touch: false })).resolves.toBeNull();
+  });
+
   it("touches a session (sliding expiry) when last seen more than 60s ago", async () => {
     const { service, store, token } = await loggedInService();
     const session = store.sessions.get(hashSessionToken(token));
