@@ -16,6 +16,7 @@ All provider configuration lives in SQLite and is managed through the admin UI. 
 | You need… | Read |
 |---|---|
 | Repo-wide routing, quality gates, invariants, gotchas | [.github/copilot-instructions.md](.github/copilot-instructions.md) — the primary, always-loaded reference (vendor-agnostic despite the filename) |
+| Contribution setup, development workflow, conventions, and PR guidance | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Navigable context index | [.github/context/INDEX.md](.github/context/INDEX.md) |
 | Architecture / data flow | [.github/context/architecture.md](.github/context/architecture.md) |
 | State machine | [.github/context/state-machine.md](.github/context/state-machine.md) |
