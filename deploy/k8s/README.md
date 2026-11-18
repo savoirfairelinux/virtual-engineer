@@ -10,8 +10,8 @@ upload → exec → download lifecycle.
 > default; the Kubernetes driver documented here is experimental. For local
 > single-node evaluation, set `OPENSHELL_COMPUTE_DRIVER=kubernetes` before
 > running `scripts/start.sh`; the manifests here are the cluster deployment path. See
-> [`docs/adr/0001-openshell-agent-runtime.md`](../../docs/adr/0001-openshell-agent-runtime.md)
-> for the decision record. Least-privilege sandbox RBAC lives in
+> [`docs/concepts/runtime.md`](../../docs/concepts/runtime.md)
+> for the rationale. Least-privilege sandbox RBAC lives in
 > [`15-rbac-openshell.yaml`](15-rbac-openshell.yaml).
 
 ## Components

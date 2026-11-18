@@ -17,7 +17,7 @@ The Admin UI binds to `127.0.0.1` by default. Put it behind a trusted reverse pr
 
 ## Audit
 
-Every state transition, including pause and resume, is an appended `state_transitions` row. Nothing in the task lifecycle is edited in place.
+Every state transition, including pause and resume, is an appended `state_transitions` row. Nothing in the task lifecycle is edited in place. Admin changes are recorded in a separate [audit log](access.md#audit-log).
 
 ## Reporting a vulnerability
 

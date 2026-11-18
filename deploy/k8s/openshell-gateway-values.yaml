@@ -11,7 +11,7 @@
 #     --set-string server.oidc.issuer=https://keycloak.example/realms/openshell
 #
 # NOTE: OpenShell's Kubernetes path is upstream-EXPERIMENTAL. Validate before
-# relying on it in production (see docs/adr/0001-openshell-agent-runtime.md).
+# relying on it in production (see docs/concepts/runtime.md).
 
 nameOverride: "openshell"
 

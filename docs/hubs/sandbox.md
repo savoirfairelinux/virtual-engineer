@@ -21,6 +21,10 @@ process:
 
 No `network_policies` section means no egress: network is deny-by-default, and each run opens only what its adapter declares through `allowEgress({ hosts, binaries })`. Per-project and per-agent overrides compose on top, after which `enforceSandboxFloor()` re-asserts the sandbox user and rejects any `read_write` entry naming `/`, `/usr`, `/lib`, `/etc`, `/app`, `/bin`, `/sbin`, `/boot`, or `/var`.
 
+## Policy overrides
+
+A runtime policy holds one section of one kind: `filesystem`, `network`, `process`, or `inference`. Bind it to an agent or to a project, at most one policy per kind on each. Different kinds compose; when an agent and its project both bind the same kind, the project's policy wins. Managing runtime policies requires the `policy.manage` permission.
+
 ## Lifecycle per cycle
 
 1The host creates a scratch workspace and clones every push target, recording a credential-free remote per local path.

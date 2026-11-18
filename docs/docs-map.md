@@ -13,6 +13,7 @@ The complete page index.
 ## Concepts
 
 - [Architecture](concepts/architecture.md) — Orchestrator, gateway, sandbox, database.
+- [Agent runtime](concepts/runtime.md) — Why every agent runs in an OpenShell sandbox.
 - [Tasks and cycles](concepts/tasks.md) — The unit of work, and how many times it may run.
 - [Task states](concepts/states.md) — One state machine for both workflows.
 - [The two workflows](concepts/workflows.md) — code-gen and code-review, side by side.
@@ -35,6 +36,7 @@ The complete page index.
 
 - [Sandbox](hubs/sandbox.md) — Runtime policy, lifecycle, egress, and paths.
 - [Security](hubs/security.md) — Credentials at rest, exposure, audit, disclosure.
+- [Access control](hubs/access.md) — Accounts, roles, policies, and the audit log.
 - [Review](hubs/review.md) — Ingestion, bounds, and routing guarantees.
 - [Agent engines](hubs/engines.md) — All eight engines, their auth and their models.
 - [Providers](hubs/providers.md) — The four external systems and their quirks.

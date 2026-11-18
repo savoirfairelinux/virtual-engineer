@@ -23,15 +23,3 @@ keeping Git and review credentials on the host.
    develop/index
    project/index
    docs-map
-
-The following architecture guide, decision record, and code quality audit
-are preserved as historical documents; their descriptions and findings may
-not reflect the current implementation.
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Historical documents
-
-   ARCHITECTURE
-   adr/0001-openshell-agent-runtime
-   CODE_QUALITY_AUDIT

@@ -6,6 +6,7 @@ How Virtual Engineer is put together, and the invariants that shape it.
 :maxdepth: 1
 
 architecture
+runtime
 tasks
 states
 workflows
