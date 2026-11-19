@@ -9,7 +9,7 @@
 import { getLogger } from "../logger.js";
 import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
-import { ReviewApiError } from "../interfaces.js";
+import { ReviewApiError, type ReviewChangeStatus } from "../interfaces.js";
 import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
@@ -18,6 +18,10 @@ import { isSameRepository } from "../domain/identifiers.js";
 import { z } from "zod";
 
 const log = getLogger("github-vcs");
+const pullRequestStateSchema = z.object({
+  state: z.enum(["open", "closed"]),
+  merged: z.boolean(),
+});
 const branchPullRequestsSchema = z.array(z.object({
   number: z.number().int().positive(),
   html_url: z.url(),
@@ -130,8 +134,8 @@ export class GitHubVcsConnector implements VcsConnector {
     };
   }
 
-  async getChangeStatus(changeId: string): Promise<string> {
-    const pr = await this.fetchPullRequest(parseInt(changeId, 10));
+  async getChangeStatus(changeId: string): Promise<ReviewChangeStatus> {
+    const pr = pullRequestStateSchema.parse(await this.fetchPullRequest(parseInt(changeId, 10)));
     if (pr.state === "closed") return pr.merged ? "MERGED" : "ABANDONED";
     return "OPEN";
   }
@@ -172,7 +176,7 @@ export class GitHubVcsConnector implements VcsConnector {
     return `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}`;
   }
 
-  private async fetchPullRequest(prNumber: number): Promise<GitHubPrShape> {
+  private async fetchPullRequest(prNumber: number): Promise<unknown> {
     const url = `${this.repoApiUrl()}/pulls/${prNumber}`;
     const response = await globalThis.fetch(url, {
       headers: this.authHeaders(),
@@ -180,7 +184,8 @@ export class GitHubVcsConnector implements VcsConnector {
     if (!response.ok) {
       throw new ReviewApiError(response.status, url, await response.text().catch(() => ""));
     }
-    return (await response.json()) as GitHubPrShape;
+    const body: unknown = await response.json();
+    return body;
   }
 
   private async createOrFindPullRequest(

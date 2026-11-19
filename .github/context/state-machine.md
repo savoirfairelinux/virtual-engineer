@@ -85,7 +85,7 @@ Implemented primarily in [src/orchestrator/orchestrator.ts](../../src/orchestrat
 | `→ CONTEXT_BUILDING` | Fetch ticket details and resolve project-aware repository context |
 | `→ AGENT_RUNNING` | Clone workspace, build `TaskContext`, launch agent container |
 | `→ IN_REVIEW` | Push host-managed review objects or agent-created commit chain via VCS layer |
-| `→ FEEDBACK_PROCESSING` | Deduplicate external comments via `feedbackProcessor` + `processed_comments` |
+| `→ FEEDBACK_PROCESSING` | Deduplicate external comments via `feedbackProcessor` + `processed_comments`; integration-backed rows scope keys by integration, repository, change and native comment id while honoring historical raw keys |
 | `→ RETRY_CYCLE` | Rebuild context with prior feedback |
 | `→ MERGED` | Mark merged and advance toward ticket closure |
 | `→ CLOSING` | Post completion note and close ticket |

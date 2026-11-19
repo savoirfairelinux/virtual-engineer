@@ -7,7 +7,7 @@ import { isIPv6 } from "node:net";
 import { getLogger } from "../logger.js";
 import { trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
-import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
+import type { PatchsetCheckoutOptions, ReviewChangeStatus, ReviewComment } from "../interfaces.js";
 import { GerritSshClient, buildGerritGitSshCommand } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
 import type { GitRunner } from "./gitRunner.js";
@@ -208,7 +208,7 @@ export class GerritVcsConnector implements VcsConnector {
    * Get the current status of a Gerrit change via SSH.
    * Returns "OPEN", "MERGED", or "ABANDONED".
    */
-  async getChangeStatus(changeId: string): Promise<string> {
+  async getChangeStatus(changeId: string): Promise<ReviewChangeStatus> {
     log.info({ changeId }, "fetching Gerrit change status via SSH");
     try {
       const info = await this.sshClient.queryChange(changeId);

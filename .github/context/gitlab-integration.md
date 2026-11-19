@@ -36,7 +36,7 @@ Capabilities resolve independently per project binding. A GitLab Issues + Gerrit
 
 - Auth: PAT in the `PRIVATE-TOKEN` header for REST; HTTPS with `oauth2:<token>@…` for git push.
 - MR resolution maps to `existingChangeId` in `AgentSession`: when set, the connector pushes to the same source branch and updates the existing MR rather than creating a new one.
-- Comment IDs from MR discussions populate `processed_comments` for dedup, exactly like Gerrit comment IDs.
+- MR discussion IDs remain native for resolution; `processed_comments` keys for integration-backed rows include the integration, repository and MR IID as well as the discussion ID, exactly like other review providers. Historical raw keys remain honored.
 - The state machine is provider-agnostic — no GitLab-specific states.
 - Webhook delivery: GitLab issues and MRs use per-integration webhook secrets stored in `configJson.webhookSecret` (rotated via the admin API).
 - Workflow label names (`inProgressLabel`, `inReviewLabel`) are configured per integration — there are no built-in defaults.

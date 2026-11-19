@@ -274,6 +274,17 @@ describe("GitHubVcsConnector", () => {
       expect(await makeConnector().getChangeStatus("42")).toBe("ABANDONED");
     });
 
+    it.each([
+      { state: "opened", merged: false },
+      {},
+      { state: "closed" },
+      { state: "closed", merged: "false" },
+    ])("rejects an unknown or malformed PR status: %j", async (status) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(status));
+
+      await expect(makeConnector().getChangeStatus("42")).rejects.toThrow();
+    });
+
     it("uses the configured apiBaseUrl for enterprise", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
       await makeConnector({ apiBaseUrl: "https://ghe.corp.com/api/v3" }).getChangeStatus("42");

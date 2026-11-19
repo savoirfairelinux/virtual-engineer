@@ -172,8 +172,8 @@ GitHub PR review diff retrieval paginates the `/files` listing (100 files/page) 
 
 ## Comment dedup
 
-`feedbackProcessor.extractNewFeedback` queries `processed_comments` (per task) and only forwards comments whose IDs have not been processed yet. After a successful retry cycle the IDs are inserted to prevent loops.
-Review provenance is transient: `FeedbackItem.source` is `review_comment` for human review comments, while `FeedbackItem.reviewSystem` copies the optional provider identity from `ReviewComment`; CI failures keep `ci_failure`. Neither field changes the `(taskId, comment.id)` deduplication key.
+`feedbackProcessor.extractNewFeedback` queries `processed_comments` per task and persists new keys before starting a retry to prevent replay. For integration-backed change rows, each key is a JSON tuple of integration id, repository key, native change id, and native comment id; equal provider-local IDs from independent instances cannot suppress each other. Historical raw keys are still honored, and legacy rows without an integration keep raw keys. Native comment IDs are preserved in returned comments so the row's connector resolves the original provider thread.
+Review provenance is transient: `FeedbackItem.source` is `review_comment` for human review comments, while `FeedbackItem.reviewSystem` copies the optional provider identity from `ReviewComment`; CI failures keep `ci_failure`. These fields do not change the scoped deduplication key.
 
 ## Mocking in tests
 

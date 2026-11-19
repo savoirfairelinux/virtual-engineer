@@ -6,7 +6,7 @@
 import { getLogger } from "../logger.js";
 import type { ExistingReview, VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
-import type { ReviewComment } from "../interfaces.js";
+import type { ReviewChangeStatus, ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
@@ -161,7 +161,7 @@ export class GitLabVcsConnector implements VcsConnector {
    * ABANDONED. Lookup failures and unknown states throw, so callers keep the
    * recorded status instead of persisting a provider-specific value.
    */
-  async getChangeStatus(changeId: string): Promise<string> {
+  async getChangeStatus(changeId: string): Promise<ReviewChangeStatus> {
     const url = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests/${encodeURIComponent(changeId)}`;
     const mr = mergeRequestStateSchema.parse(await this.httpClient.fetchJson<unknown>(url));
     return MERGE_REQUEST_STATUSES[mr.state];
