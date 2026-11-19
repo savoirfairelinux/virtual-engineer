@@ -19,6 +19,7 @@ import { ALL_RESOURCES, can, hasPotentialResourceAccess, type EffectivePermissio
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-stream-routes");
+const MAX_PENDING_LIVE_EVENTS = 500;
 
 /** Subset of state-store methods required by the stream routes. */
 export interface StreamRouteStore {
@@ -132,7 +133,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     let replay: LogStreamReplay | null = null;
     const pendingLiveEvents: AgentLogEvent[] = [];
     let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
-    let authorizationQueue = Promise.resolve();
+    let drainingLiveEvents = false;
     // Track delivered resources only to detect loss of access, never to authorize writes.
     const observedTasks = new Set<TaskId>();
     let checkingIdle = false;
@@ -144,31 +145,57 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       if (heartbeatLogs !== undefined) clearInterval(heartbeatLogs);
     });
 
-    const authorizeTask = async (id: TaskId, closeOnDenial: boolean): Promise<boolean> => {
+    type TaskReadContext = { task: Task | null; project: ProjectRecord | null | undefined };
+    const refreshTaskReadContext = async (id: TaskId): Promise<TaskReadContext | null> => {
       const task = await deps.stateStore.getTask(id);
       const project = task?.projectId == null ? undefined : await deps.projectStore?.getProjectById(task.projectId);
-      if (!await guard.refresh()) return false;
+      return await guard.refresh() ? { task, project } : null;
+    };
+
+    // Keep the task-level decision in the same continuation as the write.
+    const canReadNow = (context: TaskReadContext | null, closeOnDenial: boolean): boolean => {
+      if (!context || !guard.isOpen()) return false;
+      const { task, project } = context;
       if (task && canAccessTask(req, "task.read", task, project)) return true;
       if (closeOnDenial) guard.stop();
       return false;
     };
 
+    const drainLiveEvents = async (): Promise<void> => {
+      const write = writeLiveEvent;
+      if (!write || drainingLiveEvents) return;
+      drainingLiveEvents = true;
+      try {
+        while (guard.isOpen()) {
+          const event = pendingLiveEvents.shift();
+          if (!event) return;
+          const id = makeTaskId(event.taskId);
+          const context = await refreshTaskReadContext(id);
+          if (canReadNow(context, !!taskIdParam || observedTasks.has(id))) {
+            if (!taskIdParam) observedTasks.add(id);
+            write(event);
+          }
+        }
+      } catch {
+        log.warn("admin log stream could not process a pending event");
+        guard.stop();
+      } finally {
+        drainingLiveEvents = false;
+      }
+    };
+
     const eventListener = (event: AgentLogEvent): void => {
       if (!guard.isOpen() || (taskIdParam && event.taskId !== taskIdParam)) return;
-      if (!writeLiveEvent) {
-        if (pendingLiveEvents.length >= 500) pendingLiveEvents.shift();
-        pendingLiveEvents.push(event);
-        return;
-      }
-
-      authorizationQueue = authorizationQueue.then(async () => {
-        if (!guard.isOpen()) return;
-        const id = makeTaskId(event.taskId);
-        if (await authorizeTask(id, !!taskIdParam || observedTasks.has(id)) && guard.isOpen()) {
-          if (!taskIdParam) observedTasks.add(id);
-          writeLiveEvent?.(event);
+      if (pendingLiveEvents.length >= MAX_PENDING_LIVE_EVENTS) {
+        if (writeLiveEvent) {
+          log.debug("closing admin log stream after live backlog overflow");
+          guard.stop();
+          return;
         }
-      }).catch(() => guard.stop());
+        pendingLiveEvents.shift();
+      }
+      pendingLiveEvents.push(event);
+      void drainLiveEvents();
     };
 
     if (taskIdParam) {
@@ -199,7 +226,9 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         agentLogBus.off("event", eventListener);
         throw err;
       }
-      if (!guard.isOpen() || !await authorizeTask(taskId, true) || !guard.isOpen()) return;
+      if (!guard.isOpen()) return;
+      const context = await refreshTaskReadContext(taskId);
+      if (!canReadNow(context, true)) return;
       // Bounded newest-first replay, read synchronously with the live buffer so
       // no event can slip between the replay and the live listener below.
       replay = selectLogStreamReplay(
@@ -256,10 +285,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       // Task streams tag entries with ids so a reconnect can resume after them.
       writeEntry(entry, key, taskIdParam ? streamEntryId(key) : undefined);
     };
-    for (const event of pendingLiveEvents) {
-      eventListener(event);
-    }
-    pendingLiveEvents.length = 0;
+    void drainLiveEvents();
     if (!taskIdParam) agentLogBus.on("event", eventListener);
 
     const heartbeat = async (): Promise<void> => {
@@ -267,7 +293,8 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       checkingIdle = true;
       try {
         if (taskIdParam) {
-          if (!await authorizeTask(makeTaskId(taskIdParam), true)) return;
+          const context = await refreshTaskReadContext(makeTaskId(taskIdParam));
+          if (!canReadNow(context, true)) return;
         } else {
           const checkedTasks = new Set(observedTasks);
           const tasks = checkedTasks.size

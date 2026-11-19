@@ -26,6 +26,12 @@ const logEvent: AgentLogEvent = {
   data: { message: "Local fixture log" },
 };
 
+function deferredPermissions() {
+  let resolve!: (permissions: ReturnType<typeof scoped>) => void;
+  const promise = new Promise<ReturnType<typeof scoped>>((finish) => { resolve = finish; });
+  return { promise, resolve };
+}
+
 let response: EventEmitter | undefined;
 afterEach(() => {
   response?.emit("close");
@@ -68,6 +74,53 @@ function fixture(path: string) {
 }
 
 describe("admin SSE authorization guards", () => {
+  it("uses the current task permissions in the log delivery continuation", async () => {
+    const stream = fixture("/api/admin/logs/stream?taskId=fixture");
+    await stream.start();
+    stream.write.mockClear();
+    const live = deferredPermissions();
+    const heartbeat = deferredPermissions();
+    stream.refreshAuthorization
+      .mockReturnValueOnce(live.promise)
+      .mockReturnValueOnce(heartbeat.promise);
+    agentLogBus.emit("event", logEvent);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    live.resolve(scoped("p1", "p2"));
+    queueMicrotask(() => heartbeat.resolve(scoped("p2")));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(stream.write).not.toHaveBeenCalled();
+    expect(stream.res.end).toHaveBeenCalledOnce();
+  });
+
+  it.each(["/api/admin/logs/stream", "/api/admin/logs/stream?taskId=fixture"])(
+    "bounds the live backlog on %s and clears it on overflow",
+    async (path) => {
+      const stream = fixture(path);
+      const listeners = agentLogBus.listenerCount("event");
+      await stream.start();
+      stream.write.mockClear();
+      stream.refreshAuthorization.mockClear();
+      const live = deferredPermissions();
+      stream.refreshAuthorization.mockReturnValueOnce(live.promise);
+      agentLogBus.emit("event", logEvent);
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let i = 0; i < 500; i++) agentLogBus.emit("event", logEvent);
+      expect(stream.res.end).not.toHaveBeenCalled();
+      agentLogBus.emit("event", logEvent);
+      expect(stream.res.end).toHaveBeenCalledOnce();
+      expect(agentLogBus.listenerCount("event")).toBe(listeners);
+      expect(vi.getTimerCount()).toBe(0);
+
+      live.resolve(scoped("p1", "p2"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stream.refreshAuthorization).toHaveBeenCalledOnce();
+      expect(stream.write).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     "/api/admin/events/stream",
     "/api/admin/logs/stream",

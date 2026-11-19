@@ -158,6 +158,8 @@ Task and log SSE connections (`GET /api/admin/events/stream` and `GET /api/admin
 
 If overlapping checks finish out of order, an older result cannot override permissions already applied by a newer check. Pending writes still use those latest permissions, and a closed stream cannot be reopened by a delayed result.
 
+Live log delivery checks the task against the current permissions immediately before writing. Each log stream processes one live event at a time and queues at most 500 more. Once live delivery has started, overflow closes the stream and discards queued events rather than silently skipping entries; task-scoped clients can reconnect and resume within the available replay history.
+
 Each non-public route declares exactly one authorization mode in its `RouteMeta`:
 
 - `permission` — a `"<resourceType>.<action>"` string (catalog in `src/admin/authorization/permissions.ts`). Optional `resourceParam` scopes the check to a path-parameter resource id; `collection: true` marks a list route.
