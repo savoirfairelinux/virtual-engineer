@@ -1,6 +1,8 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task, TaskId } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
+import { getLogger } from "../logger.js";
 import { writeJson } from "./adminRouteUtils.js";
 import {
   readLastEventId,
@@ -11,11 +13,13 @@ import {
   type LogStreamEntry,
   type LogStreamReplay,
 } from "./logStreamReplay.js";
-import { createTaskPermissionResolver, createTaskProjectNameResolver, deduplicateByTicket, filterTasksByReadAccess, filterTasksByReadScope } from "./adminTaskRoutes.js";
-import { getEffectivePermissions } from "./authContext.js";
-import { requestCanAccessResource } from "./authContext.js";
-import { can } from "./authorization/policyEngine.js";
+import { deduplicateByTicket } from "./adminTaskRoutes.js";
+import { clearRequestAuthorization, getEffectivePermissions, requestCanAccessResource, setEffectivePermissions } from "./authContext.js";
+import { ALL_RESOURCES, can, hasPotentialResourceAccess, type EffectivePermissions } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
+
+const log = getLogger("admin-stream-routes");
+const MAX_PENDING_LIVE_EVENTS = 500;
 
 /** Subset of state-store methods required by the stream routes. */
 export interface StreamRouteStore {
@@ -28,20 +32,97 @@ export interface StreamRouteDeps {
   stateStore: StreamRouteStore;
   projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> } | undefined;
   isTaskWaiting?: ((taskId: TaskId) => boolean) | undefined;
+  refreshAuthorization(req: IncomingMessage): Promise<EffectivePermissions | null>;
 }
 
-async function canReadTask(req: import("node:http").IncomingMessage, task: Task, deps: StreamRouteDeps): Promise<boolean> {
+function canAccessTask(req: IncomingMessage, permission: "task.read" | "task.operate" | "task.delete", task: Task, project: ProjectRecord | null | undefined): boolean {
   const perms = getEffectivePermissions(req);
   if (!perms) return false;
-  if (task.projectId == null) return can(perms, "task.read");
-  const project = await deps.projectStore?.getProjectById(task.projectId);
-  if (!project) return can(perms, "task.read", task.projectId);
-  return requestCanAccessResource(req, "task.read", {
+  if (!project) return can(perms, permission, task.projectId);
+  return requestCanAccessResource(req, permission, {
     type: "task",
     id: task.taskId,
-    projectId: task.projectId,
+    projectId: task.projectId ?? null,
     ownerUserId: project.ownerUserId ?? null,
   });
+}
+
+function retainsReadScope(previous: EffectivePermissions, current: EffectivePermissions): boolean {
+  const permission = "task.read";
+  if (can(current, permission)) return true;
+  if (can(previous, permission)) return false;
+  const previousScope = previous.grants.get(permission);
+  if (previousScope && previousScope !== ALL_RESOURCES &&
+      [...previousScope].some((id) => !can(current, permission, id))) return false;
+  if (previous.resourceOwnerGrants.has(permission) && !current.resourceOwnerGrants.has(permission)) return false;
+  if (previous.registeredUserGrants.has(permission) && !current.registeredUserGrants.has(permission)) return false;
+  if (previous.projectOwnerGrants.has(permission)) {
+    const delegated = previous.grants.get("project.owner");
+    if (delegated === ALL_RESOURCES) {
+      return current.projectOwnerGrants.has(permission) && can(current, "project.owner");
+    }
+    if (delegated && [...delegated].some((id) =>
+      !can(current, permission, id) &&
+      !(current.projectOwnerGrants.has(permission) && can(current, "project.owner", id)))) return false;
+  }
+  return true;
+}
+
+interface StreamGuard {
+  isOpen(): boolean;
+  stop(): void;
+  refresh(): Promise<boolean>;
+}
+
+function streamGuard(req: IncomingMessage, res: ServerResponse, deps: StreamRouteDeps, collection: boolean, cleanup: () => void): StreamGuard {
+  let closed = false;
+  let checkId = 0;
+  let appliedCheckId = 0;
+  const dispose = (): void => {
+    if (closed) return;
+    closed = true;
+    clearRequestAuthorization(req);
+    cleanup();
+  };
+  res.once("close", dispose);
+  const stop = (): void => {
+    if (closed) return;
+    dispose();
+    if (res.writable) res.end();
+  };
+  const isOpen = (): boolean => !closed && res.writable;
+  return {
+    isOpen,
+    stop,
+    async refresh(): Promise<boolean> {
+      if (!isOpen()) return false;
+      const id = ++checkId;
+      let current: EffectivePermissions | null;
+      try {
+        current = await deps.refreshAuthorization(req);
+      } catch {
+        log.warn("admin stream authorization refresh failed");
+        current = null;
+      }
+      if (!isOpen()) return false;
+      // Superseded callers use the newer permissions already on the request.
+      if (id < appliedCheckId) return true;
+      const previous = getEffectivePermissions(req);
+      if (!current || !hasPotentialResourceAccess(current, "task.read") ||
+          (collection && previous && !retainsReadScope(previous, current))) {
+        stop();
+        return false;
+      }
+      appliedCheckId = id;
+      setEffectivePermissions(req, current);
+      return true;
+    },
+  };
+}
+
+async function loadProjects(tasks: readonly Task[], deps: StreamRouteDeps): Promise<Map<ProjectId, ProjectRecord | null | undefined>> {
+  const ids = new Set(tasks.flatMap((task) => task.projectId == null ? [] : [task.projectId]));
+  return new Map(await Promise.all([...ids].map(async (id) => [id, await deps.projectStore?.getProjectById(id)] as const)));
 }
 
 /** Register SSE stream routes on the given router. */
@@ -52,47 +133,75 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     let replay: LogStreamReplay | null = null;
     const pendingLiveEvents: AgentLogEvent[] = [];
     let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
-    let authorizationQueue = Promise.resolve();
-    const taskAccess = new Map<string, boolean>();
-    let closed = false;
+    let drainingLiveEvents = false;
+    // Track delivered resources only to detect loss of access, never to authorize writes.
+    const observedTasks = new Set<TaskId>();
+    let checkingIdle = false;
     let heartbeatLogs: ReturnType<typeof setInterval> | undefined;
-    const cleanup = (): void => {
-      closed = true;
+    const guard = streamGuard(req, res, deps, !taskIdParam, () => {
       agentLogBus.off("event", eventListener);
-      taskAccess.clear();
+      pendingLiveEvents.length = 0;
+      observedTasks.clear();
       if (heartbeatLogs !== undefined) clearInterval(heartbeatLogs);
-    };
-    const eventListener = (event: AgentLogEvent): void => {
-      if (closed) return;
-      if (taskIdParam) {
-        if (event.taskId !== taskIdParam) return;
-        if (writeLiveEvent) {
-          writeLiveEvent(event);
-        } else {
-          if (pendingLiveEvents.length >= 500) pendingLiveEvents.shift();
-          pendingLiveEvents.push(event);
-        }
-        return;
-      }
+    });
 
-      authorizationQueue = authorizationQueue.then(async () => {
-        if (!res.writable) return;
-        let allowed = taskAccess.get(event.taskId);
-        if (allowed === undefined) {
-          const task = await deps.stateStore.getTask(makeTaskId(event.taskId));
-          allowed = task ? await canReadTask(req, task, deps) : false;
-          taskAccess.set(event.taskId, allowed);
-        }
-        if (!allowed) return;
-        writeLiveEvent?.(event);
-      }).catch(() => undefined);
+    type TaskReadContext = { task: Task | null; project: ProjectRecord | null | undefined };
+    const refreshTaskReadContext = async (id: TaskId): Promise<TaskReadContext | null> => {
+      const task = await deps.stateStore.getTask(id);
+      const project = task?.projectId == null ? undefined : await deps.projectStore?.getProjectById(task.projectId);
+      return await guard.refresh() ? { task, project } : null;
     };
-    res.once("close", cleanup);
+
+    // Keep the task-level decision in the same continuation as the write.
+    const canReadNow = (context: TaskReadContext | null, closeOnDenial: boolean): boolean => {
+      if (!context || !guard.isOpen()) return false;
+      const { task, project } = context;
+      if (task && canAccessTask(req, "task.read", task, project)) return true;
+      if (closeOnDenial) guard.stop();
+      return false;
+    };
+
+    const drainLiveEvents = async (): Promise<void> => {
+      const write = writeLiveEvent;
+      if (!write || drainingLiveEvents) return;
+      drainingLiveEvents = true;
+      try {
+        while (guard.isOpen()) {
+          const event = pendingLiveEvents.shift();
+          if (!event) return;
+          const id = makeTaskId(event.taskId);
+          const context = await refreshTaskReadContext(id);
+          if (canReadNow(context, !!taskIdParam || observedTasks.has(id))) {
+            if (!taskIdParam) observedTasks.add(id);
+            write(event);
+          }
+        }
+      } catch {
+        log.warn("admin log stream could not process a pending event");
+        guard.stop();
+      } finally {
+        drainingLiveEvents = false;
+      }
+    };
+
+    const eventListener = (event: AgentLogEvent): void => {
+      if (!guard.isOpen() || (taskIdParam && event.taskId !== taskIdParam)) return;
+      if (pendingLiveEvents.length >= MAX_PENDING_LIVE_EVENTS) {
+        if (writeLiveEvent) {
+          log.debug("closing admin log stream after live backlog overflow");
+          guard.stop();
+          return;
+        }
+        pendingLiveEvents.shift();
+      }
+      pendingLiveEvents.push(event);
+      void drainLiveEvents();
+    };
 
     if (taskIdParam) {
       const taskId = makeTaskId(taskIdParam);
       const task = await deps.stateStore.getTask(taskId);
-      if (closed) return;
+      if (!guard.isOpen()) return;
       if (!task) {
         writeJson(res, 404, { error: "Task not found" });
         return;
@@ -100,7 +209,9 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
 
       // Enforce project-scoped task.read: streaming a task's logs must respect
       // the caller's scope (agent logs can contain cross-project source/secrets).
-      if (!await canReadTask(req, task, deps)) {
+      const project = task.projectId == null ? undefined : await deps.projectStore?.getProjectById(task.projectId);
+      if (!await guard.refresh()) return;
+      if (!canAccessTask(req, "task.read", task, project)) {
         writeJson(res, 403, { error: "forbidden", permission: "task.read" });
         return;
       }
@@ -110,10 +221,14 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       try {
         cycles = await deps.stateStore.getAgentCycles(taskId);
       } catch (err) {
-        cleanup();
+        if (!guard.isOpen()) return;
+        // Let the request error handler return its normal pre-stream 500.
+        agentLogBus.off("event", eventListener);
         throw err;
       }
-      if (closed) return;
+      if (!guard.isOpen()) return;
+      const context = await refreshTaskReadContext(taskId);
+      if (!canReadNow(context, true)) return;
       // Bounded newest-first replay, read synchronously with the live buffer so
       // no event can slip between the replay and the live listener below.
       replay = selectLogStreamReplay(
@@ -121,7 +236,8 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         getTaskEventBuffer(taskIdParam),
         readLastEventId(req.headers["last-event-id"]),
       );
-    }
+    } else if (!await guard.refresh()) return;
+    if (!guard.isOpen()) return;
 
     res.statusCode = 200;
     res.setHeader("content-type", "text/event-stream");
@@ -163,35 +279,58 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     }
 
     writeLiveEvent = (event: AgentLogEvent): void => {
-      if (!res.writable) return;
+      if (!guard.isOpen()) return;
       const entry = serializeAgentEventEntry(event);
       const key = streamEntryKey(entry);
       // Task streams tag entries with ids so a reconnect can resume after them.
       writeEntry(entry, key, taskIdParam ? streamEntryId(key) : undefined);
     };
-    for (const event of pendingLiveEvents) {
-      writeLiveEvent(event);
-    }
-    pendingLiveEvents.length = 0;
+    void drainLiveEvents();
     if (!taskIdParam) agentLogBus.on("event", eventListener);
 
-    heartbeatLogs = setInterval(() => {
-      if (!res.writable) { clearInterval(heartbeatLogs); return; }
-      res.write(": heartbeat\n\n");
-    }, 15_000);
-    // Do NOT call res.end() — keep connection open
+    const heartbeat = async (): Promise<void> => {
+      if (!guard.isOpen() || checkingIdle) return;
+      checkingIdle = true;
+      try {
+        if (taskIdParam) {
+          const context = await refreshTaskReadContext(makeTaskId(taskIdParam));
+          if (!canReadNow(context, true)) return;
+        } else {
+          const checkedTasks = new Set(observedTasks);
+          const tasks = checkedTasks.size
+            ? (await deps.stateStore.getAllTasks()).filter((task) => checkedTasks.has(task.taskId))
+            : [];
+          const projects = await loadProjects(tasks, deps);
+          if (!await guard.refresh()) return;
+          if (tasks.some((task) => !canAccessTask(req, "task.read", task, task.projectId == null ? undefined : projects.get(task.projectId)))) {
+            guard.stop();
+            return;
+          }
+          const present = new Set(tasks.map((task) => task.taskId));
+          // Don't prune tasks first observed while this heartbeat was awaiting storage.
+          for (const id of checkedTasks) if (!present.has(id)) observedTasks.delete(id);
+        }
+        if (guard.isOpen()) res.write(": heartbeat\n\n");
+      } catch {
+        guard.stop();
+      } finally {
+        checkingIdle = false;
+      }
+    };
+    heartbeatLogs = setInterval(() => void heartbeat(), 15_000);
   }, { permission: "task.read", collection: true });
 
   router.add("GET", "/api/admin/events/stream", async (req, res, _params) => {
-    let closed = false;
+    let sending = false;
+    let previousVisible = new Set<TaskId>();
     let taskTimer: ReturnType<typeof setInterval> | undefined;
     let heartbeatGlobal: ReturnType<typeof setInterval> | undefined;
-    const cleanup = (): void => {
-      closed = true;
+    const guard = streamGuard(req, res, deps, true, () => {
+      previousVisible.clear();
       if (taskTimer !== undefined) clearInterval(taskTimer);
       if (heartbeatGlobal !== undefined) clearInterval(heartbeatGlobal);
-    };
-    res.once("close", cleanup);
+    });
+    if (!await guard.refresh() || !guard.isOpen()) return;
     res.statusCode = 200;
     res.setHeader("content-type", "text/event-stream");
     res.setHeader("cache-control", "no-cache");
@@ -199,37 +338,48 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.flushHeaders();
 
     const sendTasks = async (): Promise<void> => {
-      if (closed || !res.writable) return;
+      if (!guard.isOpen() || sending) return;
+      sending = true;
       try {
         const allTasks = await deps.stateStore.getAllTasks();
-        if (closed || !res.writable) return;
-        const candidates = deduplicateByTicket(allTasks);
-        const visible = deps.projectStore
-          ? await filterTasksByReadAccess(req, candidates, deps.projectStore)
-          : filterTasksByReadScope(req, candidates);
-        const sorted = visible
+        const projects = await loadProjects(allTasks, deps);
+        if (!await guard.refresh() || !guard.isOpen()) return;
+        const projectFor = (task: Task): ProjectRecord | null | undefined =>
+          task.projectId == null ? undefined : projects.get(task.projectId);
+        const canRead = (task: Task): boolean => canAccessTask(req, "task.read", task, projectFor(task));
+        if (allTasks.some((task) => previousVisible.has(task.taskId) && !canRead(task))) {
+          guard.stop();
+          return;
+        }
+        const visible = deduplicateByTicket(allTasks).filter(canRead)
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
-        const resolvePermissions = createTaskPermissionResolver(req, deps.projectStore);
-        const resolveProjectName = createTaskProjectNameResolver(deps.projectStore);
-        const serialized = await Promise.all(sorted.map(async (task) => ({
-          ...task,
-          waitingForAgentSlot: deps.isTaskWaiting?.(task.taskId) ?? false,
-          permissions: await resolvePermissions(task),
-          projectName: await resolveProjectName(task),
-        })));
-        if (closed || !res.writable) return;
+        const serialized = visible.map((task) => {
+          const project = projectFor(task);
+          return {
+            ...task,
+            waitingForAgentSlot: deps.isTaskWaiting?.(task.taskId) ?? false,
+            permissions: {
+              operate: canAccessTask(req, "task.operate", task, project),
+              delete: canAccessTask(req, "task.delete", task, project),
+            },
+            projectName: project?.name ?? null,
+          };
+        });
+        previousVisible = new Set(visible.map((task) => task.taskId));
         res.write(`event: tasks\ndata: ${JSON.stringify(serialized)}\n\n`);
-      } catch { /* ignore */ }
+      } catch {
+        guard.stop();
+      } finally {
+        sending = false;
+      }
     };
 
-    await sendTasks();
-    if (closed) return;
-
     taskTimer = setInterval(() => void sendTasks(), 5_000);
-
     heartbeatGlobal = setInterval(() => {
-      if (!res.writable) { clearInterval(heartbeatGlobal); return; }
-      res.write(": heartbeat\n\n");
+      void guard.refresh().then((allowed) => {
+        if (allowed && guard.isOpen()) res.write(": heartbeat\n\n");
+      });
     }, 15_000);
+    await sendTasks();
   }, { permission: "task.read", collection: true });
 }

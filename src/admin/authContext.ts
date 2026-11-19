@@ -41,6 +41,11 @@ export function getEffectivePermissions(req: IncomingMessage): EffectivePermissi
   return effectivePermissions.get(req);
 }
 
+export function clearRequestAuthorization(req: IncomingMessage): void {
+  authContexts.delete(req);
+  effectivePermissions.delete(req);
+}
+
 export function requestCanAccessResource(
   req: IncomingMessage,
   permission: Permission,

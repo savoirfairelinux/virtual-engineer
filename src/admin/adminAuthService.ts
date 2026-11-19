@@ -47,8 +47,8 @@ export interface AdminAuthStateStore {
 
 export interface AdminAuthService {
   login(username: string, password: string): Promise<AdminLoginResult>;
-  /** Resolve a bearer token to an AuthContext; refreshes sliding expiry (throttled). */
-  validateSession(token: string): Promise<AuthContext | null>;
+  /** Resolve a bearer token; passive stream checks must not extend sliding expiry. */
+  validateSession(token: string, options?: { touch?: boolean }): Promise<AuthContext | null>;
   /** Revoke the session behind the token; false when no such session existed. */
   logout(token: string): Promise<boolean>;
 }
@@ -117,7 +117,7 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
       }
     },
 
-    async validateSession(token): Promise<AuthContext | null> {
+    async validateSession(token, { touch = true } = {}): Promise<AuthContext | null> {
       if (!token) return null;
       const tokenHash = hashSessionToken(token);
       let session = await stateStore.getSessionByTokenHash(tokenHash);
@@ -132,7 +132,7 @@ export function createAdminAuthService(deps: AdminAuthServiceDeps): AdminAuthSer
         session = await stateStore.getSessionByTokenHash(tokenHash);
         if (!session) return null;
       }
-      if (now.getTime() - session.lastSeenAt.getTime() > TOUCH_THROTTLE_MS) {
+      if (touch && now.getTime() - session.lastSeenAt.getTime() > TOUCH_THROTTLE_MS) {
         try {
           await stateStore.touchSession(tokenHash, {
             lastSeenAt: now,

@@ -537,6 +537,16 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     stateStore: dependencies.stateStore,
     projectStore: dependencies.projectStore,
     isTaskWaiting: (taskId) => dependencies.concurrency?.isWaiting?.(taskId) ?? false,
+    async refreshAuthorization(req) {
+      const original = getAuthContext(req);
+      if (!original) return null;
+      const token = extractBearerToken(req);
+      const current = authRuntime.authService
+        ? token && await authRuntime.authService.validateSession(token, { touch: false })
+        : original;
+      if (!current || current.userId !== original.userId) return null;
+      return authRuntime.resolvePermissions(current);
+    },
   });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
   const identityStore = extractUserIdentityStore(dependencies.stateStore) ?? undefined;
