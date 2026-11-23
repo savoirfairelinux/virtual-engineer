@@ -265,6 +265,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     postCloneScript?: string,
     sshKnownHostsPath?: string,
     signal?: AbortSignal,
+    options?: { historyDepth?: number | undefined },
   ): Promise<CloneResult> {
     const ordered = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
     const root = ordered.find((t) => t.localPath === ".") ?? ordered[0];
@@ -280,6 +281,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         root.sshKeyPath,
         isSshRemoteUrl(root.cloneUrl) ? root.sshKnownHostsPath ?? sshKnownHostsPath : undefined,
         signal,
+        options?.historyDepth,
       );
       this.rememberTrustedRemote(handle.containerId, root.localPath, root.cloneUrl);
       for (const target of ordered) {

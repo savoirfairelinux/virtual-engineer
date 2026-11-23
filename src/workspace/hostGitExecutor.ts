@@ -263,7 +263,10 @@ export class HostGitExecutor {
     return { dir };
   }
 
-  /** Clone `repoUrl` at `branch` into `dir` (single-branch). Injects GIT_SSH_COMMAND when SSH params are provided. */
+  /**
+   * Clone `repoUrl` at `branch` into `dir` (single-branch, `depth` commits of
+   * history). Injects GIT_SSH_COMMAND when SSH params are provided.
+   */
   async cloneRepo(
     dir: string,
     repoUrl: string,
@@ -272,6 +275,7 @@ export class HostGitExecutor {
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
     signal?: AbortSignal,
+    depth = 1,
   ): Promise<void> {
     const cloneDir = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(repoUrl, sshKeyPath, sshKnownHostsPath);
@@ -283,7 +287,7 @@ export class HostGitExecutor {
       const attemptSignal = createCloneAttemptSignal(signal, this.cloneTimeoutMs);
       try {
         await this.git(
-          ["clone", "--branch", branch, "--single-branch", "--depth", "1", repoUrl, subPath],
+          ["clone", "--branch", branch, "--single-branch", "--depth", String(depth), repoUrl, subPath],
           dir,
           env,
           attemptSignal.signal,

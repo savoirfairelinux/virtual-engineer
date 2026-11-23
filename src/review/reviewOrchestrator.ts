@@ -27,6 +27,7 @@ import {
   makeTicketId,
 } from "../interfaces.js";
 import { buildReviewPrompt, type SinceLastReviewDelta } from "./reviewPromptBuilder.js";
+import { collectRepositoryHistory, REVIEW_HISTORY_DEPTH } from "./repositoryHistory.js";
 import { getReviewDecision, parseReviewResult } from "./reviewResultParser.js";
 import {
   appendReviewOutputContract,
@@ -871,33 +872,6 @@ export class ReviewOrchestrator {
         rawOutput = "";
         result = { comments: [], summary: CLEAN_MERGE_REVIEW_SUMMARY, score: 0, replies: [] };
       } else {
-        const { prompt, attachments: promptAttachments } = buildReviewPrompt({
-          details,
-          diff,
-          instructionsPrompt: reviewInstructions,
-          ...(priorComments.length > 0
-            ? {
-                priorComments: priorComments.map((c) => ({
-                  ...(hostedReview ? { id: c.id } : {}),
-                  file: c.file,
-                  line: c.line,
-                  message: c.message,
-                })),
-                reassessPriorFindings: hostedReview,
-              }
-            : {}),
-          ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
-          ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
-        });
-
-        emitReviewEvent("review.prompt_built", {
-          promptLength: prompt.length,
-          patchset: details.currentPatchset,
-          ...(promptAttachments.length > 0
-            ? { attachments: promptAttachments.map((a) => ({ fileName: a.fileName, length: a.content.length })) }
-            : {}),
-        });
-
         if (this.deps.workspaceRunner.prepareProjectWorkspace === undefined) {
           throw new Error(
             "workspaceRunner does not support prepareProjectWorkspace — cannot clone repository for review."
@@ -928,6 +902,7 @@ export class ReviewOrchestrator {
               project.postCloneScript || undefined,
               sshKnownHostsPath ?? undefined,
               deadlineController.signal,
+              { historyDepth: REVIEW_HISTORY_DEPTH },
             ),
             deadlineController.signal,
             timeoutError,
@@ -943,6 +918,55 @@ export class ReviewOrchestrator {
               timeoutError,
             );
           }
+
+          // Review agents cannot run Git: hand them the recent history instead.
+          let repositoryHistory: string | undefined;
+          if (this.deps.workspaceRunner.execGitInVolume !== undefined) {
+            const execGit = this.deps.workspaceRunner.execGitInVolume.bind(this.deps.workspaceRunner);
+            const historyHandle = handle;
+            try {
+              repositoryHistory = await this.awaitSignalAware(
+                collectRepositoryHistory(
+                  (args) => execGit(historyHandle, args, undefined, deadlineController.signal),
+                  { branch: details.targetBranch, paths: diff.files.map((file) => file.path) },
+                ),
+                deadlineController.signal,
+                timeoutError,
+              );
+            } catch (err) {
+              if (deadlineController.signal.aborted) throw err;
+              log.warn({ err, taskId }, "failed to read repository history; reviewing without it");
+            }
+          }
+
+          const { prompt, attachments: promptAttachments } = buildReviewPrompt({
+            details,
+            diff,
+            instructionsPrompt: reviewInstructions,
+            ...(priorComments.length > 0
+              ? {
+                  priorComments: priorComments.map((c) => ({
+                    ...(hostedReview ? { id: c.id } : {}),
+                    file: c.file,
+                    line: c.line,
+                    message: c.message,
+                  })),
+                  reassessPriorFindings: hostedReview,
+                }
+              : {}),
+            ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
+            ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
+            ...(repositoryHistory !== undefined ? { repositoryHistory } : {}),
+          });
+
+          emitReviewEvent("review.prompt_built", {
+            promptLength: prompt.length,
+            patchset: details.currentPatchset,
+            ...(promptAttachments.length > 0
+              ? { attachments: promptAttachments.map((a) => ({ fileName: a.fileName, length: a.content.length })) }
+              : {}),
+          });
+
 
           emitReviewEvent("review.agent_started", {
             mode: "docker",

@@ -16,4 +16,4 @@ system_review
 instructions_review
 ```
 
-A fresh database seeds exactly these five. To change behavior, clone one and bind the clone — see [Author a prompt](../guides/author-prompt.md).
+A fresh database seeds exactly these five. Built-ins are refreshed from `prompts/` at startup, so agents bound to `instructions_review` pick up a new version on upgrade, while private copies keep their own text. To change behavior, clone one and bind the clone — see [Author a prompt](../guides/author-prompt.md).

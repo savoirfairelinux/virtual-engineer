@@ -52,6 +52,8 @@ export interface ReviewPromptInput {
   sinceLastReview?: SinceLastReviewDelta | undefined;
   /** Inline diff budget in characters; defaults to {@link DEFAULT_MAX_INLINE_DIFF_CHARS}. */
   maxInlineDiffChars?: number | undefined;
+  /** Host-rendered recent history of the target branch, from `collectRepositoryHistory`. */
+  repositoryHistory?: string | undefined;
 }
 
 /** Prompt plus the files it references, which must be written before the agent runs. */
@@ -89,6 +91,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): ReviewPrompt {
     discussionThreads,
     sinceLastReview,
     maxInlineDiffChars = DEFAULT_MAX_INLINE_DIFF_CHARS,
+    repositoryHistory,
   } = input;
 
   const header = [
@@ -169,6 +172,16 @@ export function buildReviewPrompt(input: ReviewPromptInput): ReviewPrompt {
 
   if (diff.merge !== undefined) {
     sections.push(``, `## Merge commit`, renderMergeContext(diff.merge, details.targetBranch));
+  }
+
+  if (repositoryHistory !== undefined && repositoryHistory.trim().length > 0) {
+    sections.push(
+      ``,
+      `## Repository history`,
+      `Commits already merged on the target branch, newest first. Use them to learn how this repository writes commit messages and how earlier changes were made; they are not part of the change under review.`,
+      ``,
+      repositoryHistory.trim(),
+    );
   }
 
   sections.push(
