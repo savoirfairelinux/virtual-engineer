@@ -71,6 +71,12 @@ describe("prompt + skill integrity", () => {
     expect(systemReview).toMatch(/read-only review/i);
     expect(systemReview).toMatch(/do not modify the workspace/i);
     expect(instructionsReview).toMatch(/actionable issues introduced by the change/i);
+    expect(instructionsReview).toMatch(/^## Repository conventions$/m);
+    expect(instructionsReview).toMatch(/contribution and style guidance/i);
+    expect(instructionsReview).toMatch(/comparable existing implementation/i);
+    expect(instructionsReview).toMatch(/citing the guidance or the existing code/i);
+    expect(instructionsReview).toMatch(/severity `info`, or `nit` when purely cosmetic/i);
+    expect(instructionsReview).not.toMatch(/purely stylistic preferences/i);
   });
 
   it("keeps skill and prompt markdown links and concrete file references valid", () => {

@@ -767,6 +767,8 @@ export interface WorkspaceRunner {
     postCloneScript?: string,
     sshKnownHostsPath?: string,
     signal?: AbortSignal,
+    /** `historyDepth`: commits of history to clone for the root target (default 1). */
+    options?: { historyDepth?: number | undefined },
   ): Promise<CloneResult>;
   /** Fetch and checkout a prior patchset ref as detached HEAD. */
   applyPriorPatchset?(

@@ -882,6 +882,40 @@ describe("ReviewOrchestrator.startReviewTask", () => {
 });
 
 describe("ReviewOrchestrator.runReview â happy path", () => {
+  it("clones review history and passes the target branch log in the prompt", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner, handle } = makeWorkspaceRunner();
+    const execGitInVolume = vi.fn(async (_handle: unknown, args: string[]) =>
+      args.at(-1) === "--" ? "\x1eabc1234\x1f2026-11-20\x1fnet: fix timeout\n" : "");
+    (runner as unknown as { execGitInVolume: typeof execGitInVolume }).execGitInVolume = execGitInVolume;
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(runner.prepareProjectWorkspace).toHaveBeenCalledWith(
+      handle, expect.any(Array), undefined, undefined, expect.any(AbortSignal), { historyDepth: 50 },
+    );
+    expect(execGitInVolume).toHaveBeenCalledWith(handle, expect.arrayContaining(["refs/heads/main"]), undefined, expect.any(AbortSignal));
+    const prompt = (runner.runReviewInDocker.mock.calls[0]?.[1] as { prompt: string }).prompt;
+    expect(prompt).toContain("## Repository history");
+    expect(prompt).toContain("commit abc1234 (2026-11-20)\nnet: fix timeout");
+  });
+
+  it("reviews without history when reading it fails", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (runner as unknown as { execGitInVolume: () => Promise<string> }).execGitInVolume = vi.fn(async () => {
+      throw new Error("shallow file missing");
+    });
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    const prompt = (runner.runReviewInDocker.mock.calls[0]?.[1] as { prompt: string }).prompt;
+    expect(prompt).not.toContain("## Repository history");
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledOnce();
+  });
+
   it("runs the full Docker path: PENDING â RUNNING â COMMENTING â WATCHING", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
@@ -1697,6 +1731,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
+      { historyDepth: 50 },
     );
     expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
       expect.anything(),
@@ -1762,6 +1797,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       "npm ci",
       undefined,
       expect.any(AbortSignal),
+      { historyDepth: 50 },
     );
   });
 
