@@ -322,6 +322,14 @@ describe("normalizeAgentEvent", () => {
     expect(result.message).toBe("📝 Review not needed: clean merge");
   });
 
+  it("labels deep review stage events with their stage", () => {
+    const label = (type: string, data: Record<string, unknown>): string =>
+      normalizeAgentEvent({ ...baseEvent, type, data }).message;
+    expect(label("review.stage_started", { stageId: "logic", attempt: 2 })).toBe("📝 Deep review stage logic retrying (attempt 2)…");
+    expect(label("review.stage_completed", { stageId: "rank", comments: 1, durationMs: 5 })).toBe("📝 Deep review stage rank completed (1 comment)");
+    expect(label("review.stage_failed", { stageId: "state", attempt: 1, error: "boom" })).toBe("📝 Deep review stage state failed: boom");
+  });
+
 });
 
 // ── Deep-search in SDK event structures ─────────────────────────────────────

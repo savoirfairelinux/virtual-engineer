@@ -87,10 +87,12 @@ export function computeCycleCost(events: readonly AgentLogEvent[] | undefined): 
     const model = readStr(data, "model");
     if (model !== null) modelId = model;
 
+    // Deep-review stages run in separate sessions: never merge their id-less usage.
+    const stageId = readStr(data, "stageId");
     const key =
       readStr(data, "apiCallId") ??
       readStr(data, "providerCallId") ??
-      `sig:${model ?? ""}|${input}|${output}|${cached}|${cacheWrite}|${cost ?? ""}|${nanoAiu ?? ""}`;
+      `${stageId === null ? "" : `stage:${stageId}|`}sig:${model ?? ""}|${input}|${output}|${cached}|${cacheWrite}|${cost ?? ""}|${nanoAiu ?? ""}`;
 
     const existing = requests.get(key);
     if (existing) {

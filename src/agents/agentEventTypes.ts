@@ -488,6 +488,25 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
     }
     case "review.parsing":
       return "📝 Parsing review result…";
+    case "review.stage_started": {
+      const stage = readStr(data, ["stageId"]) ?? "unknown";
+      const attempt = readNum(data, ["attempt"]);
+      return attempt !== null && attempt > 1
+        ? `📝 Deep review stage ${stage} retrying (attempt ${attempt})…`
+        : `📝 Deep review stage ${stage} running…`;
+    }
+    case "review.stage_completed": {
+      const stage = readStr(data, ["stageId"]) ?? "unknown";
+      const count = readNum(data, ["comments"]);
+      return count !== null
+        ? `📝 Deep review stage ${stage} completed (${count} comment${count !== 1 ? "s" : ""})`
+        : `📝 Deep review stage ${stage} completed`;
+    }
+    case "review.stage_failed": {
+      const stage = readStr(data, ["stageId"]) ?? "unknown";
+      const error = readStr(data, ["error"]);
+      return error ? `📝 Deep review stage ${stage} failed: ${error}` : `📝 Deep review stage ${stage} failed`;
+    }
     case "review.posting_comments": {
       const count = readNum(data, ["commentCount", "comments"]);
       const vote = readNum(data, ["vote", "score"]);
