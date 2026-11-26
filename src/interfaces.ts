@@ -788,6 +788,12 @@ export interface WorkspaceRunner {
     input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
   ): Promise<{ rawOutput: string }>;
+  /**
+   * Copy a prepared review workspace into a new workspace with its own
+   * sandbox, without contacting any remote. Review attachments are not
+   * copied. Used by deep review to run several stages from one checkout.
+   */
+  forkReviewWorkspace?(seed: WorkspaceHandle, signal?: AbortSignal): Promise<WorkspaceHandle>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
     adapter: AgentAdapter,

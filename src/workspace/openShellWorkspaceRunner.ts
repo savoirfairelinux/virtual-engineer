@@ -14,9 +14,9 @@
  * each sandbox as an ephemeral Pod on the cluster (k3s).
  */
 
-import { mkdir, writeFile, unlink } from "fs/promises";
+import { cp, mkdir, writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
-import { join, basename } from "path";
+import { join, basename, relative, sep } from "path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   REVIEW_ATTACHMENT_DIR,
@@ -238,6 +238,34 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     this.dirs.set(handle.containerId, ws.dir);
     this.sandboxNames.set(handle.containerId, sandboxName);
     return handle;
+  }
+
+  async forkReviewWorkspace(seed: WorkspaceHandle, signal?: AbortSignal): Promise<WorkspaceHandle> {
+    const seedDir = this.dirs.get(seed.containerId) ?? seed.hostWorkspacePath;
+    const fork = await this.createWorkspace(seed.taskId, signal);
+    try {
+      const attachmentDir = REVIEW_ATTACHMENT_DIR.split("/").join(sep);
+      await cp(seedDir, fork.hostWorkspacePath, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: true,
+        filter: (source) => {
+          const path = relative(seedDir, source);
+          return path !== attachmentDir && !path.endsWith(`${sep}${attachmentDir}`);
+        },
+      });
+      signal?.throwIfAborted();
+      const remotes = this.trustedRemotes.get(seed.containerId);
+      if (remotes !== undefined) this.trustedRemotes.set(fork.containerId, new Map(remotes));
+      const postCloneScript = this.postCloneScripts.get(seed.containerId);
+      if (postCloneScript !== undefined) this.postCloneScripts.set(fork.containerId, postCloneScript);
+      return fork;
+    } catch (err) {
+      await this.destroyWorkspace(fork).catch((destroyErr: unknown) =>
+        log.warn({ err: destroyErr, taskId: String(seed.taskId) }, "failed to destroy partial review workspace fork")
+      );
+      throw err;
+    }
   }
 
   private attemptKey(taskId: string, runtimeHandleId?: string): string {
