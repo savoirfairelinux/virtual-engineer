@@ -1932,6 +1932,69 @@ describe("runtime bootstrap provider selection", () => {
     }));
   });
 
+  it("resolves the review depth from the agent only and keeps it from the adapter", async () => {
+    const dbAgent = makeDbAgentAdapter("copilot");
+    const reviewAgent: AgentRecord = {
+      id: "agent-deep-review" as AgentRecord["id"],
+      name: "Deep review agent",
+      type: "review",
+      integrationId: "copilot-deep-review",
+      modelConfigJson: JSON.stringify({ providerOptions: { reviewDepth: "deep", futureFlag: true } }),
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const runtime = await importRuntime(
+      { copilot: dbAgent },
+      { copilot: makeIntegration({
+        id: "copilot-deep-review",
+        provider: "copilot",
+        configJson: JSON.stringify({ token: "ghp-deep-token" }),
+      }) },
+      {
+        activeIntegrationLists: {
+          gerrit: [makeIntegration({
+            id: "gerrit-deep-review",
+            provider: "gerrit",
+            configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve-bot" }),
+          })],
+        },
+        agentRecords: [reviewAgent],
+        configOverrides: { adminApiEnabled: true },
+      },
+    );
+    runtime.stateStore.getPrompt.mockImplementation(async (id: string) => ({
+      id,
+      label: id,
+      content: `content:${id}`,
+      promptType: id.includes("system") ? "system" as const : "instructions" as const,
+      updatedAt: new Date(),
+    }));
+    const streamEventsCtorArgs = runtime.PluginIntegrationStreamEventsManager.mock.calls[0]?.[0] as {
+      getReviewTrigger(): { triggerReviewForChange(integrationId: string, changeId: string): Promise<void> } | undefined;
+    };
+    await streamEventsCtorArgs.getReviewTrigger()?.triggerReviewForChange("gerrit-deep-review", "Ideep123");
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    };
+
+    const resolved = await deps.resolveAgentForProject({
+      id: "project-deep-review" as ProjectRecord["id"],
+      agentId: reviewAgent.id,
+      agentOverrideJson: JSON.stringify({ providerOptions: { reviewDepth: "standard", projectFlag: true } }),
+    } as ProjectRecord);
+
+    expect(resolved).toEqual(expect.objectContaining({
+      reviewStrategy: "ve_direct",
+      reviewDepth: "deep",
+      providerOptions: { projectFlag: true },
+    }));
+  });
+
   it("does not fall back to another review agent when the project agent token is invalid", async () => {
     const reviewIntegration = makeIntegration({
       id: "gerrit-review-fallback",

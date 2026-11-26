@@ -9,20 +9,28 @@ import { agentLogBus, pushToTaskBuffer } from "../agents/agentEventBus.js";
  * Mutates `collectedEvents` (appends the produced event) and pushes/emits it
  * on the shared live-log bus, mirroring the review container's stdout event
  * handling so a review's stderr diagnostics show up in the same log stream.
+ * `tags` (for example a deep-review `stageId`) are merged into each event's data.
  */
 export function processReviewStderrLine(
   line: string,
   taskId: string,
   cycleNumber: number,
-  collectedEvents: AgentLogEvent[]
+  collectedEvents: AgentLogEvent[],
+  tags?: Record<string, unknown>,
 ): void {
+  const tag = (data: unknown): unknown => {
+    if (tags === undefined) return data;
+    return data !== null && typeof data === "object" && !Array.isArray(data)
+      ? { ...(data as Record<string, unknown>), ...tags }
+      : { value: data, ...tags };
+  };
   try {
     const parsed = JSON.parse(line) as Record<string, unknown>;
     if (parsed["__ve_event"] === true) {
       const event: AgentLogEvent = {
         type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
         timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-        data: parsed["data"] ?? null,
+        data: tag(parsed["data"] ?? null),
         taskId,
         cycleNumber,
       };
@@ -39,7 +47,7 @@ export function processReviewStderrLine(
   const event: AgentLogEvent = {
     type: "stderr.line",
     timestamp: new Date().toISOString(),
-    data: { line },
+    data: tag({ line }),
     taskId,
     cycleNumber,
   };

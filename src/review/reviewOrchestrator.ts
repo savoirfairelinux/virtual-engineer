@@ -35,10 +35,11 @@ import {
 } from "./reviewOutputContract.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
-import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
+import { applyVolumeAndSeverityGate, buildFoldedSummary, severityRank } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { evaluateExistingReviewTask } from "./reviewRetriggerGuard.js";
 import { processReviewStderrLine } from "./reviewStderrEvents.js";
+import { runDeepReview, type DeepStageOutput, type DeepStageRecord, type DeepStageRequest } from "./deepReview.js";
 import { AgentWorkerProtocolError } from "../workspace/agentWorkerProtocol.js";
 import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGate.js";
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
@@ -57,6 +58,13 @@ class ReviewCancelledError extends Error {}
 class ReviewSupersededError extends Error {
   constructor(readonly latestDetails: ReviewChangeDetails) {
     super(`Review superseded by patchset ${latestDetails.currentPatchset}`);
+  }
+}
+
+/** The change closed or moved on before the deep review's final stage. */
+class DeepReviewStaleError extends Error {
+  constructor(readonly latestDetails: ReviewChangeDetails) {
+    super(`Deep review stopped before its final stage: change is ${latestDetails.status} at patchset ${latestDetails.currentPatchset}`);
   }
 }
 
@@ -126,6 +134,8 @@ export interface ReviewOrchestratorDeps {
   resolveAgentForProject: (project: ProjectRecord) => Promise<{
     adapter: AgentAdapter;
     reviewStrategy: import("../interfaces.js").ReviewStrategy;
+    /** `deep` runs the staged pipeline; absent means a standard single run. */
+    reviewDepth?: import("../interfaces.js").ReviewDepth | undefined;
     model: string | undefined;
     token: string;
     systemPrompt: string;
@@ -680,15 +690,20 @@ export class ReviewOrchestrator {
     };
     lifecycleSignal?.addEventListener("abort", cancelForLifecycle, { once: true });
     if (lifecycleSignal?.aborted === true) cancelForLifecycle();
+    // One deadline per pass: pausing keeps the remaining time instead of resetting it.
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineRemainingMs = timeoutMs;
+    let deadlineResumedAt = 0;
     const startDeadline = (): void => {
       if (deadlineTimer !== undefined || deadlineController.signal.aborted) return;
-      deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), timeoutMs);
+      deadlineResumedAt = Date.now();
+      deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), Math.max(0, deadlineRemainingMs));
     };
     const pauseDeadline = (): void => {
       if (deadlineTimer === undefined) return;
       clearTimeout(deadlineTimer);
       deadlineTimer = undefined;
+      deadlineRemainingMs -= Date.now() - deadlineResumedAt;
     };
     const clearDeadline = (): void => {
       pauseDeadline();
@@ -699,6 +714,8 @@ export class ReviewOrchestrator {
     startDeadline();
     let cycleLease: ConcurrencyLease | undefined;
     let reviewPublicationId: string | undefined;
+    /** Deep-review cycle metadata; the stage records fill in as stages finish. */
+    let deepMetadata: { reviewDepth: "deep"; stages: DeepStageRecord[] } | undefined;
 
     try {
       const project = task.projectId
@@ -859,6 +876,64 @@ export class ReviewOrchestrator {
         }
       }
 
+      // Archive a result made stale by a closed change (returns true) or a
+      // newer patchset (throws ReviewSupersededError) without side effects.
+      const discardStaleResult = async (latestDetails: ReviewChangeDetails, rawOutput: string): Promise<boolean> => {
+        if (latestDetails.status !== "OPEN") {
+          await this.assertReviewStillActive(taskId);
+          emitReviewEvent("review.closed", {
+            analyzedPatchset: details.currentPatchset,
+            status: latestDetails.status,
+          });
+          await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+            status: "success",
+            modifiedFiles: [],
+            summary: `Review result discarded because the change became ${latestDetails.status}`,
+            agentLogs: rawOutput,
+            agentEvents: collectedEvents,
+            metadata: {
+              reviewMode: true,
+              superseded: true,
+              analyzedPatchset: details.currentPatchset,
+              changeStatus: latestDetails.status,
+              ...deepMetadata,
+            },
+          });
+          clearTaskEventBuffer(taskId);
+          await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+          await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+          return true;
+        }
+        if (latestDetails.currentPatchset !== details.currentPatchset) {
+          if (supersededRetries >= MAX_SUPERSEDED_REVIEW_RETRIES) {
+            throw new Error(
+              `Review superseded more than ${MAX_SUPERSEDED_REVIEW_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`
+            );
+          }
+          emitReviewEvent("review.superseded", {
+            analyzedPatchset: details.currentPatchset,
+            latestPatchset: latestDetails.currentPatchset,
+          });
+          await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+            status: "success",
+            modifiedFiles: [],
+            summary: `Review result discarded because patchset ${latestDetails.currentPatchset} replaced ${details.currentPatchset}`,
+            agentLogs: rawOutput,
+            agentEvents: collectedEvents,
+            metadata: {
+              reviewMode: true,
+              superseded: true,
+              analyzedPatchset: details.currentPatchset,
+              latestPatchset: latestDetails.currentPatchset,
+              ...deepMetadata,
+            },
+          });
+          clearTaskEventBuffer(taskId);
+          throw new ReviewSupersededError(latestDetails);
+        }
+        return false;
+      };
+
       // A clean merge changes nothing beyond already-reviewed commits, so no agent runs.
       const cleanMerge = !hostedReview && diff.merge !== undefined && diff.files.length === 0;
       let rawOutput: string;
@@ -872,6 +947,31 @@ export class ReviewOrchestrator {
         rawOutput = "";
         result = { comments: [], summary: CLEAN_MERGE_REVIEW_SUMMARY, score: 0, replies: [] };
       } else {
+        // `finding` context serves deep-review finding stages: no discussion
+        // threads and no reassessment. `full` is the standard single pass.
+        let repositoryHistory: string | undefined;
+        const buildPassPrompt = (instructionsPrompt: string, context: DeepStageRequest["context"]): ReturnType<typeof buildReviewPrompt> =>
+          buildReviewPrompt({
+            details,
+            diff,
+            instructionsPrompt,
+            ...(priorComments.length > 0
+              ? {
+                  priorComments: priorComments.map((c) => ({
+                    ...(hostedReview ? { id: c.id } : {}),
+                    file: c.file,
+                    line: c.line,
+                    message: c.message,
+                  })),
+                  reassessPriorFindings: context === "full" && hostedReview,
+                }
+              : {}),
+            ...(context === "full" && eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
+            ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
+            ...(repositoryHistory !== undefined ? { repositoryHistory } : {}),
+          });
+        const deepReview = projectAgentRuntime.reviewDepth === "deep";
+
         if (this.deps.workspaceRunner.prepareProjectWorkspace === undefined) {
           throw new Error(
             "workspaceRunner does not support prepareProjectWorkspace — cannot clone repository for review."
@@ -883,98 +983,20 @@ export class ReviewOrchestrator {
             "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
           );
         }
+        if (deepReview && this.deps.workspaceRunner.forkReviewWorkspace === undefined) {
+          throw new Error(
+            "workspaceRunner does not support forkReviewWorkspace — deep review requires forked review workspaces."
+          );
+        }
         const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace.bind(this.deps.workspaceRunner);
         const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
 
-        let handle: WorkspaceHandle | undefined;
-
-        try {
-          handle = await this.awaitSignalAware(
-            this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
-            deadlineController.signal,
-            timeoutError,
-          );
-
-          const cloneResult = await this.awaitSignalAware(
-            prepareProjectWorkspace(
-              handle,
-              [cloneTarget],
-              project.postCloneScript || undefined,
-              sshKnownHostsPath ?? undefined,
-              deadlineController.signal,
-              { historyDepth: REVIEW_HISTORY_DEPTH },
-            ),
-            deadlineController.signal,
-            timeoutError,
-          );
-          if (!cloneResult.success) {
-            throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
-          }
-
-          if (this.deps.applyPatchset !== undefined) {
-            await this.awaitSignalAware(
-              this.deps.applyPatchset(handle, details, deadlineController.signal),
-              deadlineController.signal,
-              timeoutError,
-            );
-          }
-
-          // Review agents cannot run Git: hand them the recent history instead.
-          let repositoryHistory: string | undefined;
-          if (this.deps.workspaceRunner.execGitInVolume !== undefined) {
-            const execGit = this.deps.workspaceRunner.execGitInVolume.bind(this.deps.workspaceRunner);
-            const historyHandle = handle;
-            try {
-              repositoryHistory = await this.awaitSignalAware(
-                collectRepositoryHistory(
-                  (args) => execGit(historyHandle, args, undefined, deadlineController.signal),
-                  { branch: details.targetBranch, paths: diff.files.map((file) => file.path) },
-                ),
-                deadlineController.signal,
-                timeoutError,
-              );
-            } catch (err) {
-              if (deadlineController.signal.aborted) throw err;
-              log.warn({ err, taskId }, "failed to read repository history; reviewing without it");
-            }
-          }
-
-          const { prompt, attachments: promptAttachments } = buildReviewPrompt({
-            details,
-            diff,
-            instructionsPrompt: reviewInstructions,
-            ...(priorComments.length > 0
-              ? {
-                  priorComments: priorComments.map((c) => ({
-                    ...(hostedReview ? { id: c.id } : {}),
-                    file: c.file,
-                    line: c.line,
-                    message: c.message,
-                  })),
-                  reassessPriorFindings: hostedReview,
-                }
-              : {}),
-            ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
-            ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
-            ...(repositoryHistory !== undefined ? { repositoryHistory } : {}),
-          });
-
-          emitReviewEvent("review.prompt_built", {
-            promptLength: prompt.length,
-            patchset: details.currentPatchset,
-            ...(promptAttachments.length > 0
-              ? { attachments: promptAttachments.map((a) => ({ fileName: a.fileName, length: a.content.length })) }
-              : {}),
-          });
-
-
-          emitReviewEvent("review.agent_started", {
-            mode: "docker",
-            reviewStrategy: projectAgentRuntime.reviewStrategy,
-          });
-
+        const runAgentIn = async (
+          reviewHandle: WorkspaceHandle,
+          { prompt, attachments: promptAttachments }: ReturnType<typeof buildReviewPrompt>,
+          eventTags?: Record<string, unknown>,
+        ): Promise<string> => {
           const stderrLineBuffer = { partial: "" };
-          const reviewHandle = handle;
           const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
             projectId: project.id,
             reviewStrategy: projectAgentRuntime.reviewStrategy,
@@ -1011,14 +1033,135 @@ export class ReviewOrchestrator {
               for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
-                processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
+                processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents, eventTags);
               }
             },
           }), deadlineController.signal, timeoutError);
           if (stderrLineBuffer.partial.trim()) {
-            processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
+            processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents, eventTags);
           }
-          rawOutput = reviewResult.rawOutput;
+          return reviewResult.rawOutput;
+        };
+
+        let handle: WorkspaceHandle | undefined;
+        let deepResult: ReviewAgentResult | undefined;
+        let staleDetails: ReviewChangeDetails | undefined;
+
+        try {
+          handle = await this.awaitSignalAware(
+            this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
+            deadlineController.signal,
+            timeoutError,
+          );
+
+          const cloneResult = await this.awaitSignalAware(
+            prepareProjectWorkspace(
+              handle,
+              [cloneTarget],
+              project.postCloneScript || undefined,
+              sshKnownHostsPath ?? undefined,
+              deadlineController.signal,
+              { historyDepth: REVIEW_HISTORY_DEPTH },
+            ),
+            deadlineController.signal,
+            timeoutError,
+          );
+          if (!cloneResult.success) {
+            throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
+          }
+
+          if (this.deps.applyPatchset !== undefined) {
+            await this.awaitSignalAware(
+              this.deps.applyPatchset(handle, details, deadlineController.signal),
+              deadlineController.signal,
+              timeoutError,
+            );
+          }
+
+          // Review agents cannot run Git: hand them the recent history instead.
+          if (this.deps.workspaceRunner.execGitInVolume !== undefined) {
+            const execGit = this.deps.workspaceRunner.execGitInVolume.bind(this.deps.workspaceRunner);
+            const historyHandle = handle;
+            try {
+              repositoryHistory = await this.awaitSignalAware(
+                collectRepositoryHistory(
+                  (args) => execGit(historyHandle, args, undefined, deadlineController.signal),
+                  { branch: details.targetBranch, paths: diff.files.map((file) => file.path) },
+                ),
+                deadlineController.signal,
+                timeoutError,
+              );
+            } catch (err) {
+              if (deadlineController.signal.aborted) throw err;
+              log.warn({ err, taskId }, "failed to read repository history; reviewing without it");
+            }
+          }
+
+          if (!deepReview) {
+            const standardPrompt = buildPassPrompt(reviewInstructions, "full");
+            emitReviewEvent("review.prompt_built", {
+              promptLength: standardPrompt.prompt.length,
+              patchset: details.currentPatchset,
+              ...(standardPrompt.attachments.length > 0
+                ? { attachments: standardPrompt.attachments.map((a) => ({ fileName: a.fileName, length: a.content.length })) }
+                : {}),
+            });
+            emitReviewEvent("review.agent_started", {
+              mode: "docker",
+              reviewStrategy: projectAgentRuntime.reviewStrategy,
+            });
+            rawOutput = await runAgentIn(handle, standardPrompt);
+          } else {
+            emitReviewEvent("review.agent_started", {
+              mode: "docker",
+              reviewStrategy: projectAgentRuntime.reviewStrategy,
+              reviewDepth: "deep",
+            });
+            deepMetadata = { reviewDepth: "deep", stages: [] };
+            try {
+              const outcome = await this.runDeepReviewStages({
+                seed: handle,
+                taskId,
+                projectId: project.id,
+                agentId: project.agentId,
+                priority: task.createdAt.getTime(),
+                signal: deadlineController.signal,
+                takePassLease: () => {
+                  const lease = cycleLease;
+                  cycleLease = undefined;
+                  return lease;
+                },
+                setDeadlinePaused: lifecycleSignal === undefined
+                  ? undefined
+                  : (paused): void => { if (paused) pauseDeadline(); else startDeadline(); },
+                runAgent: (stageHandle, request) =>
+                  runAgentIn(stageHandle, buildPassPrompt(request.instructions, request.context), { stageId: request.stageId }),
+                selectCandidates: (comments) => {
+                  const minRank = severityRank(this.deps.reviewMinSeverity ?? "info");
+                  return filterCommentsByAllowedFiles([...comments], allowedCommentFiles(diff), {
+                    changeId,
+                    phase: "deep-review-candidates",
+                  }).filter((comment) => severityRank(comment.severity) >= minRank);
+                },
+                beforeRank: async () => {
+                  const latest = await withinDeadline(
+                    this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+                  );
+                  if (latest.status !== "OPEN" || latest.currentPatchset !== details.currentPatchset) {
+                    throw new DeepReviewStaleError(latest);
+                  }
+                },
+                emit: emitReviewEvent,
+                records: deepMetadata.stages,
+              });
+              rawOutput = outcome.rawOutput;
+              deepResult = outcome.result;
+            } catch (err) {
+              if (!(err instanceof DeepReviewStaleError)) throw err;
+              staleDetails = err.latestDetails;
+              rawOutput = "";
+            }
+          }
         } finally {
           if (handle !== undefined) {
             await this.deps.workspaceRunner.destroyWorkspace(handle).catch((err: unknown) =>
@@ -1031,10 +1174,18 @@ export class ReviewOrchestrator {
           }
         }
 
-        emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
-        emitReviewEvent("review.parsing", {});
+        if (staleDetails !== undefined) {
+          await discardStaleResult(staleDetails, rawOutput);
+          return;
+        }
 
-        result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
+        emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
+        if (deepResult !== undefined) {
+          result = deepResult;
+        } else {
+          emitReviewEvent("review.parsing", {});
+          result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
+        }
       }
       const decision = getReviewDecision(result);
       if (hostedReview && decision < 0 && !result.requiredAction?.trim()) {
@@ -1069,56 +1220,7 @@ export class ReviewOrchestrator {
       const latestDetails = await withinDeadline(
         this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
       );
-      if (latestDetails.status !== "OPEN") {
-        await this.assertReviewStillActive(taskId);
-        emitReviewEvent("review.closed", {
-          analyzedPatchset: details.currentPatchset,
-          status: latestDetails.status,
-        });
-        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
-          status: "success",
-          modifiedFiles: [],
-          summary: `Review result discarded because the change became ${latestDetails.status}`,
-          agentLogs: rawOutput,
-          agentEvents: collectedEvents,
-          metadata: {
-            reviewMode: true,
-            superseded: true,
-            analyzedPatchset: details.currentPatchset,
-            changeStatus: latestDetails.status,
-          },
-        });
-        clearTaskEventBuffer(taskId);
-        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
-        await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
-        return;
-      }
-      if (latestDetails.currentPatchset !== details.currentPatchset) {
-        if (supersededRetries >= MAX_SUPERSEDED_REVIEW_RETRIES) {
-          throw new Error(
-            `Review superseded more than ${MAX_SUPERSEDED_REVIEW_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`
-          );
-        }
-        emitReviewEvent("review.superseded", {
-          analyzedPatchset: details.currentPatchset,
-          latestPatchset: latestDetails.currentPatchset,
-        });
-        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
-          status: "success",
-          modifiedFiles: [],
-          summary: `Review result discarded because patchset ${latestDetails.currentPatchset} replaced ${details.currentPatchset}`,
-          agentLogs: rawOutput,
-          agentEvents: collectedEvents,
-          metadata: {
-            reviewMode: true,
-            superseded: true,
-            analyzedPatchset: details.currentPatchset,
-            latestPatchset: latestDetails.currentPatchset,
-          },
-        });
-        clearTaskEventBuffer(taskId);
-        throw new ReviewSupersededError(latestDetails);
-      }
+      if (await discardStaleResult(latestDetails, rawOutput)) return;
       const reviewPatchset = details.currentPatchset;
       const fixedFindings = activePrior.filter((comment) => assessmentById.get(comment.id)?.status === "fixed");
       const fixedHashes = new Set(fixedFindings.map((comment) => comment.commentHash));
@@ -1366,6 +1468,7 @@ export class ReviewOrchestrator {
           score: result.score,
           ...(cleanMerge ? { agentSkipped: "clean_merge" } : {}),
           ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}),
+          ...deepMetadata,
         },
       };
       await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, cycleResult);
@@ -1439,7 +1542,7 @@ export class ReviewOrchestrator {
         summary: message,
         agentLogs: workerOutput?.stdout ?? "",
         agentEvents: collectedEvents,
-        metadata: { reviewMode: true, error: message, ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}), ...(workerOutput !== undefined ? { workerOutput } : {}) },
+        metadata: { reviewMode: true, error: message, ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}), ...(workerOutput !== undefined ? { workerOutput } : {}), ...deepMetadata },
       };
       await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, failCycleResult).catch(
         (saveErr: unknown) => log.warn({ err: saveErr, taskId }, "failed to save review failure cycle")
@@ -1462,6 +1565,78 @@ export class ReviewOrchestrator {
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  /**
+   * Run the deep review stages from one prepared seed workspace. Each stage
+   * runs in its own fork and holds exactly one concurrency slot while it runs;
+   * the first stage takes over the slot the pass already holds, and no stage
+   * waits for a slot while holding one.
+   */
+  private async runDeepReviewStages(input: {
+    seed: WorkspaceHandle;
+    taskId: TaskId;
+    projectId: ProjectRecord["id"];
+    agentId: Parameters<ConcurrencyTracker["acquireWhenAvailable"]>[1];
+    priority: number;
+    signal: AbortSignal;
+    takePassLease: () => ConcurrencyLease | undefined;
+    /** Pauses the pass deadline while a stage waits for a slot and none runs; undefined keeps it running. */
+    setDeadlinePaused: ((paused: boolean) => void) | undefined;
+    runAgent: (handle: WorkspaceHandle, request: DeepStageRequest) => Promise<string>;
+    selectCandidates: (comments: readonly InlineReviewComment[]) => InlineReviewComment[];
+    beforeRank: () => Promise<void>;
+    emit: (type: string, data: Record<string, unknown>) => void;
+    records: DeepStageRecord[];
+  }): Promise<DeepStageOutput> {
+    const runner = this.deps.workspaceRunner;
+    if (runner.forkReviewWorkspace === undefined) {
+      throw new Error("workspaceRunner does not support forkReviewWorkspace — deep review requires forked review workspaces.");
+    }
+    const forkReviewWorkspace = runner.forkReviewWorkspace.bind(runner);
+    const tracker = this.deps.concurrencyTracker;
+    let waiting = 0;
+    let running = 0;
+    const syncDeadline = (): void => input.setDeadlinePaused?.(waiting > 0 && running === 0);
+
+    const runStage = async (request: DeepStageRequest): Promise<DeepStageOutput> => {
+      let lease = input.takePassLease();
+      if (lease === undefined && tracker !== undefined) {
+        waiting++;
+        syncDeadline();
+        try {
+          lease = await tracker.acquireWhenAvailable(input.projectId, input.agentId, input.signal, input.taskId, input.priority);
+        } finally {
+          waiting--;
+        }
+      }
+      running++;
+      syncDeadline();
+      let handle: WorkspaceHandle | undefined;
+      try {
+        handle = await forkReviewWorkspace(input.seed, input.signal);
+        const rawOutput = await input.runAgent(handle, request);
+        return { rawOutput, result: parseReviewResult(rawOutput, this.deps.reviewProvider.kind) };
+      } finally {
+        running--;
+        if (handle !== undefined) {
+          await runner.destroyWorkspace(handle).catch((err: unknown) =>
+            log.warn({ err, taskId: input.taskId, stageId: request.stageId }, "failed to destroy deep review stage workspace")
+          );
+        }
+        if (lease !== undefined) tracker?.release(lease);
+        syncDeadline();
+      }
+    };
+
+    return runDeepReview({
+      signal: input.signal,
+      runStage,
+      selectCandidates: input.selectCandidates,
+      beforeRank: input.beforeRank,
+      emit: input.emit,
+      records: input.records,
+    });
+  }
 
   private withAbortSignal<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
     if (signal.aborted) return Promise.reject(toRejectionError(signal.reason, timeoutError));

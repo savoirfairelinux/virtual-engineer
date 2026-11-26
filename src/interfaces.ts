@@ -54,6 +54,8 @@ export {
 
 export type AgentType = "coding" | "review";
 export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native" | "codex_native" | "opencode_native";
+/** How a review agent runs a pass: one agent run, or the staged deep pipeline. */
+export type ReviewDepth = "standard" | "deep";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -786,6 +788,12 @@ export interface WorkspaceRunner {
     input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
   ): Promise<{ rawOutput: string }>;
+  /**
+   * Copy a prepared review workspace into a new workspace with its own
+   * sandbox, without contacting any remote. Review attachments are not
+   * copied. Used by deep review to run several stages from one checkout.
+   */
+  forkReviewWorkspace?(seed: WorkspaceHandle, signal?: AbortSignal): Promise<WorkspaceHandle>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
     adapter: AgentAdapter,

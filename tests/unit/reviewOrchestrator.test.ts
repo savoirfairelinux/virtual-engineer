@@ -6,12 +6,14 @@ import {
 import { TaskLifecycleCoordinator } from "../../src/orchestrator/taskLifecycleCoordinator.js";
 import { AgentWorkerProtocolError } from "../../src/workspace/agentWorkerProtocol.js";
 import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
+import { computeCycleCost } from "../../src/agents/cycleCost.js";
 import {
   makeExternalChangeId,
   makeProjectId,
   makeTaskId,
   makeTicketId,
   type AgentAdapter,
+  type AgentResult,
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
@@ -24,6 +26,7 @@ import {
 } from "../../src/interfaces.js";
 
 const CHANGE_ID = makeExternalChangeId("p~master~Iabc");
+type ReviewOrchestratorDepsOverride = Partial<import("../../src/review/reviewOrchestrator.js").ReviewOrchestratorDeps>;
 
 describe("buildReviewSystemPrompt", () => {
   it("keeps the output contract out of MCP-native agent prompts", () => {
@@ -3443,6 +3446,194 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
     expect(mocks.store.getHandledThreadReplyHashes).not.toHaveBeenCalled();
     expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReviewOrchestrator.runReview - deep review", () => {
+  const STAGES = [
+    ["intent and scope", "intent"],
+    ["control flow and data", "logic"],
+    ["state, lifetime, and concurrency", "state"],
+    ["contracts and integration", "contracts"],
+    ["conventions, tests, and documentation", "maintainability"],
+  ] as const;
+
+  function stageOf(prompt: string): string {
+    if (prompt.includes("# Consolidation Workflow")) return "rank";
+    return STAGES.find(([title]) => prompt.includes(`## Scope of this pass: ${title}`))?.[1] ?? "unknown";
+  }
+
+  function rawReview(comments: unknown[], summary = ""): string {
+    return ["REVIEW_RESULT_START", JSON.stringify({ comments, summary, vote: -1, replies: [] }), "REVIEW_RESULT_END"].join("\n");
+  }
+
+  function deepRunner(stage: (stageId: string, signal: AbortSignal | undefined) => Promise<string>) {
+    const { runner, handle } = makeWorkspaceRunner();
+    let forks = 0;
+    let active = 0;
+    const seen = { maxActive: 0, prompts: new Map<string, string>(), handles: [] as unknown[] };
+    const forkReviewWorkspace = vi.fn(async () => ({ ...handle, containerId: `fork-${++forks}` }));
+    (runner as unknown as { forkReviewWorkspace: typeof forkReviewWorkspace }).forkReviewWorkspace = forkReviewWorkspace;
+    (runner as unknown as { execGitInVolume: () => Promise<string> }).execGitInVolume = vi.fn(async () =>
+      "\x1eabc1234\x1f2026-11-20\x1fnet: fix timeout\n");
+    runner.runReviewInDocker.mockImplementation(async (
+      workspace: unknown,
+      input: { prompt: string; abortSignal?: AbortSignal },
+      callbacks?: { onStderrChunk?: (chunk: string) => void },
+    ) => {
+      const stageId = stageOf(input.prompt);
+      seen.prompts.set(stageId, input.prompt);
+      seen.handles.push(workspace);
+      active++;
+      seen.maxActive = Math.max(seen.maxActive, active);
+      try {
+        callbacks?.onStderrChunk?.(`${JSON.stringify({ __ve_event: true, type: "assistant.usage", data: { model: "m", inputTokens: 10, outputTokens: 5, cost: 0.01 } })}\n`);
+        return { rawOutput: await stage(stageId, input.abortSignal) };
+      } finally {
+        active--;
+      }
+    });
+    return { runner, handle, forkReviewWorkspace, seen };
+  }
+
+  function deepAgent(): ReviewOrchestratorDepsOverride {
+    return {
+      resolveAgentForProject: vi.fn(async () => ({
+        adapter: { name: "copilot" } as AgentAdapter,
+        reviewStrategy: "ve_direct" as const,
+        reviewDepth: "deep" as const,
+        model: "test-model",
+        token: "gh_test_token",
+        systemPrompt: "You are a code reviewer.",
+        instructionsPrompt: "Bound workflow instructions.",
+      })),
+    };
+  }
+
+  it("runs six stages from one checkout, one slot at a time, and posts the final stage", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.provider.getDiscussionThreads = vi.fn(async () => [{
+      threadId: "disc-1", file: "src/a.ts", line: 1, resolved: false,
+      comments: [{ author: "alice", message: "Why this?", isOwn: false }],
+    }]);
+    mocks.provider.postThreadReply = vi.fn(async () => undefined);
+    const { runner, handle, forkReviewWorkspace, seen } = deepRunner(async (stageId) => {
+      if (stageId === "intent") return rawReview([{ file: "src/a.ts", line: 1, message: "Does more than it says", severity: "warning" }]);
+      if (stageId === "logic") {
+        return rawReview([
+          { file: "src/elsewhere.ts", line: 4, message: "Outside the diff", severity: "error" },
+          { file: "src/a.ts", line: 2, message: "Cosmetic only", severity: "nit" },
+        ]);
+      }
+      if (stageId === "rank") return rawReview([{ file: "src/a.ts", line: 1, message: "Ranked finding", severity: "error" }], "final summary");
+      return rawReview([]);
+    });
+    const queue: Array<() => void> = [];
+    let held = 0;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn(() => {
+        const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+        if (held === 0) {
+          held = 1;
+          return Promise.resolve(lease);
+        }
+        return new Promise((resolve) => queue.push(() => resolve(lease)));
+      }),
+      release: vi.fn(() => {
+        const next = queue.shift();
+        if (next === undefined) held = 0;
+        else next();
+      }),
+    };
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner, {
+      ...deepAgent(),
+      concurrencyTracker: concurrencyTracker as never,
+    })).runReview(initial.taskId);
+
+    expect(runner.createWorkspace).toHaveBeenCalledOnce();
+    expect(runner.prepareProjectWorkspace).toHaveBeenCalledOnce();
+    expect(runner.applyPriorPatchset).toHaveBeenCalledOnce();
+    expect(forkReviewWorkspace).toHaveBeenCalledTimes(6);
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(6);
+    expect(seen.handles).not.toContain(handle);
+    expect(runner.destroyWorkspace).toHaveBeenCalledTimes(7);
+    expect(seen.maxActive).toBe(1);
+    expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledTimes(6);
+    expect(concurrencyTracker.release).toHaveBeenCalledTimes(6);
+
+    for (const stageId of [...STAGES.map(([, id]) => id), "rank"]) {
+      expect(seen.prompts.get(stageId)).toContain("commit abc1234 (2026-11-20)");
+    }
+    for (const [, stageId] of STAGES) {
+      expect(seen.prompts.get(stageId)).not.toContain("Why this?");
+      expect(seen.prompts.get(stageId)).not.toContain("Bound workflow instructions.");
+    }
+    const rankPrompt = seen.prompts.get("rank") ?? "";
+    expect(rankPrompt).toContain("Why this?");
+    expect(rankPrompt).toContain("[1] src/a.ts:1 (warning) Does more than it says");
+    expect(rankPrompt).not.toContain("Outside the diff");
+    expect(rankPrompt).not.toContain("Cosmetic only");
+
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID, 2,
+      [expect.objectContaining({ message: "Ranked finding" })],
+      expect.stringContaining("final summary"),
+      undefined,
+      expect.any(AbortSignal),
+    );
+    const finalCycle = mocks.store.saveAgentCycle.mock.calls.at(-1)?.[2] as AgentResult;
+    expect(finalCycle.metadata).toMatchObject({ reviewDepth: "deep" });
+    expect((finalCycle.metadata["stages"] as Array<{ id: string; failed: boolean }>).map((stage) => [stage.id, stage.failed]))
+      .toEqual([["intent", false], ["logic", false], ["state", false], ["contracts", false], ["maintainability", false], ["rank", false]]);
+    const events = finalCycle.agentEvents ?? [];
+    expect(events.filter((event) => event.type === "review.agent_started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "review.stage_completed")).toHaveLength(6);
+    const usage = events.filter((event) => event.type === "assistant.usage");
+    expect(usage.map((event) => (event.data as { stageId: string }).stageId).sort())
+      .toEqual(["contracts", "intent", "logic", "maintainability", "rank", "state"]);
+    expect(computeCycleCost(events).tokens.input).toBe(60);
+  });
+
+  it("takes the superseded path without running the final stage when a newer patchset lands", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner, seen } = deepRunner(async () => rawReview([], "done"));
+    let detailCalls = 0;
+    mocks.provider.getChangeDetails = vi.fn(async () =>
+      makeDetails({ currentPatchset: ++detailCalls >= 2 ? 3 : 2 })) as ReviewProvider["getChangeDetails"];
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner, deepAgent())).runReview(initial.taskId);
+
+    const superseded = mocks.store.saveAgentCycle.mock.calls
+      .map((call: unknown[]) => call[2] as AgentResult)
+      .find((cycle: AgentResult) => cycle.metadata["superseded"] === true);
+    expect(superseded?.metadata).toMatchObject({ latestPatchset: 3, reviewDepth: "deep" });
+    expect((superseded?.metadata["stages"] as unknown[]).length).toBe(5);
+    expect(mocks.store.updateExternalChangeId).toHaveBeenCalledWith(initial.taskId, CHANGE_ID, 3, expect.anything());
+    // Five finding stages of the stale pass, then all six stages of the rerun.
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(11);
+    expect(seen.prompts.has("rank")).toBe(true);
+  });
+
+  it("stops every running stage on timeout and destroys each fork and the seed", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner, forkReviewWorkspace } = deepRunner(async (stageId, signal) => {
+      if (stageId === "intent") return rawReview([]);
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner, { ...deepAgent(), agentTimeoutMs: 50 }))
+      .runReview(initial.taskId)).rejects.toThrow("Review timed out after 50ms");
+
+    expect(forkReviewWorkspace).toHaveBeenCalledTimes(5);
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(5);
+    expect(runner.destroyWorkspace).toHaveBeenCalledTimes(6);
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
   });
 });
 

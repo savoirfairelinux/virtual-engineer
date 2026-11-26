@@ -1414,6 +1414,25 @@ FetchContent_Declare(googletest
     expect(r.body?.["error"]).toMatch(/not (?:a )?System Prompt/i);
   });
 
+  it("rejects a project override that sets the review depth", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "DepthOverride",
+        agentId: agent.id,
+        agentOverrideJson: JSON.stringify({ providerOptions: { reviewDepth: "deep" } }),
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/review depth.*cannot be overridden/i);
+  });
+
   it("rejects conflicting project overrides for native review agents", async () => {
     await seedIntegration(store, "agent-copilot", "copilot");
     const agent = await store.createAgent({

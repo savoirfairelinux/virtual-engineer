@@ -1,4 +1,4 @@
-import type { AgentType, ReviewStrategy } from "../interfaces.js";
+import type { AgentType, ReviewDepth, ReviewStrategy } from "../interfaces.js";
 import type { ReviewStrategyDescriptor } from "../plugins/registry.js";
 import { resolveProviderOptions } from "./providerOptions.js";
 
@@ -13,6 +13,7 @@ export interface ReviewStrategyConfigInput {
 
 export interface ReviewStrategyConfigResult {
   reviewStrategy: ReviewStrategy;
+  reviewDepth: ReviewDepth;
   modelConfig: Record<string, unknown>;
   feedbackInstructionsPromptId: string | null;
 }
@@ -34,13 +35,31 @@ export function resolveReviewStrategy(modelConfig: Record<string, unknown>): Rev
   throw new ReviewStrategyConfigError(`Unknown review strategy '${typeof value === "string" ? value : JSON.stringify(value)}'`);
 }
 
+/** Read the VE-owned `reviewDepth` option; absent means `standard`. */
+export function resolveReviewDepth(modelConfig: Record<string, unknown>): ReviewDepth {
+  const value = resolveProviderOptions(modelConfig)["reviewDepth"];
+  if (value === undefined || value === "standard") return "standard";
+  if (value === "deep") return "deep";
+  throw new ReviewStrategyConfigError(`Unknown review depth '${typeof value === "string" ? value : JSON.stringify(value)}'`);
+}
+
 export function normalizeReviewStrategyConfig(
   input: ReviewStrategyConfigInput
 ): ReviewStrategyConfigResult {
   const reviewStrategy = resolveReviewStrategy(input.modelConfig);
+  const reviewDepth = resolveReviewDepth(input.modelConfig);
+  if (reviewDepth === "deep") {
+    if (input.agentType !== "review") {
+      throw new ReviewStrategyConfigError("Deep review is only available for review agents");
+    }
+    if (reviewStrategy !== "ve_direct") {
+      throw new ReviewStrategyConfigError(`Deep review requires the VE direct review strategy, not '${reviewStrategy}'`);
+    }
+  }
   if (reviewStrategy === "ve_direct") {
     return {
       reviewStrategy,
+      reviewDepth,
       modelConfig: input.modelConfig,
       feedbackInstructionsPromptId: input.feedbackInstructionsPromptId,
     };
@@ -71,6 +90,7 @@ export function normalizeReviewStrategyConfig(
 
   return {
     reviewStrategy,
+    reviewDepth,
     modelConfig,
     feedbackInstructionsPromptId: null,
   };

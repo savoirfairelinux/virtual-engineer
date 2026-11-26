@@ -29,5 +29,6 @@ webhook / Gerrit stream-event / review-assignment poll
 - Routing is integration-scoped end to end, so two review integrations cannot collide on one change number.
 - Review runs download nothing, so review-time edits are discarded.
 - A follow-up patchset re-enters `REVIEW_RUNNING` from `REVIEW_WATCHING` instead of creating a second task.
+- Review agents run one pass per review by default; an opt-in [deep review](../guides/tune-review.md#deep-review) depth runs six staged passes and posts one consolidated review.
 
 See also [First review project](../start/first-review.md), [Tune review output](../guides/tune-review.md), [prompts](../concepts/prompts.md).

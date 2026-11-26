@@ -185,6 +185,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
             <div className="row-card-tags" style={{ display: "flex", gap: "8px" }}>
               <Tag tone={a.reviewStrategy === "copilot_native" ? "warn" : "muted"}>
                 {a.reviewStrategy === "copilot_native" ? "Copilot native · experimental" : "VE direct"}
+                {a.reviewDepth === "deep" ? " · deep" : ""}
               </Tag>
               <Tag tone="info">System Prompt: {promptLabel(a.systemPromptId)}</Tag>
               <Tag tone="muted">Instructions Prompt: {promptLabel(a.instructionsPromptId)}</Tag>

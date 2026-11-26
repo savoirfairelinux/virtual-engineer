@@ -111,6 +111,7 @@ export interface ApiTransition {
 
 export type DomainCapability = "issue_tracking" | "code_review" | "source_control" | "agent_execution";
 export type ReviewStrategy = "ve_direct" | "copilot_native";
+export type ReviewDepth = "standard" | "deep";
 
 export interface ReviewStrategyDescriptor {
   id: "copilot_native";
@@ -232,6 +233,7 @@ export interface ApiAgent {
   maxConcurrent: number | null;
   model: string | null;
   reviewStrategy: ReviewStrategy;
+  reviewDepth?: ReviewDepth;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;

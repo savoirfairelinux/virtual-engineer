@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1193,5 +1193,55 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(removeSandbox).toHaveBeenCalledTimes(2);
     expect(removeProvider).toHaveBeenCalledOnce(); // not retried — name was cleared
     expect(deleteManagedProvider).not.toHaveBeenCalled();
+  });
+
+  it("forks a review workspace without attachments, network calls, or a shared sandbox", async () => {
+    const base = await mkdtemp(join(tmpdir(), "ve-fork-"));
+    try {
+      let next = 0;
+      const git = fakeGit({
+        createWorkspace: vi.fn(async () => {
+          const dir = join(base, `ws-${next++}`);
+          await mkdir(dir);
+          return { dir };
+        }),
+      });
+      const client = fakeClient({
+        execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: reviewWorkerStdout("{}"), stderr: "" }),
+      });
+      const runner = new OpenShellWorkspaceRunner({ git, client });
+      const seed = await runner.createWorkspace("t1" as TaskId);
+      await runner.prepareProjectWorkspace(seed, [
+        { repoKey: "root", cloneUrl: "https://example.com/root", targetBranch: "main", role: "primary", commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null } as unknown as ProjectPushTargetRecord,
+      ], "npm ci");
+      await mkdir(join(seed.hostWorkspacePath, "src"));
+      await writeFile(join(seed.hostWorkspacePath, "src", "a.txt"), "code");
+      await mkdir(join(seed.hostWorkspacePath, ".git", "ve-review"), { recursive: true });
+      await writeFile(join(seed.hostWorkspacePath, ".git", "HEAD"), "ref: refs/heads/main\n");
+      await writeFile(join(seed.hostWorkspacePath, ".git", "ve-review", "diff.patch"), "stale");
+      await symlink("src/a.txt", join(seed.hostWorkspacePath, "link"));
+      vi.mocked(git.cloneRepo).mockClear();
+
+      const fork = await runner.forkReviewWorkspace(seed);
+
+      expect(fork.hostWorkspacePath).not.toBe(seed.hostWorkspacePath);
+      expect(fork.containerId).not.toBe(seed.containerId);
+      expect(fork.taskId).toBe(seed.taskId);
+      expect(await readFile(join(fork.hostWorkspacePath, "src", "a.txt"), "utf8")).toBe("code");
+      expect(await readFile(join(fork.hostWorkspacePath, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+      expect(await readlink(join(fork.hostWorkspacePath, "link"))).toBe("src/a.txt");
+      await expect(stat(join(fork.hostWorkspacePath, ".git", "ve-review"))).rejects.toThrow(/ENOENT/);
+      expect(runner.listTrustedRepoPaths(fork)).toEqual(["."]);
+      expect(git.cloneRepo).not.toHaveBeenCalled();
+      expect(git.execGit).not.toHaveBeenCalled();
+      expect(client.createSandbox).not.toHaveBeenCalled();
+
+      await runner.runReviewInDocker(fork, reviewInput(fakeReviewAdapter()));
+      const sandboxName = vi.mocked(client.createSandbox).mock.calls[0]?.[0].name;
+      expect(fork.containerId).toBe(`openshell:${sandboxName}`);
+      expect(client.execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ command: expect.arrayContaining(["npm ci"]) }));
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });

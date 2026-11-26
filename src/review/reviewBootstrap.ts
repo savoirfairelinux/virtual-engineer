@@ -11,7 +11,7 @@ import { assertPromptRole } from "../utils/promptRole.js";
 import {
   resolveProviderOptions,
 } from "../agents/providerOptions.js";
-import { resolveReviewStrategy } from "../agents/reviewStrategy.js";
+import { resolveReviewDepth, resolveReviewStrategy } from "../agents/reviewStrategy.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { ReviewOrchestrator } from "./reviewOrchestrator.js";
 import type { WorkspaceRunner } from "../interfaces.js";
@@ -30,6 +30,7 @@ import type {
   ProviderId,
   ProjectReviewConfig,
   ProjectRecord,
+  ReviewDepth,
   ReviewStrategy,
   ReviewTriggerCause,
   Task,
@@ -280,10 +281,12 @@ function parseConfigRecord(json: string | null | undefined): Record<string, unkn
 function resolveReviewProjectConfig(
   agent: import("../interfaces.js").AgentRecord,
   project: ProjectRecord,
-): { project: ProjectRecord; reviewStrategy: ReviewStrategy } {
+): { project: ProjectRecord; reviewStrategy: ReviewStrategy; reviewDepth: ReviewDepth } {
   const agentConfig = parseConfigRecord(agent.modelConfigJson);
   const reviewStrategy = resolveReviewStrategy(agentConfig);
-  if (reviewStrategy === "ve_direct") return { project, reviewStrategy };
+  // Agent-level only: a project override never changes the depth.
+  const reviewDepth = resolveReviewDepth(agentConfig);
+  if (reviewStrategy === "ve_direct") return { project, reviewStrategy, reviewDepth };
 
   const override = parseConfigRecord(project.agentOverrideJson);
   const providerOptions = {
@@ -301,6 +304,7 @@ function resolveReviewProjectConfig(
   return {
     project: { ...project, agentOverrideJson: JSON.stringify(override) },
     reviewStrategy,
+    reviewDepth,
   };
 }
 
@@ -320,6 +324,7 @@ async function resolveReviewAgentForProject(
 ): Promise<{
   adapter: AgentAdapter;
   reviewStrategy: ReviewStrategy;
+  reviewDepth: ReviewDepth;
   model: string | undefined;
   token: string;
   systemPrompt: string;
@@ -355,6 +360,7 @@ async function resolveReviewAgentForProject(
     const resolved = resolveAgentConfig(agent, strategyConfig.project);
     const providerOptions = resolveProviderOptions(resolved.extra);
     delete providerOptions["reviewStrategy"];
+    delete providerOptions["reviewDepth"];
     if (strategyConfig.reviewStrategy === "copilot_native") {
       delete providerOptions["reasoningEffort"];
     }
@@ -434,6 +440,7 @@ async function resolveReviewAgentForProject(
     return {
       adapter,
       reviewStrategy: strategyConfig.reviewStrategy,
+      reviewDepth: strategyConfig.reviewDepth,
       model: resolvedModel,
       token,
       systemPrompt: resolvedSystemPrompt.content,

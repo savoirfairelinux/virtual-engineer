@@ -121,9 +121,10 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
       // different key components — matching computeCycleCost's signature.
       const cost = readNullableNum(d, "cost");
       const nanoAiu = readNullableNum(d, "totalNanoAiu");
+      const stageId = readStr(d, ["stageId"]);
       const key =
         readStr(d, ["apiCallId", "providerCallId"]) ??
-        `sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}|${cost ?? ""}|${nanoAiu ?? ""}`;
+        `${stageId === null ? "" : `stage:${stageId}|`}sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}|${cost ?? ""}|${nanoAiu ?? ""}`;
       const existing = usageByRequest.get(key);
       if (existing) {
         // Keep the most complete snapshot for this request (live-then-final).
