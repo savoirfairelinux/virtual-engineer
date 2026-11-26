@@ -1,8 +1,10 @@
-import type { ApiPlugin, PluginField, ReviewStrategy } from "../../types.js";
+import type { ApiPlugin, PluginField, ReviewDepth, ReviewStrategy } from "../../types.js";
 
 export interface ReviewFormFields {
   type: "coding" | "review";
   reviewStrategy: ReviewStrategy;
+  /** Deep review is only valid for VE direct review agents. */
+  reviewDepth?: ReviewDepth | undefined;
   model: string;
   systemPromptId: string;
   feedbackInstructionsPromptId: string;
@@ -17,13 +19,15 @@ export function normalizeAgentReviewForm<T extends ReviewFormFields>(
     ? plugin?.reviewStrategies?.find(({ id }) => id === form.reviewStrategy)
     : undefined;
   if (!descriptor) {
-    return form.reviewStrategy === "ve_direct" ? form : { ...form, reviewStrategy: "ve_direct" };
+    const next = form.type === "review" || form.reviewDepth !== "deep" ? form : { ...form, reviewDepth: "standard" };
+    return next.reviewStrategy === "ve_direct" ? next : { ...next, reviewStrategy: "ve_direct" };
   }
 
   const providerOptions = { ...form.providerOptions };
   delete providerOptions["reasoningEffort"];
   return {
     ...form,
+    ...(form.reviewDepth === "deep" ? { reviewDepth: "standard" } : {}),
     model: "",
     systemPromptId: descriptor.requiredSystemPromptId,
     feedbackInstructionsPromptId: "",
@@ -33,11 +37,13 @@ export function normalizeAgentReviewForm<T extends ReviewFormFields>(
 
 export function buildAgentModelConfig(input: {
   reviewStrategy: ReviewStrategy;
+  reviewDepth?: ReviewDepth | undefined;
   model: string;
   providerOptions: Record<string, unknown>;
   isEdit: boolean;
 }): Record<string, unknown> {
   const providerOptions = { ...input.providerOptions };
+  delete providerOptions["reviewDepth"];
   if (input.reviewStrategy === "copilot_native") {
     providerOptions["reviewStrategy"] = input.reviewStrategy;
     delete providerOptions["reasoningEffort"];
@@ -45,6 +51,7 @@ export function buildAgentModelConfig(input: {
   }
 
   delete providerOptions["reviewStrategy"];
+  if (input.reviewDepth === "deep") providerOptions["reviewDepth"] = "deep";
   return {
     ...(input.model ? { model: input.model } : input.isEdit ? { model: null } : {}),
     ...(Object.keys(providerOptions).length > 0 || input.isEdit ? { providerOptions } : {}),

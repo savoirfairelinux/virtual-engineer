@@ -73,6 +73,38 @@ describe("native review agent form", () => {
     }, { ...copilotPlugin, provider: "claude", reviewStrategies: [] }).reviewStrategy).toBe("ve_direct");
   });
 
+  it("resets deep review when a native strategy or a coding agent is chosen", () => {
+    const form = {
+      type: "review" as const,
+      reviewStrategy: "copilot_native" as const,
+      reviewDepth: "deep" as const,
+      model: "",
+      systemPromptId: "system_review",
+      feedbackInstructionsPromptId: "",
+      providerOptions: {},
+    };
+    expect(normalizeAgentReviewForm(form, copilotPlugin).reviewDepth).toBe("standard");
+    expect(normalizeAgentReviewForm({ ...form, type: "coding", reviewStrategy: "ve_direct" }, copilotPlugin).reviewDepth).toBe("standard");
+    expect(normalizeAgentReviewForm({ ...form, reviewStrategy: "ve_direct" }, copilotPlugin).reviewDepth).toBe("deep");
+  });
+
+  it("stores deep review only for VE direct agents", () => {
+    expect(buildAgentModelConfig({
+      reviewStrategy: "ve_direct",
+      reviewDepth: "deep",
+      model: "",
+      providerOptions: {},
+      isEdit: false,
+    })).toEqual({ providerOptions: { reviewDepth: "deep" } });
+    expect(buildAgentModelConfig({
+      reviewStrategy: "ve_direct",
+      reviewDepth: "standard",
+      model: "",
+      providerOptions: { reviewDepth: "deep" },
+      isEdit: false,
+    })).toEqual({});
+  });
+
   it("builds a canonical native model config and preserves unrelated options", () => {
     expect(buildAgentModelConfig({
       reviewStrategy: "copilot_native",

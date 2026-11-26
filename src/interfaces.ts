@@ -54,6 +54,8 @@ export {
 
 export type AgentType = "coding" | "review";
 export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native" | "codex_native" | "opencode_native";
+/** How a review agent runs a pass: one agent run, or the staged deep pipeline. */
+export type ReviewDepth = "standard" | "deep";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 

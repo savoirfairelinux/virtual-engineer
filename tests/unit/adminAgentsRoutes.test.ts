@@ -446,6 +446,42 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     });
   });
 
+  it("POST / round-trips deep review and rejects invalid review depths", async () => {
+    await store.upsertIntegration({ id: "copilot-deep", provider: "copilot", name: "Copilot", configJson: "{}", enabled: true });
+    const post = (body: Record<string, unknown>): ReturnType<typeof rest> => rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Deep Reviewer",
+        type: "review",
+        integrationId: "copilot-deep",
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+        ...body,
+      },
+    });
+
+    const created = await post({ modelConfig: { providerOptions: { reviewDepth: "deep" } } });
+    expect(created.status).toBe(201);
+    expect((created.body?.["agent"] as Record<string, unknown>)["reviewDepth"]).toBe("deep");
+
+    const native = await post({ modelConfig: { providerOptions: { reviewStrategy: "copilot_native", reviewDepth: "deep" } } });
+    expect(native.status).toBe(400);
+    expect(native.body?.["error"]).toMatch(/deep review requires the VE direct/i);
+
+    const coding = await post({
+      type: "coding",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      modelConfig: { providerOptions: { reviewDepth: "deep" } },
+    });
+    expect(coding.status).toBe(400);
+    expect(coding.body?.["error"]).toMatch(/only available for review agents/i);
+
+    const unknown = await post({ modelConfig: { providerOptions: { reviewDepth: "deepest" } } });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body?.["error"]).toMatch(/unknown review depth 'deepest'/i);
+  });
+
   it("POST / rejects Copilot native review for coding agents", async () => {
     await store.upsertIntegration({
       id: "copilot-coding",

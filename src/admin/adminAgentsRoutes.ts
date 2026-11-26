@@ -13,6 +13,7 @@ import {
   type PromptStore,
   type ProviderId,
   type ProjectRecord,
+  type ReviewDepth,
   type ReviewStrategy,
 } from "../interfaces.js";
 import {
@@ -29,6 +30,7 @@ import { syncProjectLinkedRules } from "./adminProjectsRoutes.js";
 import {
   normalizeReviewStrategyConfig,
   ReviewStrategyConfigError,
+  resolveReviewDepth,
   resolveReviewStrategy,
   type ReviewStrategyConfigResult,
 } from "../agents/reviewStrategy.js";
@@ -230,6 +232,7 @@ export interface AgentSummary {
   maxConcurrent: number;
   model: string | null;
   reviewStrategy: ReviewStrategy;
+  reviewDepth: ReviewDepth;
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
@@ -260,6 +263,7 @@ function toAgentSummary(
     maxConcurrent: agent.maxConcurrent,
     model,
     reviewStrategy: resolveReviewStrategy(config),
+    reviewDepth: resolveReviewDepth(config),
     integrationId,
     systemPromptId: agent.systemPromptId,
     instructionsPromptId: agent.instructionsPromptId,
@@ -704,7 +708,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         action: "agent.create",
         targetType: "agent",
         targetId: created.id,
-        details: { name: created.name, type: created.type, reviewStrategy: strategyConfig.reviewStrategy },
+        details: { name: created.name, type: created.type, reviewStrategy: strategyConfig.reviewStrategy, reviewDepth: strategyConfig.reviewDepth },
       });
       log.info(
         {
@@ -913,7 +917,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         action: "agent.update",
         targetType: "agent",
         targetId: id,
-        details: { name: updated.name, type: updated.type, reviewStrategy: strategyConfig.reviewStrategy },
+        details: { name: updated.name, type: updated.type, reviewStrategy: strategyConfig.reviewStrategy, reviewDepth: strategyConfig.reviewDepth },
       });
       writeJson(res, 200, { agent: toAgentDetail(updated, count, integrationId) });
     } catch (err: unknown) {

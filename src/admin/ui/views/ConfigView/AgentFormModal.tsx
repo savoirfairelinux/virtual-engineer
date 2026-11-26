@@ -3,7 +3,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions 
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import { promptLabel } from "./promptLabel.ts";
-import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, ReviewStrategy } from "../../types.ts";
+import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, ReviewDepth, ReviewStrategy } from "../../types.ts";
 import {
   loadToolAuthorization,
   serializeToolAuthorization,
@@ -40,6 +40,7 @@ interface AgentForm {
   name: string;
   type: "coding" | "review";
   reviewStrategy: ReviewStrategy;
+  reviewDepth: ReviewDepth;
   integrationId: string;
   model: string;
   maxConcurrent: string;
@@ -67,6 +68,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     name: agent?.name ?? "",
     type: agent?.type ?? "coding",
     reviewStrategy: agent?.reviewStrategy ?? "ve_direct",
+    reviewDepth: agent?.reviewDepth ?? "standard",
     integrationId: agent?.integrationId ?? "",
     model: (agent?.modelConfig as Record<string, string>)?.["model"] ?? "",
     maxConcurrent: agent?.maxConcurrent?.toString() ?? "1",
@@ -253,6 +255,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
         integrationId: normalizedForm.integrationId || null,
         modelConfig: buildAgentModelConfig({
           reviewStrategy: normalizedForm.reviewStrategy,
+          reviewDepth: normalizedForm.reviewDepth,
           model: normalizedForm.model,
           providerOptions,
           isEdit,
@@ -310,6 +313,22 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
                   {strategy.label}{strategy.experimental ? " (experimental)" : ""}
                 </option>
               ))}
+            </FieldSelect>
+          </Field>
+        )}
+
+        {form.type === "review" && form.reviewStrategy === "ve_direct" && (
+          <Field
+            label="Review depth"
+            hint="Deep review runs its own staged prompts and ignores the Instructions Prompt"
+          >
+            <FieldSelect
+              aria-label="Review depth"
+              value={form.reviewDepth}
+              onChange={(event) => setForm((prev) => ({ ...prev, reviewDepth: event.target.value as ReviewDepth }))}
+            >
+              <option value="standard">Standard</option>
+              <option value="deep">Deep — 6 agent runs per review, about 4 to 5 times the cost</option>
             </FieldSelect>
           </Field>
         )}

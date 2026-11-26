@@ -790,6 +790,16 @@ export async function validateAgentOverrideJson(
   } catch {
     // Existing malformed agent config remains a runtime validation concern.
   }
+  const overrideProviderOptions = override["providerOptions"];
+  if (override["reviewDepth"] !== undefined || (
+    overrideProviderOptions !== null
+    && typeof overrideProviderOptions === "object"
+    && !Array.isArray(overrideProviderOptions)
+    && (overrideProviderOptions as Record<string, unknown>)["reviewDepth"] !== undefined
+  )) {
+    return "Review depth is set on the review agent and cannot be overridden per project";
+  }
+
   let reviewStrategy;
   try {
     reviewStrategy = resolveReviewStrategy(agentConfig);

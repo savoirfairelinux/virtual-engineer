@@ -126,6 +126,8 @@ export interface ReviewOrchestratorDeps {
   resolveAgentForProject: (project: ProjectRecord) => Promise<{
     adapter: AgentAdapter;
     reviewStrategy: import("../interfaces.js").ReviewStrategy;
+    /** `deep` runs the staged pipeline; absent means a standard single run. */
+    reviewDepth?: import("../interfaces.js").ReviewDepth | undefined;
     model: string | undefined;
     token: string;
     systemPrompt: string;
