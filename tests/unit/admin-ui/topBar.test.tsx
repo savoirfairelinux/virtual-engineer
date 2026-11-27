@@ -147,6 +147,7 @@ describe("TopBar tutorial launcher", () => {
 
     const badge = screen.getByText("v1.2.3");
     expect(badge.getAttribute("title")).toBe("Version 1.2.3 · commit abc1234 · built 2026-10-08T12:00:00Z");
+    expect(screen.getByAltText("Virtual Engineer").nextElementSibling).toBe(badge);
   });
 
   it("omits the version badge until build info is loaded", () => {

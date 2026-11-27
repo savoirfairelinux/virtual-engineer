@@ -20,6 +20,7 @@ describe("getConfig", () => {
       "MAX_RETRY_ATTEMPTS",
       "MAX_COMMITS_PER_CYCLE",
       "AGENT_TIMEOUT_MS",
+      "SHUTDOWN_DRAIN_TIMEOUT_MS",
       "TICKET_CLOSE_MAX_RETRIES",
       "TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS",
       "AGENT_CONTAINER_IMAGE",
@@ -104,6 +105,16 @@ describe("getConfig", () => {
 
     it("agentTimeoutMs defaults to 3600000", () => {
       expect(getConfig().agentTimeoutMs).toBe(3_600_000);
+    });
+
+    it("shutdownDrainTimeoutMs defaults to 15 minutes and accepts 0 to skip draining", () => {
+      expect(getConfig().shutdownDrainTimeoutMs).toBe(900_000);
+      process.env["SHUTDOWN_DRAIN_TIMEOUT_MS"] = "0";
+      resetConfig();
+      expect(getConfig().shutdownDrainTimeoutMs).toBe(0);
+      process.env["SHUTDOWN_DRAIN_TIMEOUT_MS"] = "-1";
+      resetConfig();
+      expect(() => getConfig()).toThrow(/shutdownDrainTimeoutMs/);
     });
 
     it("ticketCloseMaxRetries defaults to 5", () => {

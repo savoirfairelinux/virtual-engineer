@@ -237,6 +237,63 @@ describe("start.sh agent engine selection", () => {
 
 describe("start.sh helpers", () => {
   it.each([
+    { value: "0.4.0", expected: "0.4.0" },
+    { value: "v1.12.3", expected: "1.12.3" },
+  ])("normalizes release version $value", ({ value, expected }) => {
+    expect(runHelper('normalize_release_version "$1"', [value])).toBe(expected);
+  });
+
+  it.each(["", "latest", "1.2", "01.2.3", "1.2.3-rc.1", "1.2.3;id", "../1.2.3"])(
+    "rejects a release version that is not an immutable X.Y.Z tag: '%s'",
+    (value) => {
+      expect(() => runHelper('normalize_release_version "$1" 2>/dev/null', [value])).toThrow();
+    },
+  );
+
+  it.each([
+    { value: "", expected: "930" },
+    { value: "0", expected: "30" },
+    { value: "1500", expected: "32" },
+    { value: "0900000", expected: "930" },
+  ])("derives the orchestrator stop timeout from the drain window '$value'", ({ value, expected }) => {
+    expect(runHelper('orchestrator_stop_timeout "$1"', [value])).toBe(expected);
+  });
+
+  it.each(["-1", "15m", "1e3"])("rejects an invalid drain window: %s", (value) => {
+    expect(() => runHelper('orchestrator_stop_timeout "$1" 2>/dev/null', [value])).toThrow();
+  });
+
+  it.each([
+    { present: true, pullFails: false, expected: ["image inspect repo/ve:1.0.0", "tag repo/ve:1.0.0 ve:latest"] },
+    { present: false, pullFails: false, expected: ["image inspect repo/ve:1.0.0", "pull repo/ve:1.0.0", "tag repo/ve:1.0.0 ve:latest"] },
+    { present: false, pullFails: true, expected: ["image inspect repo/ve:1.0.0", "pull repo/ve:1.0.0"] },
+  ])("reuses a local release image and pulls only when missing (present=$present, pullFails=$pullFails)", ({ present, pullFails, expected }) => {
+    const binDir = mkdtempSync(join(tmpdir(), "ve-start-bin-"));
+    tempDirs.push(binDir);
+    const logFile = join(binDir, "docker.log");
+    writeFileSync(
+      join(binDir, "docker"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${logFile}"
+case "$1" in
+  image) exit ${present ? 0 : 1} ;;
+  pull) exit ${pullFails ? 1 : 0} ;;
+esac
+`,
+    );
+    chmodSync(join(binDir, "docker"), 0o755);
+    const run = (): string => runHelper(
+      'use_published_image repo/ve:1.0.0 ve:latest && printf ok',
+      [],
+      { PATH: `${binDir}:${process.env["PATH"] ?? ""}` },
+    );
+
+    if (pullFails) expect(run).toThrow();
+    else expect(run()).toMatch(/ok$/);
+    expect(readFileSync(logFile, "utf8").trim().split("\n")).toEqual(expected);
+  });
+
+  it.each([
     { value: "", expected: "2g" },
     { value: "512m", expected: "512m" },
     { value: "4g", expected: "4g" },
@@ -859,6 +916,36 @@ describe("OpenShell deployment contract", () => {
 
     expect(calculateHash("abc1234")).toBe(calculateHash("abc1234"));
     expect(calculateHash("def5678")).not.toBe(calculateHash("abc1234"));
+  });
+
+  it("publishes release images under the names start.sh pulls, for every agent engine", () => {
+    const workflow = readFileSync(".github/workflows/publish-images.yml", "utf8");
+    const release = readFileSync(".github/workflows/release-please.yml", "utf8");
+    const catalog = runHelper('printf "%s " "${AGENT_ENGINE_CATALOG[@]}"').split(" ");
+    const orchestratorRepo = runHelper('printf "%s" "$DEFAULT_VE_IMAGE_REPO"');
+    const agentRepo = runHelper('printf "%s" "$DEFAULT_VE_AGENT_IMAGE_REPO"');
+    const published = [...workflow.matchAll(/- image: (\S+)/g)].map((match) => `docker.io/savoirfairelinux/${match[1]}`);
+
+    expect(workflow).toContain("REGISTRY: docker.io");
+    expect(workflow).toContain("NAMESPACE: savoirfairelinux");
+    const expected = [
+      `${orchestratorRepo}:1.0.0`,
+      ...catalog.map((engine) => runHelper('agent_engine_image "$1" "$2"', [`${agentRepo}:1.0.0`, engine])),
+    ].map((image) => image.replace(/:1\.0\.0$/, ""));
+    expect(published.sort()).toEqual(expected.sort());
+    expect(workflow).toContain("INSTALL_OPENSHELL=true");
+    expect(release).toContain("uses: ./.github/workflows/publish-images.yml");
+    expect(release).toContain("if: needs.release-please.outputs.release_created == 'true'");
+  });
+
+  it("pulls instead of building in release-image mode and stops the orchestrator gracefully", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('if [[ -z "$VE_IMAGE_TAG" ]]; then\n    info "Building agent image ${image}..."');
+    expect(script).toContain('use_published_image "${VE_IMAGE_REPO}:${VE_IMAGE_TAG}" virtual-engineer:latest');
+    expect(script).toContain('--stop-timeout "$ORCH_STOP_TIMEOUT"');
+    expect(script.indexOf('docker stop --time "$ORCH_STOP_TIMEOUT" ve-orchestrator'))
+      .toBeLessThan(script.indexOf("docker rm -f ve-orchestrator\nfi"));
   });
 
   it("stamps the orchestrator image with version, commit, and build date", () => {

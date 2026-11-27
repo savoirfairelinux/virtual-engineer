@@ -7,5 +7,6 @@ Running Virtual Engineer in production, indexed by symptom.
 
 debug
 troubleshooting
+updating
 faq
 ```

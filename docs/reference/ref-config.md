@@ -15,3 +15,5 @@ Environment variables carry system and infrastructure settings only. All provide
 | `WORKSPACE_BASE_DIR` | /tmp/virtual-engineer/workspaces | Host scratch directory for the per-task workspace. No named volumes or bind mounts. |
 | `OPENSHELL_COMPUTE_DRIVER` | docker | Sandbox compute driver. kubernetes is experimental. |
 | `MAX_COMMITS_PER_CYCLE` | 10 | Upper bound on commits the agent may create in one cycle. |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | 900 000 | On shutdown, how long running agent cycles may finish before exit. No new cycle starts meanwhile; 0 exits immediately. |
+| `VE_IMAGE_TAG` | empty | Launcher only. Release version whose published images `start.sh` pulls instead of building; set by `update.sh`. |

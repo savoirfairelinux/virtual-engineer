@@ -276,6 +276,68 @@ describe("ConcurrencyTracker", () => {
     expect(t.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
+  describe("shutdown drain", () => {
+    it("grants no new slots once draining, even when one is free", async () => {
+      const t = createConcurrencyTracker(makeStubs({ perAgent: 2 }).deps);
+      const running = await t.acquire(pid("p1"), aid("a1"));
+      t.beginDrain();
+
+      expect(await t.canStart(pid("p1"), aid("a1"))).toBe(false);
+      expect(await t.acquire(pid("p1"), aid("a1"))).toBeNull();
+      let granted = false;
+      void t.acquireWhenAvailable(pid("p1"), aid("a1"), undefined, makeTaskId("queued")).then(() => { granted = true; });
+      t.release(running!);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(granted).toBe(false);
+      expect(t.isWaiting(makeTaskId("queued"))).toBe(true);
+      expect(t.snapshot().global).toBe(0);
+    });
+
+    it("resolves the idle wait when the last running slot is released", async () => {
+      const t = createConcurrencyTracker(makeStubs({ perAgent: 2 }).deps);
+      const first = await t.acquire(pid("p1"), aid("a1"));
+      const second = await t.acquire(pid("p2"), aid("a1"));
+      t.beginDrain();
+      let settled: boolean | undefined;
+      const idle = t.waitForIdle(60_000).then((value) => { settled = value; return value; });
+
+      t.release(first!);
+      await Promise.resolve();
+      expect(settled).toBeUndefined();
+      t.release(second!);
+
+      await expect(idle).resolves.toBe(true);
+    });
+
+    it("resolves immediately when nothing is running", async () => {
+      const t = createConcurrencyTracker(makeStubs().deps);
+      t.beginDrain();
+      await expect(t.waitForIdle(60_000)).resolves.toBe(true);
+    });
+
+    it("gives up when the timeout elapses or the wait is aborted", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = createConcurrencyTracker(makeStubs().deps);
+        const lease = await t.acquire(pid("p1"), aid("a1"));
+        t.beginDrain();
+        const timedOut = t.waitForIdle(1_000);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(timedOut).resolves.toBe(false);
+
+        const controller = new AbortController();
+        const aborted = t.waitForIdle(60_000, controller.signal);
+        controller.abort();
+        await expect(aborted).resolves.toBe(false);
+        expect(t.snapshot().global).toBe(1);
+        t.release(lease!);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("cache TTL", () => {
     beforeEach(() => {
       vi.useFakeTimers();

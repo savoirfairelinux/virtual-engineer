@@ -137,6 +137,7 @@ Status polling uses the separate per-task `reviewPollCooldowns` map for `IN_REVI
 - `ConcurrencyTracker` gates code-generation cycles and review diff retrieval/workspace/agent execution, keyed by `agents.integrationId` and limited by `agents.maxConcurrent` plus the global `app_concurrency` cap
 - it does **not** gate `PollingLoop` or `startTaskForProject`; slots are acquired before cycle preparation and released after the workspace is destroyed (before review posting)
 - `acquire()` returns an opaque lease (or `null` at capacity), and `release()` consumes that exact lease once. `acquireWhenAvailable()` adds an abortable wait ordered by an optional creation-time `priority` (the task's `createdAt` epoch milliseconds): a lower-priority (older) waiter is served before a higher-priority (newer) one even if the newer task called `acquireWhenAvailable` first, so recovery and concurrent triggers cannot let a newer task jump the queue. Callers that omit `priority` default to the lowest precedence, preserving FIFO-by-call-order. Earlier compatible waiters still take priority over direct acquisitions. `isWaiting(taskId)` reports only an unsettled in-memory waiter for admin UI visibility, without changing the task state or persisting a queue position. Releases never re-read mutable agent configuration, so overlapping cycles and integration reassignment cannot decrement the wrong integration counter.
+- `beginDrain()` (graceful shutdown) stops granting slots for good: `canStart()` is false, `acquire()` returns `null`, and queued or new `acquireWhenAvailable()` waiters stay pending until the process exits, so their persisted tasks resume through startup recovery. Running agents keep their slots; `waitForIdle(timeoutMs, signal?)` resolves `true` once none is held, or `false` on timeout/abort.
 
 ## `feedbackProcessor.ts`
 
@@ -159,6 +160,8 @@ Status polling uses the separate per-task `reviewPollCooldowns` map for `IN_REVI
 `src/index.ts` creates the orchestrator once, then refreshes its runtime dependencies in place through `refreshRuntimeDependencies()` when integrations change. This updates connectors, VCS behavior, and admin-facing runtime summaries without restarting the process.
 
 After the admin server binds successfully, `runtimeStartup.ts` enforces startup order: recover active reviews, resume code-generation tasks, run one best-effort workspace reconciliation, then start periodic reconciliation. Its lifecycle handle stops the reconciler idempotently during shutdown.
+
+Shutdown (SIGTERM/SIGINT) drains before tearing down: it stops the polling loop and blocks polling reconciliation, calls `ConcurrencyTracker.beginDrain()`, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for running coding/review cycles to release their slots, because startup's `reconcileOrphanedActiveTasks()` fails any task still in `AGENT_RUNNING` / `REVIEW_RUNNING`. The admin API stays up during the drain; stream and webhook intake may still create tasks, which wait for a slot and resume after restart. A second signal abandons the wait. The process then stops runtime recovery, closes the admin server and streams, and closes the store.
 
 ## Configuration dependencies
 

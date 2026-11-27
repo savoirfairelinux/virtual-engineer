@@ -1,0 +1,123 @@
+name: Publish images
+
+# Builds and pushes the release images that `scripts/start.sh` pulls when
+# VE_IMAGE_TAG is set (and `scripts/update.sh` sets it). Called by the release
+# workflow for every new release; run it manually to (re)publish a tag.
+# Image names must match DEFAULT_VE_IMAGE_REPO / DEFAULT_VE_AGENT_IMAGE_REPO in
+# scripts/start-lib.sh and the engine list in AGENT_ENGINE_CATALOG.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to publish (for example v0.4.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (for example v0.4.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: docker.io
+  NAMESPACE: savoirfairelinux
+
+jobs:
+  image:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: virtual-engineer
+            dockerfile: Dockerfile.orchestrator
+            target: ""
+          - image: virtual-engineer-workspace
+            dockerfile: Dockerfile.agent
+            target: workspace
+          - image: virtual-engineer-workspace-claude
+            dockerfile: Dockerfile.agent
+            target: claude
+          - image: virtual-engineer-workspace-aider
+            dockerfile: Dockerfile.agent
+            target: aider
+          - image: virtual-engineer-workspace-goose
+            dockerfile: Dockerfile.agent
+            target: goose
+          - image: virtual-engineer-workspace-codex
+            dockerfile: Dockerfile.agent
+            target: codex
+          - image: virtual-engineer-workspace-gemini
+            dockerfile: Dockerfile.agent
+            target: gemini
+          - image: virtual-engineer-workspace-opencode
+            dockerfile: Dockerfile.agent
+            target: opencode
+          - image: virtual-engineer-workspace-cursor
+            dockerfile: Dockerfile.agent
+            target: cursor
+
+    steps:
+      - name: Resolve release version
+        id: release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tag must look like v1.2.3, got: $TAG"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check registry credentials
+        env:
+          TAG: ${{ inputs.tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "::error::Set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets, then rerun this workflow for $TAG."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ steps.release.outputs.version }}
+          # The orchestrator always ships the OpenShell CLI (as scripts/start.sh
+          # builds it); its pinned version comes from Dockerfile.orchestrator.
+          build-args: |
+            INSTALL_OPENSHELL=true
+            VE_VERSION=${{ steps.release.outputs.version }}
+            VE_GIT_SHA=${{ steps.meta.outputs.sha }}
+            VE_BUILD_DATE=${{ steps.meta.outputs.date }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

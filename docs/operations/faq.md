@@ -8,7 +8,7 @@ Yes. The orchestrator, SQLite database, OpenShell gateway, and sandboxes all run
 
 ## What happens if a cycle crashes mid-run?
 
-SQLite runs in WAL mode and the state machine is persisted, so coding tasks resume at their last recorded state after a restart. AGENT_RUNNING restarts from scratch, since the sandbox is ephemeral.
+SQLite runs in WAL mode and the state machine is persisted, so coding tasks resume at their last recorded state after a restart. A graceful restart (`start.sh`, `update.sh`, or `docker stop`) first lets running agent cycles finish, up to `SHUTDOWN_DRAIN_TIMEOUT_MS`. A cycle cut short by a crash or the timeout restarts from scratch, since the sandbox is ephemeral.
 
 ## Can the agent merge its own changes?
 

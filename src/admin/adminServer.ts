@@ -33,6 +33,7 @@ import { registerSettingsRoutes, type SettingsController } from "./adminSettings
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAgentEngineRoutes } from "./adminAgentEngineRoutes.js";
+import { registerUpdateRoutes } from "./adminUpdateRoutes.js";
 import type { AgentEngineStateStore } from "../agents/agentEngines.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
 import { registerAuthSourceRoutes } from "./adminAuthSourceRoutes.js";
@@ -216,6 +217,11 @@ export interface AdminServerDependencies {
    * creating/enabling agent integrations whose engine image is not installed.
    */
   agentEngines?: AgentEngineStateStore | undefined;
+  /**
+   * When provided, mounts `GET/POST /api/admin/system/update`: release checks
+   * and update requests carried out by the host updater service.
+   */
+  updates?: import("./adminUpdateRoutes.js").UpdateRouteDeps["updates"];
 }
 
 /** Derive provider-specific URLs from active plugin manager integrations. */
@@ -597,6 +603,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   registerAgentEngineRoutes(router, {
     agentEngines: dependencies.agentEngines,
     integrationStore: dependencies.integrationStore,
+    auditStore,
+  });
+  registerUpdateRoutes(router, {
+    updates: dependencies.updates,
+    buildInfo: () => dependencies.buildInfo ?? getBuildInfo(),
     auditStore,
   });
   registerAgentRoutes(router, {

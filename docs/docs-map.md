@@ -54,6 +54,7 @@ The complete page index.
 
 - [Debug a task](operations/debug.md) — Read the transition log and what it implies.
 - [Troubleshooting](operations/troubleshooting.md) — Symptom, cause, fix.
+- [Update](operations/updating.md) — Move a start.sh deployment to a new release, from the host or from System settings.
 - [FAQ](operations/faq.md) — Recurring operational questions.
 
 ## Develop

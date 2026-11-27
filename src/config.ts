@@ -80,6 +80,11 @@ const ConfigSchema = z.object({
     maxRetryAttempts: z.coerce.number().int().positive().default(5),
     maxCommitsPerCycle: z.coerce.number().int().positive().default(10),
     agentTimeoutMs: z.coerce.number().int().positive().default(3_600_000),
+    /**
+     * On SIGTERM/SIGINT, how long to let running agent cycles finish before
+     * exiting (ms). No new cycle starts while draining; 0 exits immediately.
+     */
+    shutdownDrainTimeoutMs: z.coerce.number().int().nonnegative().default(900_000),
     /** Max retry attempts for the ticket-close call in `closeTicket()` (network/API hiccups only). */
     ticketCloseMaxRetries: z.coerce.number().int().positive().default(5),
     /** Minimum backoff between ticket-close retries (ms). */
@@ -114,6 +119,7 @@ function fromEnv(): Record<string, string | undefined> {
     maxRetryAttempts: process.env["MAX_RETRY_ATTEMPTS"],
     maxCommitsPerCycle: process.env["MAX_COMMITS_PER_CYCLE"],
     agentTimeoutMs: process.env["AGENT_TIMEOUT_MS"],
+    shutdownDrainTimeoutMs: process.env["SHUTDOWN_DRAIN_TIMEOUT_MS"],
     ticketCloseMaxRetries: process.env["TICKET_CLOSE_MAX_RETRIES"],
     ticketCloseRetryMinTimeoutMs: process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"],
     maxReviewComments: process.env["MAX_REVIEW_COMMENTS"],
