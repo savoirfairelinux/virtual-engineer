@@ -357,6 +357,47 @@ should_reuse_container() {
     && [[ "$running_image" == "$latest_image" ]] \
     && [[ "$stored_config_hash" == "$current_config_hash" ]]
 }
+
+# ─── Published release images ────────────────────────────────────────────────
+# With VE_IMAGE_TAG set, start.sh pulls release images instead of building
+# them. Keep in sync with .github/workflows/publish-images.yml.
+DEFAULT_VE_IMAGE_REPO="docker.io/savoirfairelinux/virtual-engineer"
+DEFAULT_VE_AGENT_IMAGE_REPO="docker.io/savoirfairelinux/virtual-engineer-workspace"
+# Keep in sync with shutdownDrainTimeoutMs in src/config.ts.
+DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS=900000
+
+# Prints a release version without its leading "v"; rejects anything but X.Y.Z.
+normalize_release_version() {
+  local value="${1#v}"
+  if [[ ! "$value" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    printf 'Release version must look like 1.2.3 or v1.2.3, got: %s\n' "$1" >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+
+# Seconds `docker stop` waits for the orchestrator: its agent drain window
+# (SHUTDOWN_DRAIN_TIMEOUT_MS) plus a grace period for the rest of shutdown.
+orchestrator_stop_timeout() {
+  local drain_ms="${1:-$DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS}"
+  if [[ ! "$drain_ms" =~ ^[0-9]+$ ]]; then
+    printf 'SHUTDOWN_DRAIN_TIMEOUT_MS must be a non-negative integer, got: %s\n' "$drain_ms" >&2
+    return 1
+  fi
+  printf '%s\n' $(( (10#$drain_ms + 999) / 1000 + 30 ))
+}
+
+# Makes a release image available under its local name. Release tags are
+# immutable, so an image already present is reused without contacting the
+# registry (offline restarts keep working).
+use_published_image() {
+  local remote="$1" local_name="$2"
+  if ! docker image inspect "$remote" >/dev/null 2>&1; then
+    printf '[INFO]  Pulling %s...\n' "$remote"
+    docker pull "$remote" >/dev/null || return 1
+  fi
+  docker tag "$remote" "$local_name"
+}
 # ─── Agent engines ───────────────────────────────────────────────────────────
 # Copilot ships in the base agent image; every other engine is an opt-in
 # image built from its own Dockerfile.agent target. Keep in sync with

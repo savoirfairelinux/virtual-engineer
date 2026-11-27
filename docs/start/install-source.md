@@ -10,6 +10,8 @@ printf '\nADMIN_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 
 `start.sh` owns the complete self-hosted path: it builds both images, brings up the OpenShell gateway with its compute driver, and starts the orchestrator wired to it.
 
+To move to a newer release later, run `./scripts/update.sh` rather than pulling and restarting by hand; see [Update](../operations/updating.md).
+
 ## Keep the secret stable
 
 `ADMIN_AUTH_SECRET` encrypts provider credentials at rest with AES-256-GCM. It must be at least 32 characters, and startup fails closed if encrypted credentials exist and the secret is missing. Rotating it invalidates every stored credential.

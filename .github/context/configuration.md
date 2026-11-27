@@ -42,6 +42,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** seed only. Per-ticket cap; polling skips tickets once exceeded. |
 | `MAX_COMMITS_PER_CYCLE` | `10` | Upper bound on commits the agent may create in one cycle. |
 | `AGENT_TIMEOUT_MS` | `3_600_000` | **DB-managed** seed only. Host-side agent timeout (60 min); the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `900_000` | On SIGTERM/SIGINT, how long running agent cycles may finish before the process exits (15 min). No new cycle starts while draining; queued tasks resume after restart. `0` exits immediately; a second signal abandons the wait. `scripts/start.sh` derives the container's `--stop-timeout` from it (plus 30 s). |
 | `TICKET_CLOSE_MAX_RETRIES` | `5` | **DB-managed** seed only. `pRetry` retry count for `closeTicket()`'s ticket-closing call after MERGED; the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
 | `TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS` | `5000` | **DB-managed** seed only. `pRetry` minimum backoff (ms) between ticket-close retries; the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
 | `MAX_REVIEW_COMMENTS` | `20` | Max inline comments posted per review pass; the rest are folded into the summary. |
@@ -78,6 +79,15 @@ These launcher settings are not part of `AppConfig`:
 |---|---|---|
 | `AGENT_ENGINES` | _(empty)_ | Extra engine images to build on top of the admin selection: comma-separated engine ids or `all`. Unknown ids abort the launcher. |
 | `REVIEW_DIFF_TMPFS_SIZE` | `2g` | Size limit for the orchestrator's `/tmp/ve-review-diffs` tmpfs, shared by concurrent Gerrit diff fetches. Accepts a positive integer followed by `m` (MiB) or `g` (GiB); empty uses the default, zero and malformed values fail before startup side effects. |
+| `VE_IMAGE_TAG` | _(empty)_ | Release version (`X.Y.Z` or `vX.Y.Z`). When set, the launcher pulls the published orchestrator and agent-engine images for that release and tags them under the local names instead of building this checkout; an image already present is reused offline. `scripts/update.sh` sets it. Empty builds locally. |
+| `VE_IMAGE_REPO` | `docker.io/savoirfairelinux/virtual-engineer` | Orchestrator image repository for `VE_IMAGE_TAG`. |
+| `VE_AGENT_IMAGE_REPO` | `docker.io/savoirfairelinux/virtual-engineer-workspace` | Copilot agent image repository for `VE_IMAGE_TAG`; other engines use `<repo>-<engine>`. |
+
+`scripts/update.sh` (see [architecture.md](architecture.md#deployment)) reads the
+same `.env` plus `VE_UPDATE_REMOTE` (Git remote with release tags, default
+`origin`), `VE_UPDATE_HEALTH_TIMEOUT` (seconds, default 300),
+`VE_UPDATE_KEEP_BACKUPS` (default 3) and `VE_RELEASES_API` (latest-release
+endpoint, default the GitHub API).
 
 This remains RAM-backed storage (potentially swapped), not a disk quota. Size it
 for available memory and concurrent reviews; Git shallow fetches can still be

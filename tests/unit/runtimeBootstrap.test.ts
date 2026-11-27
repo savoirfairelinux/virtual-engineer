@@ -41,6 +41,7 @@ const baseConfig: AppConfig = {
   maxRetryAttempts: 5,
   maxCommitsPerCycle: 10,
   agentTimeoutMs: 60_000,
+  shutdownDrainTimeoutMs: 0,
   ticketCloseMaxRetries: 5,
   ticketCloseRetryMinTimeoutMs: 5_000,
   agentContainerImage: "virtual-engineer-workspace:latest",

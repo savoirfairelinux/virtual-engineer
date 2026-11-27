@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # start.sh — One-shot setup + launch for Virtual Engineer.
-#   Builds the agent + orchestrator images, starts an OpenShell gateway using
+#   Builds the agent + orchestrator images (or pulls published release images
+#   when VE_IMAGE_TAG is set), starts an OpenShell gateway using
 #   its Docker compute driver by default, and runs the orchestrator. The
 #   experimental Kubernetes driver remains available as an explicit opt-in.
 #
@@ -15,6 +16,12 @@
 #                        OpenShell/Keycloak bootstrap state
 #   OPENSHELL_COMPUTE_DRIVER (default: docker; kubernetes is experimental)
 #   AGENT_ENGINES  extra agent engine images to build (e.g. "claude,aider" or "all")
+#   VE_IMAGE_TAG   release version (e.g. 0.4.0): pull published images instead
+#                  of building from this checkout (set by scripts/update.sh)
+#   VE_IMAGE_REPO / VE_AGENT_IMAGE_REPO  published image repositories
+#                  (default: docker.io/savoirfairelinux/virtual-engineer[-workspace])
+#   SHUTDOWN_DRAIN_TIMEOUT_MS (default: 900000) how long a restart waits for
+#                  running agent cycles before stopping the orchestrator
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_OIDC_ISSUER external Keycloak realm issuer URL; omit with the
 #     client secret to use the managed local Keycloak
@@ -65,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     --no-k3s-install)
       K3S_INSTALL=false; shift ;;
     --help|-h)
-      sed -n '2,18p' "$0"; exit 0 ;;
+      sed -n '2,32p' "$0"; exit 0 ;;
     *)
       error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
   esac
@@ -75,6 +82,15 @@ K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 OPENSHELL_GW_LOCAL_PORT="${OPENSHELL_GW_LOCAL_PORT:-30808}"
 REVIEW_DIFF_TMPFS_SIZE=$(normalize_review_diff_tmpfs_size "${REVIEW_DIFF_TMPFS_SIZE:-}") \
   || error "Invalid review diff tmpfs size."
+ORCH_STOP_TIMEOUT=$(orchestrator_stop_timeout "${SHUTDOWN_DRAIN_TIMEOUT_MS:-}") \
+  || error "Invalid shutdown drain timeout."
+VE_IMAGE_TAG="${VE_IMAGE_TAG:-}"
+if [[ -n "$VE_IMAGE_TAG" ]]; then
+  VE_IMAGE_TAG=$(normalize_release_version "$VE_IMAGE_TAG") || error "Invalid VE_IMAGE_TAG."
+  VE_IMAGE_REPO="${VE_IMAGE_REPO:-$DEFAULT_VE_IMAGE_REPO}"
+  VE_AGENT_IMAGE_REPO="${VE_AGENT_IMAGE_REPO:-$DEFAULT_VE_AGENT_IMAGE_REPO}"
+  info "Using published release images ${VE_IMAGE_TAG} instead of local builds."
+fi
 
 # ─── Ensure a directory exists and is owned by the current user ───────────────
 ensure_dir() {
@@ -440,22 +456,34 @@ for engine in "${AGENT_ENGINES_TO_BUILD[@]}"; do
     marker="${DATA_DIR}/.agent-image-hash-${engine}"
   fi
   image=$(agent_engine_image "$AGENT_BASE_IMAGE" "$engine")
-  if [[ "$(cat "$marker" 2>/dev/null || true)" == "$AGENT_HASH" ]] \
+  # The marker records what the runtime holds: build inputs for local builds,
+  # the image id for published images.
+  if [[ -n "$VE_IMAGE_TAG" ]]; then
+    use_published_image \
+      "$(agent_engine_image "${VE_AGENT_IMAGE_REPO}:${VE_IMAGE_TAG}" "$engine")" "$image" \
+      || error "Could not pull the ${engine} agent image for release ${VE_IMAGE_TAG}."
+    expected_marker="image:$(docker image inspect "$image" --format '{{.Id}}')"
+  else
+    expected_marker="$AGENT_HASH"
+  fi
+  if [[ "$(cat "$marker" 2>/dev/null || true)" == "$expected_marker" ]] \
      && agent_image_present_in_runtime "$image"; then
     info "Agent image ${image} up to date — skipping build."
     continue
   fi
-  info "Building agent image ${image}..."
-  docker build -f Dockerfile.agent --target "$target" -t "$image" .
+  if [[ -z "$VE_IMAGE_TAG" ]]; then
+    info "Building agent image ${image}..."
+    docker build -f Dockerfile.agent --target "$target" -t "$image" .
+  fi
   if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
-    echo "$AGENT_HASH" > "$marker"
+    echo "$expected_marker" > "$marker"
   elif agent_image_present_in_k3s "$image"; then
     info "The exact agent image ${image} is already present in k3s; skipping import."
-    echo "$AGENT_HASH" > "$marker"
+    echo "$expected_marker" > "$marker"
   else
     info "Importing ${image} into k3s containerd (k8s.io namespace)..."
     if docker save "$image" | sudo k3s ctr -n k8s.io images import - >/dev/null; then
-      echo "$AGENT_HASH" > "$marker"
+      echo "$expected_marker" > "$marker"
     else
       error "Could not import agent image ${image} into k3s."
     fi
@@ -499,7 +527,13 @@ ORCH_HASH=$(printf '%s\n%s\n%s\n%s\n' "$OPENSHELL_VERSION" "$OPENSHELL_INSTALLER
   tsconfig.json tsconfig.admin-ui.json tsconfig.admin-ui-tests.json vite.admin.config.ts)" \
   | sha256sum | cut -d' ' -f1)
 ORCH_MARKER="${DATA_DIR}/.orchestrator-image-hash"
-if [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \
+if [[ -n "$VE_IMAGE_TAG" ]]; then
+  use_published_image "${VE_IMAGE_REPO}:${VE_IMAGE_TAG}" virtual-engineer:latest \
+    || error "Could not pull the orchestrator image for release ${VE_IMAGE_TAG}."
+  # A non-hash marker forces a rebuild if this checkout later returns to local builds.
+  echo "image:$(docker image inspect virtual-engineer:latest --format '{{.Id}}')" > "$ORCH_MARKER"
+  info "Orchestrator image: ${VE_IMAGE_REPO}:${VE_IMAGE_TAG}"
+elif [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \
    && docker image inspect virtual-engineer:latest >/dev/null 2>&1; then
   info "Orchestrator image up to date (inputs unchanged) — skipping build."
 else
@@ -840,6 +874,7 @@ DOCKER_RUN_ARGS=(
   -d
   --name ve-orchestrator
   --restart unless-stopped
+  --stop-timeout "$ORCH_STOP_TIMEOUT"
   --network host
   "${OIDC_DOCKER_HOST_ARGS[@]}"
   --env-file "$ROOT_DIR/.env"
@@ -871,6 +906,11 @@ if should_reuse_container \
 fi
 
 if [[ -n "$RUNNING_ID" ]]; then
+  if [[ "$IS_RUNNING" == "true" ]]; then
+    info "Stopping ve-orchestrator; it lets running agent cycles finish first (up to ${ORCH_STOP_TIMEOUT}s)..."
+    docker stop --time "$ORCH_STOP_TIMEOUT" ve-orchestrator >/dev/null \
+      || warn "ve-orchestrator did not stop cleanly; removing it."
+  fi
   info "Removing existing ve-orchestrator container..."
   docker rm -f ve-orchestrator
 fi

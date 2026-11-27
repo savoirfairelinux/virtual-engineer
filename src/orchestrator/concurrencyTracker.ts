@@ -80,6 +80,19 @@ export interface ConcurrencyTracker {
 
   /** Diagnostic snapshot of the live counters. */
   snapshot(): ConcurrencySnapshot;
+
+  /**
+   * Stop granting slots before a graceful shutdown. Running agents keep their
+   * slots; queued and new acquisitions wait until the process exits, and their
+   * persisted tasks resume through startup recovery. Irreversible.
+   */
+  beginDrain(): void;
+
+  /**
+   * Resolve `true` once no slot is held, or `false` when `timeoutMs` elapses
+   * or `signal` aborts first.
+   */
+  waitForIdle(timeoutMs: number, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface ConcurrencyTrackerDeps {
@@ -161,6 +174,8 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   let activeGlobal = 0;
   let draining = false;
   let drainRequested = false;
+  let shutdownDraining = false;
+  const idleListeners = new Set<() => void>();
 
   /** Fetch the current concurrency limits for an agent, using the TTL cache. */
   async function loadLimits(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLimits> {
@@ -192,7 +207,9 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   }
 
   async function acquireSlot(projectId: ProjectId, agentId: AgentId, current?: PendingAcquisition): Promise<ConcurrencyLease | null> {
+    if (shutdownDraining) return null;
     const limits = await loadLimits(projectId, agentId);
+    if (shutdownDraining) return null;
     if (await hasEarlierWaiter(limits, current) || !check(limits, projectId, agentId)) return null;
     activeGlobal += 1;
     perProject.set(projectId, (perProject.get(projectId) ?? 0) + 1);
@@ -213,6 +230,9 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     perIntegration.set(active.integrationKey, Math.max(0, integrationCount - 1));
     activeGlobal = Math.max(0, activeGlobal - 1);
     log.debug({ ...active, activeGlobal }, "released concurrency slot");
+    if (activeGlobal === 0) {
+      for (const notify of [...idleListeners]) notify();
+    }
   }
 
   function settlePending(pending: PendingAcquisition): void {
@@ -275,6 +295,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   return {
     /** Check whether a new task can start without mutating counters. */
     async canStart(projectId, agentId): Promise<boolean> {
+      if (shutdownDraining) return false;
       const limits = await loadLimits(projectId, agentId);
       return !(await hasEarlierWaiter(limits)) && check(limits, projectId, agentId);
     },
@@ -347,6 +368,30 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
       const ag: Record<string, number> = {};
       for (const [k, v] of perIntegration) if (v > 0) ag[k] = v;
       return { global: activeGlobal, perProject: proj, perAgent: ag };
+    },
+
+    beginDrain(): void {
+      if (shutdownDraining) return;
+      shutdownDraining = true;
+      log.info({ activeGlobal, queued: pendingAcquisitions.filter((p) => !p.settled).length }, "concurrency drain started; no new agent runs will start");
+    },
+
+    waitForIdle(timeoutMs, signal): Promise<boolean> {
+      if (activeGlobal === 0) return Promise.resolve(true);
+      if (signal?.aborted === true) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        const finish = (idle: boolean): void => {
+          clearTimeout(timer);
+          idleListeners.delete(onIdle);
+          signal?.removeEventListener("abort", onAbort);
+          resolve(idle);
+        };
+        const onIdle = (): void => finish(true);
+        const onAbort = (): void => finish(false);
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        idleListeners.add(onIdle);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
     },
   };
 }

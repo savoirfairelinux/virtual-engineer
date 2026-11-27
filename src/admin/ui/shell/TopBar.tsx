@@ -54,22 +54,28 @@ export function TopBar({
     >
       {/* brand */}
       <div style={{ display: "flex", alignItems: "center", gap: "10px", paddingRight: "18px" }}>
-        <img
-          src={logoUrl}
-          width={34}
-          height={34}
-          alt="Virtual Engineer"
-          style={{ borderRadius: "8px", display: "block", boxShadow: "0 2px 8px var(--accent-soft)" }}
-        />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px" }}>
+          <img
+            src={logoUrl}
+            width={32}
+            height={32}
+            alt="Virtual Engineer"
+            style={{ borderRadius: "8px", display: "block", boxShadow: "0 2px 8px var(--accent-soft)" }}
+          />
+          {buildInfo && (
+            <span
+              className="mono"
+              title={buildInfoTitle(buildInfo)}
+              style={{ fontSize: "9px", lineHeight: 1, color: "var(--text-faint)", cursor: "help", whiteSpace: "nowrap" }}
+            >
+              v{buildInfo.version}
+            </span>
+          )}
+        </div>
         <div style={{ lineHeight: 1.05 }}>
           <div style={{ fontWeight: 600, fontSize: "14px", letterSpacing: "-0.01em" }}>Virtual Engineer</div>
           <div className="mono" style={{ fontSize: "9.5px", color: "var(--text-faint)", letterSpacing: "0.04em" }}>
             orchestrator
-            {buildInfo && (
-              <span title={buildInfoTitle(buildInfo)} style={{ marginLeft: "6px", cursor: "help" }}>
-                v{buildInfo.version}
-              </span>
-            )}
           </div>
         </div>
       </div>

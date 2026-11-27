@@ -25,6 +25,8 @@ import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
 import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { AgentEngineStateStore, initializeAgentEngineState } from "./agents/agentEngines.js";
+import { createReleaseChecker } from "./runtime/releaseCheck.js";
+import { UpdateHandshakeStore } from "./runtime/updateHandshake.js";
 import { dirname } from "node:path";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
@@ -219,7 +221,9 @@ async function main(): Promise<void> {
    * acts when the running state disagrees with `pollingIsRequired()`.
    */
   async function reconcilePollingLoop(): Promise<void> {
+    if (shuttingDown) return;
     const required = await pollingIsRequired(stateStore, pluginManager, integrationStreamEvents);
+    if (shuttingDown) return;
     if (required && !pollingLoop.isRunning()) {
       log.info("polling required — starting polling loop");
       pollingLoop.start();
@@ -233,7 +237,7 @@ async function main(): Promise<void> {
   // coalesces bursts so we run one `pollingIsRequired()` re-check per window.
   let pollingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   function schedulePollingReconcile(): void {
-    if (pollingReconcileTimer) return;
+    if (pollingReconcileTimer || shuttingDown) return;
     pollingReconcileTimer = setTimeout(() => {
       pollingReconcileTimer = null;
       reconcilePollingLoop().catch((err: unknown) => {
@@ -542,6 +546,10 @@ async function main(): Promise<void> {
         address: openShellGateway,
       },
       agentEngines,
+      updates: {
+        handshake: new UpdateHandshakeStore(dirname(config.databasePath)),
+        releases: createReleaseChecker(),
+      },
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
@@ -583,9 +591,17 @@ async function main(): Promise<void> {
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
+  // A restart fails any task still in AGENT_RUNNING (reconcileOrphanedActiveTasks),
+  // so shutdown first lets running agent cycles finish. A second signal skips the wait.
+  let drainAbort: AbortController | null = null;
+
   /** Stop all subsystems and exit cleanly on SIGINT or SIGTERM. */
   async function shutdown(signal: string): Promise<void> {
     if (shuttingDown) {
+      if (drainAbort && !drainAbort.signal.aborted) {
+        log.warn({ signal }, "second shutdown signal; abandoning the agent drain");
+        drainAbort.abort();
+      }
       return;
     }
 
@@ -600,6 +616,19 @@ async function main(): Promise<void> {
       streamReconcileTimer = null;
     }
     pollingLoop.stop();
+
+    concurrencyTracker.beginDrain();
+    const running = concurrencyTracker.snapshot().global;
+    if (running > 0 && config.shutdownDrainTimeoutMs > 0) {
+      drainAbort = new AbortController();
+      log.info({ running, timeoutMs: config.shutdownDrainTimeoutMs }, "waiting for running agent cycles before exiting");
+      const idle = await concurrencyTracker.waitForIdle(config.shutdownDrainTimeoutMs, drainAbort.signal);
+      if (idle) {
+        log.info("running agent cycles finished");
+      } else {
+        log.warn({ running: concurrencyTracker.snapshot().global }, "agent cycles still running at shutdown; they will be retried after restart");
+      }
+    }
     runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);

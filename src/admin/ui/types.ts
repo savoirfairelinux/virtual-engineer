@@ -640,3 +640,20 @@ export interface ApiAgentEngines {
   installStateKnown: boolean;
   rebuildRequired: boolean;
 }
+
+export type ApiUpdateState =
+  | "preparing" | "draining" | "starting" | "verifying" | "rolling_back"
+  | "succeeded" | "failed" | "rolled_back";
+
+/** GET /api/admin/system/update. Timestamps: `checkedAt` ms, others seconds. */
+export interface ApiSystemUpdate {
+  current: ApiBuildInfo;
+  latest: { version: string; url: string; publishedAt?: string | undefined } | null;
+  latestError: string | null;
+  checkedAt: number;
+  updateAvailable: boolean;
+  updaterInstalled: boolean;
+  request: { version: string; requestedBy: string; requestedAt: number } | null;
+  status: { state: ApiUpdateState; from?: string | undefined; to?: string | undefined; message: string; updatedAt: number } | null;
+  inProgress: boolean;
+}
